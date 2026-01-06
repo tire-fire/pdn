@@ -107,6 +107,15 @@ int QuickdrawWirelessManager::processQuickdrawCommand(const uint8_t *macAddress,
             packet->command,
             match);
 
+    // Validate sender if we have an expected opponent
+    if (player && player->getOpponentMacAddress() &&
+        !player->getOpponentMacAddress()->empty() &&
+        command.wifiMacAddr != *player->getOpponentMacAddress()) {
+        ESP_LOGW("QWM", "Ignoring packet from unexpected MAC: %s (expected %s)",
+                 command.wifiMacAddr.c_str(),
+                 player->getOpponentMacAddress()->c_str());
+        return -1;
+    }
 
     logPacket(command);
     if(packetReceivedCallback) {

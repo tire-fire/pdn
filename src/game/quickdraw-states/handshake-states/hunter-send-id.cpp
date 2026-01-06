@@ -29,8 +29,8 @@ void HunterSendIdState::onQuickdrawCommandReceived(QuickdrawCommand command) {
     ESP_LOGI("HUNTER_SEND_ID", "Command received: %d", command.command);
     
     if (command.command == CONNECTION_CONFIRMED) {
-        ESP_LOGI("HUNTER_SEND_ID", "Received CONNECTION_CONFIRMED from opponent");
-        
+        ESP_LOGI("HUNTER_SEND_ID", "Received CONNECTION_CONFIRMED from %s", command.wifiMacAddr.c_str());
+
         // Validate received match data
         if (command.match.getMatchId().empty()) {
             ESP_LOGE("HUNTER_SEND_ID", "Received empty match ID");
@@ -40,17 +40,10 @@ void HunterSendIdState::onQuickdrawCommandReceived(QuickdrawCommand command) {
             ESP_LOGE("HUNTER_SEND_ID", "Received empty bounty ID");
             return;
         }
-        
-        ESP_LOGI("HUNTER_SEND_ID", "Received match ID: %s, bounty ID: %s", 
-                 command.match.getMatchId().c_str(), 
-                 command.match.getBountyId().c_str());
 
-        // Set opponent MAC address
-        if (command.wifiMacAddr.empty()) {
-            ESP_LOGE("HUNTER_SEND_ID", "Received empty MAC address");
-            return;
-        }
-        player->setOpponentMacAddress(command.wifiMacAddr);
+        ESP_LOGI("HUNTER_SEND_ID", "Received match ID: %s, bounty ID: %s",
+                 command.match.getMatchId().c_str(),
+                 command.match.getBountyId().c_str());
         
         // Create new match with validated data
         Match* newMatch = MatchManager::GetInstance()->createMatch(
