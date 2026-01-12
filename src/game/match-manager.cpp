@@ -99,9 +99,10 @@ bool MatchManager::didWin() {
     }
 
     
-    return player->isHunter() ? 
+    // Bounty wins ties (defender's advantage)
+    return player->isHunter() ?
     activeDuelState.match->getHunterDrawTime() < activeDuelState.match->getBountyDrawTime() :
-    activeDuelState.match->getBountyDrawTime() < activeDuelState.match->getHunterDrawTime();
+    activeDuelState.match->getBountyDrawTime() <= activeDuelState.match->getHunterDrawTime();
 }
 
 bool MatchManager::finalizeMatch() {
