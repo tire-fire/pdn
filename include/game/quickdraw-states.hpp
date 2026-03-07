@@ -101,7 +101,7 @@ private:
 
 class DuelCountdown : public ConnectState {
 public:
-    DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator);
+    DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainContext* chainContext = nullptr);
     ~DuelCountdown();
 
     void onStateMounted(Device *PDN) override;
@@ -109,6 +109,7 @@ public:
     void onStateDismounted(Device *PDN) override;
     bool shallWeBattle();
     bool disconnectedBackToIdle();
+    bool countdownStarted();
 
     bool isPrimaryRequired() override;
     bool isAuxRequired() override;
@@ -160,11 +161,13 @@ private:
     const CountdownStage countdownQueue[4] = {THREE, TWO, ONE, BATTLE};
     int currentStepIndex = 0;
     MatchManager* matchManager;
+    ChainContext* chainContext_;
+    bool countdownStarted_ = false;
 };
 
 class Duel : public ConnectState {
 public:
-    Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator);
+    Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainContext* chainContext = nullptr);
     ~Duel();
 
     void onStateMounted(Device *PDN) override;
@@ -180,6 +183,7 @@ public:
 private:
     Player* player;
     MatchManager* matchManager;
+    ChainContext* chainContext_;
     parameterizedCallbackFunction buttonPress;
     bool transitionToDuelPushedState = false;
     bool transitionToDuelReceivedResultState = false;
@@ -190,7 +194,7 @@ private:
 
 class DuelPushed : public ConnectState {
 public:
-    DuelPushed(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator);
+    DuelPushed(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainContext* chainContext = nullptr);
     ~DuelPushed();
 
     void onStateMounted(Device *PDN) override;
@@ -205,18 +209,19 @@ public:
 private:
     Player* player;
     MatchManager* matchManager;
+    ChainContext* chainContext_;
     SimpleTimer gracePeriodTimer;
     const int DUEL_RESULT_GRACE_PERIOD = 900;
 };
 
 class DuelReceivedResult : public ConnectState {
 public:
-    DuelReceivedResult(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator);
+    DuelReceivedResult(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainContext* chainContext = nullptr);
     ~DuelReceivedResult();
 
-    void onStateMounted(Device *PDN) override;  
+    void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
-    void onStateDismounted(Device *PDN) override;   
+    void onStateDismounted(Device *PDN) override;
     bool transitionToDuelResult();
     bool disconnectedBackToIdle();
 
@@ -229,23 +234,25 @@ private:
     const int BUTTON_PUSH_GRACE_PERIOD = 750;
     Player* player;
     MatchManager* matchManager;
+    ChainContext* chainContext_;
 };
 
 class DuelResult : public State {
 public:
-    DuelResult(Player* player, MatchManager* matchManager, QuickdrawWirelessManager* quickdrawWirelessManager);
+    DuelResult(Player* player, MatchManager* matchManager, QuickdrawWirelessManager* quickdrawWirelessManager, ChainContext* chainContext = nullptr);
     ~DuelResult();
 
-    void onStateMounted(Device *PDN) override;  
+    void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
-    void onStateDismounted(Device *PDN) override;   
+    void onStateDismounted(Device *PDN) override;
     bool transitionToWin();
-    bool transitionToLose();    
-    
+    bool transitionToLose();
+
 private:
     Player* player;
     MatchManager* matchManager;
     QuickdrawWirelessManager* quickdrawWirelessManager;
+    ChainContext* chainContext_;
     bool wonBattle = false;
     bool captured = false;
 };
