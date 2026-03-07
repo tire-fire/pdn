@@ -168,9 +168,27 @@ public:
         return PortStatus::DISCONNECTED;
     }
 
+    // Routes directly to the serial manager so handshake state tests continue to work
+    // without a fully initialised RDC.
+    void registerSerialHandler(const std::string& /*prefix*/, SerialIdentifier jack,
+                               std::function<void(const std::string&)> handler) override {
+        if (serialManager_) {
+            serialManager_->setOnStringReceivedCallback(handler, jack);
+        }
+    }
+
+    void unregisterSerialHandler(const std::string& /*prefix*/, SerialIdentifier jack) override {
+        if (serialManager_) {
+            serialManager_->clearCallback(jack);
+        }
+    }
+
+    void setSerialManager(SerialManager* sm) { serialManager_ = sm; }
+
 private:
     PortStatus outputStatus = PortStatus::DISCONNECTED;
     PortStatus inputStatus = PortStatus::DISCONNECTED;
+    SerialManager* serialManager_ = nullptr;
 };
 
 // Mock QuickdrawWirelessManager for MatchManager tests
@@ -208,6 +226,7 @@ public:
         lightManager = new LightManager(fakeLightStrip);
         serialManager = new SerialManager(&outputJackSerial, &inputJackSerial);
         wirelessManager = new WirelessManager(mockPeerComms, mockHttpClient);
+        fakeRemoteDeviceCoordinator.setSerialManager(serialManager);
     }
 
     ~MockDevice() {
@@ -239,7 +258,9 @@ public:
     LightManager* getLightManager() override { return lightManager; }
     WirelessManager* getWirelessManager() override { return wirelessManager; }
     SerialManager* getSerialManager() override { return serialManager; }
-    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override { return &fakeRemoteDeviceCoordinator; }
+    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override {
+        return rdcOverride ? rdcOverride : &fakeRemoteDeviceCoordinator;
+    }
 
     std::string getHead() {
         return serialManager->getOutputHead();
@@ -261,4 +282,5 @@ public:
     FakeHWSerialWrapper outputJackSerial;
     FakeHWSerialWrapper inputJackSerial;
     FakeRemoteDeviceCoordinator fakeRemoteDeviceCoordinator;
+    RemoteDeviceCoordinator* rdcOverride = nullptr;
 };
