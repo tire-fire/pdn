@@ -41,7 +41,7 @@ def signal_handler(sig, frame):
 # ---------------------------------------------------------------------------
 
 def list_com_ports_with_pyserial():
-    """Return list of (port_name, description, vid, pid) for all COM ports."""
+    """Return list of (port_name, description, vid, pid) for all serial ports."""
     try:
         import serial.tools.list_ports
     except ImportError:
@@ -50,7 +50,7 @@ def list_com_ports_with_pyserial():
 
     ports = []
     for p in serial.tools.list_ports.comports():
-        port_name = p.device.upper()
+        port_name = p.device
         desc = p.description.upper() if p.description else ""
         ports.append((port_name, desc, p.vid, p.pid))
     return ports
@@ -68,25 +68,24 @@ def is_jtag_port(port_description, vid, pid):
 
 def test_esp32_on_port(port_name):
     """Probe the port with esptool chip-id. Returns (is_esp32: bool, chip_info: str)."""
-    for subcmd in ("chip-id", "chip_id"):
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "esptool", "--port", port_name, subcmd],
-                capture_output=True, text=True, timeout=2,
+    try:
+        result = subprocess.run(
+            _esptool("--port", port_name, "--before", "default-reset", "chip-id"),
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and "ESP32" in result.stdout:
+            out = result.stdout
+            chip = (
+                "ESP32-S3" if "ESP32-S3" in out
+                else "ESP32-C3" if "ESP32-C3" in out
+                else "ESP32-S2" if "ESP32-S2" in out
+                else "ESP32"
             )
-            if result.returncode == 0 and "ESP32" in result.stdout:
-                out = result.stdout
-                chip = (
-                    "ESP32-S3" if "ESP32-S3" in out
-                    else "ESP32-C3" if "ESP32-C3" in out
-                    else "ESP32-S2" if "ESP32-S2" in out
-                    else "ESP32"
-                )
-                return True, chip
-        except subprocess.TimeoutExpired:
-            return False, "Timeout"
-        except Exception as exc:
-            return False, str(exc)[:30]
+            return True, chip
+    except subprocess.TimeoutExpired:
+        return False, "Timeout"
+    except Exception as exc:
+        return False, str(exc)[:30]
     return False, ""
 
 
@@ -140,7 +139,7 @@ def erase_flash_if_needed(port_name, erase_flash):
     if not erase_flash:
         return True
     _print(port_name, "Erasing flash...")
-    cmd = _esptool("--chip", "esp32s3", "--port", port_name, "--before", "usb-reset", "erase-flash")
+    cmd = _esptool("--chip", "esp32s3", "--port", port_name, "--before", "default-reset", "erase-flash")
     try:
         _run_esptool(port_name, cmd, timeout=30)
         import time
@@ -159,7 +158,7 @@ def clear_nvs_partition(port_name):
     _print(port_name, "Clearing NVS partition...")
     cmd = _esptool(
         "--chip", "esp32s3", "--port", port_name,
-        "--before", "usb-reset", "--after", "hard-reset",
+        "--before", "default-reset", "--after", "hard-reset",
         "erase_region", str(NVS_OFFSET), str(NVS_SIZE),
     )
     try:
@@ -192,7 +191,7 @@ def flash_to_port(port_name, port_desc, build_dir, chip_info="", erase_flash=Fal
 
     cmd = _esptool(
         "--chip", "esp32s3", "--port", port_name, "--baud", "921600",
-        "--before", "usb-reset", "--after", "hard-reset",
+        "--before", "default-reset", "--after", "hard-reset",
         "write-flash", "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "8MB",
         "0x0000", bootloader, "0x8000", partitions, "0x10000", firmware,
     )
@@ -258,7 +257,7 @@ def main():
     print("Scanning for devices...")
     ports_info = list_com_ports_with_pyserial()
     if not ports_info:
-        print("No COM ports detected.")
+        print("No serial ports detected.")
         sys.exit(1)
 
     jtag_ports = [
