@@ -163,6 +163,9 @@ public:
             httpClientState = HttpClientState::CONNECTED;
         } else {
             LOG_W(HTTP_TAG, "WiFi connection failed after %d attempts", attempts);
+            WiFi.setAutoReconnect(false);
+            WiFi.disconnect(false);
+            WiFi.channel(ESPNOW_FALLBACK_CHANNEL);
         }
     }
 
