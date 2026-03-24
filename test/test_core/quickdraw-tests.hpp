@@ -349,11 +349,11 @@ inline void handshakeAppOutputJackTimeoutResetsToIdle(HandshakeStateTests* suite
     handshakeApp.onStateLoop(&suite->device);
 
     // Handshake timeout not yet reached
-    suite->fakeClock->advance(400);
+    suite->fakeClock->advance(4000);
     handshakeApp.onStateLoop(&suite->device);
 
-    // Past the 500ms handshakeTimeout → should reset to idle
-    suite->fakeClock->advance(200);
+    // Past the 5000ms handshakeTimeout → should reset to idle
+    suite->fakeClock->advance(2000);
     handshakeApp.onStateLoop(&suite->device);
 
     // After reset, HandshakeApp should be back in OutputIdleState (stateId == OUTPUT_IDLE_STATE)
