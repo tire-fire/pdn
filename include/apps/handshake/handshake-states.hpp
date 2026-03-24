@@ -47,6 +47,8 @@ public:
 private:
     HandshakeWirelessManager* handshakeWirelessManager;
     bool transitionToConnectionSuccessfulState = false;
+    SimpleTimer retryTimer;
+    static constexpr int RETRY_INTERVAL_MS = 1000;
 };
 
 class HandshakeConnectedState : public State {
@@ -109,4 +111,6 @@ public:
 private:
     HandshakeWirelessManager* handshakeWirelessManager;
     bool transitionToConnectedState = false;
+    SimpleTimer retryTimer;
+    static constexpr int RETRY_INTERVAL_MS = 1000;
 };
