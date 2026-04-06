@@ -74,6 +74,21 @@ PortState RemoteDeviceCoordinator::getPortState(SerialIdentifier port) {
     return PortState{ port, getPortStatus(port), peerAddresses };
 }
 
+DeviceType RemoteDeviceCoordinator::getPeerDeviceType(SerialIdentifier port) const {
+    const Peer* macPeer = handshakeWirelessManager.getMacPeer(port);
+    return macPeer ? macPeer->deviceType : DeviceType::UNKNOWN;
+}
+
+bool RemoteDeviceCoordinator::getPeerIsHunter(SerialIdentifier port) const {
+    const Peer* macPeer = handshakeWirelessManager.getMacPeer(port);
+    return macPeer ? macPeer->isHunter : true;
+}
+
+void RemoteDeviceCoordinator::setLocalRole(bool isHunter) {
+    handshakeWirelessManager.setLocalRole(isHunter);
+}
+
+
 PortStatus RemoteDeviceCoordinator::mapHandshakeStateToStatus(SerialIdentifier port) {
     HandshakeApp* app = (port == SerialIdentifier::INPUT_JACK) ? inputPortHandshake : outputPortHandshake;
 

@@ -37,6 +37,38 @@ def signal_handler(sig, frame):
 
 
 # ---------------------------------------------------------------------------
+# esptool discovery
+# ---------------------------------------------------------------------------
+
+def _find_esptool():
+    """Find a working esptool command."""
+    pio_esptool = os.path.expanduser("~/.platformio/penv/bin/esptool")
+    if os.path.isfile(pio_esptool):
+        return [pio_esptool]
+    try:
+        subprocess.run([sys.executable, "-m", "esptool", "version"],
+                       capture_output=True, timeout=5)
+        return [sys.executable, "-m", "esptool"]
+    except Exception:
+        pass
+    import shutil
+    path = shutil.which("esptool") or shutil.which("esptool.py")
+    if path:
+        return [path]
+    print("Error: esptool not found. Install platformio or esptool.")
+    sys.exit(1)
+
+_ESPTOOL_CMD = None
+
+def _esptool(*args):
+    """Return a subprocess arg list that invokes esptool."""
+    global _ESPTOOL_CMD
+    if _ESPTOOL_CMD is None:
+        _ESPTOOL_CMD = _find_esptool()
+    return list(_ESPTOOL_CMD) + list(args)
+
+
+# ---------------------------------------------------------------------------
 # Port detection
 # ---------------------------------------------------------------------------
 
@@ -50,7 +82,7 @@ def list_com_ports_with_pyserial():
 
     ports = []
     for p in serial.tools.list_ports.comports():
-        port_name = p.device.upper()
+        port_name = p.device
         desc = p.description.upper() if p.description else ""
         ports.append((port_name, desc, p.vid, p.pid))
     return ports
@@ -71,8 +103,8 @@ def test_esp32_on_port(port_name):
     for subcmd in ("chip-id", "chip_id"):
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "esptool", "--port", port_name, subcmd],
-                capture_output=True, text=True, timeout=2,
+                _esptool("--port", port_name, subcmd),
+                capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0 and "ESP32" in result.stdout:
                 out = result.stdout
@@ -96,16 +128,6 @@ def test_esp32_on_port(port_name):
 
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x5000  # 20 KB — matches default_8MB.csv
-
-
-def _esptool(*args):
-    """Return a subprocess arg list that invokes esptool via the current Python interpreter.
-
-    Using sys.executable -m esptool avoids relying on an 'esptool' entry-point
-    on PATH, which on Windows would resolve to esptool.py and trigger an
-    "Open with" dialog if .py files have no shell association.
-    """
-    return [sys.executable, "-m", "esptool"] + list(args)
 
 
 def _run_esptool(port_name, cmd, timeout):
@@ -140,7 +162,7 @@ def erase_flash_if_needed(port_name, erase_flash):
     if not erase_flash:
         return True
     _print(port_name, "Erasing flash...")
-    cmd = _esptool("--chip", "esp32s3", "--port", port_name, "--before", "usb-reset", "erase-flash")
+    cmd = _esptool("--chip", "esp32s3", "--port", port_name, "--before", "default-reset", "erase-flash")
     try:
         _run_esptool(port_name, cmd, timeout=30)
         import time
@@ -159,7 +181,7 @@ def clear_nvs_partition(port_name):
     _print(port_name, "Clearing NVS partition...")
     cmd = _esptool(
         "--chip", "esp32s3", "--port", port_name,
-        "--before", "usb-reset", "--after", "hard-reset",
+        "--before", "default-reset", "--after", "hard-reset",
         "erase_region", str(NVS_OFFSET), str(NVS_SIZE),
     )
     try:
@@ -192,7 +214,7 @@ def flash_to_port(port_name, port_desc, build_dir, chip_info="", erase_flash=Fal
 
     cmd = _esptool(
         "--chip", "esp32s3", "--port", port_name, "--baud", "921600",
-        "--before", "usb-reset", "--after", "hard-reset",
+        "--before", "default-reset", "--after", "hard-reset",
         "write-flash", "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "8MB",
         "0x0000", bootloader, "0x8000", partitions, "0x10000", firmware,
     )

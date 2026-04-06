@@ -102,6 +102,12 @@ public:
 
     void clearCurrentMatch();
 
+    bool hadRoleMismatch() const { return hadRoleMismatch_; }
+    void clearRoleMismatch() { hadRoleMismatch_ = false; }
+
+    void setBoost(int boostMs);
+    int getBoost() const { return boostMs_; }
+
     void listenForMatchEvents(const QuickdrawCommand& command);
 
     void initialize(Player* player, StorageInterface* storage, QuickdrawWirelessManager* quickdrawWirelessManager);
@@ -121,6 +127,7 @@ public:
 private:
 
     Player* player;
+    int boostMs_ = 0;
 
     ActiveDuelState activeDuelState;
 
@@ -151,6 +158,7 @@ private:
     void sendMatchAck();
     void sendMatchId();
     void sendMatchRoleMismatch();
+    bool hadRoleMismatch_ = false;
 };
 
 

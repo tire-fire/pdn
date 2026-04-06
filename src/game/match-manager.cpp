@@ -1,4 +1,5 @@
 #include "game/match-manager.hpp"
+#include <algorithm>
 #include <ArduinoJson.h>
 #include "device/drivers/logger.hpp"
 #include "wireless/quickdraw-wireless-manager.hpp"
@@ -31,6 +32,7 @@ void MatchManager::clearCurrentMatch() {
         activeDuelState.gracePeriodExpiredNoResult = false;
         activeDuelState.buttonMasherCount = 0;
         activeDuelState.matchIsReady = false;
+        boostMs_ = 0;
     }
 }
 
@@ -95,23 +97,27 @@ void MatchManager::setNeverPressed() {
     activeDuelState.gracePeriodExpiredNoResult = true;
 }
 
+void MatchManager::setBoost(int boostMs) {
+    boostMs_ = boostMs;
+}
+
 bool MatchManager::didWin() {
     if (!activeDuelState.match) {
         return false;
     }
 
-    if(player->isHunter() && activeDuelState.match->getBountyDrawTime() == 0) {
+    long hunterTime = activeDuelState.match->getHunterDrawTime();
+    long bountyTime = activeDuelState.match->getBountyDrawTime();
+
+    if(player->isHunter() && bountyTime == 0) {
         return true;
     }
 
-    if(!player->isHunter() && activeDuelState.match->getHunterDrawTime() == 0) {
+    if(!player->isHunter() && hunterTime == 0) {
         return true;
     }
 
-    
-    return player->isHunter() ? 
-    activeDuelState.match->getHunterDrawTime() < activeDuelState.match->getBountyDrawTime() :
-    activeDuelState.match->getBountyDrawTime() < activeDuelState.match->getHunterDrawTime();
+    return player->isHunter() ? hunterTime < bountyTime : bountyTime < hunterTime;
 }
 
 bool MatchManager::finalizeMatch() {
@@ -319,20 +325,20 @@ void MatchManager::initialize(Player* player, StorageInterface* storage, Quickdr
         if(activeDuelState->buttonMasherCount > 0) {
             reactionTimeMs = reactionTimeMs + activeDuelState->calculateButtonMasherPenalty();
         }
+        unsigned long duelTimeMs = reactionTimeMs;
+        int boost = matchManager->getBoost();
+        if (boost > 0) {
+            duelTimeMs = (reactionTimeMs > (unsigned long)boost)
+                ? reactionTimeMs - boost : 0;
+        }
 
-        LOG_I(MATCH_MANAGER_TAG, "Button pressed! Reaction time: %lu ms for %s", 
-                reactionTimeMs, player->isHunter() ? "Hunter" : "Bounty");
+        // Store boosted time for didWin() agreement, raw time for player stats
+        player->isHunter() ?
+        matchManager->setHunterDrawTime(duelTimeMs)
+        : matchManager->setBountyDrawTime(duelTimeMs);
+        player->addReactionTime(reactionTimeMs);
 
-        player->isHunter() ? 
-        matchManager->setHunterDrawTime(reactionTimeMs) 
-        : matchManager->setBountyDrawTime(reactionTimeMs);
-
-        LOG_I(MATCH_MANAGER_TAG, "Stored reaction time in MatchManager");
-
-        LOG_I(MATCH_MANAGER_TAG, "Broadcasting DRAW_RESULT to opponent MAC: %s",
-                MacToString(activeDuelState->opponentMac.data()));
-
-        QuickdrawCommand command(activeDuelState->opponentMac.data(), QDCommand::DRAW_RESULT, matchManager->getCurrentMatch()->getMatchId(), player->getUserID().c_str(), reactionTimeMs, player->isHunter());
+        QuickdrawCommand command(activeDuelState->opponentMac.data(), QDCommand::DRAW_RESULT, matchManager->getCurrentMatch()->getMatchId(), player->getUserID().c_str(), duelTimeMs, player->isHunter());
 
         quickdrawWirelessManager->broadcastPacket(activeDuelState->opponentMac.data(), command);
 
@@ -379,6 +385,7 @@ void MatchManager::listenForMatchEvents(const QuickdrawCommand& command) {
         }
     } else if(command.command == QDCommand::MATCH_ROLE_MISMATCH) {
         LOG_I(MATCH_MANAGER_TAG, "Received MATCH_ROLE_MISMATCH command from opponent");
+        hadRoleMismatch_ = true;
         clearCurrentMatch();
 
         return;

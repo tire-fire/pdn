@@ -13,6 +13,7 @@
 #include "mac-functions.hpp"
 #include "device/wireless-manager.hpp"
 #include "device/serial-manager.hpp"
+#include "device/device-type.hpp"
 
 enum HSCommand {
     EXCHANGE_ID = 0,
@@ -24,19 +25,23 @@ enum HSCommand {
 struct Peer {
     std::array<uint8_t, 6> macAddr;
     SerialIdentifier sid;
+    DeviceType deviceType;
+    bool isHunter = true;
 };
 
 struct HandshakeCommand {
     uint8_t wifiMacAddr[6];
     bool wifiMacAddrValid;
+    int deviceType;
+    bool isHunter;
     int command;
     SerialIdentifier sendingJack;
     SerialIdentifier receivingJack;
 
     HandshakeCommand() = delete;
 
-    HandshakeCommand(const uint8_t* macAddress, int command, SerialIdentifier sendingJack, SerialIdentifier receivingJack)
-        : wifiMacAddrValid(macAddress != nullptr), command(command), sendingJack(sendingJack), receivingJack(receivingJack) {
+    HandshakeCommand(const uint8_t* macAddress, int command, int deviceType, bool isHunter, SerialIdentifier sendingJack, SerialIdentifier receivingJack)
+        : wifiMacAddrValid(macAddress != nullptr), deviceType(deviceType), isHunter(isHunter), command(command), sendingJack(sendingJack), receivingJack(receivingJack) {
         if (macAddress) {
             memcpy(wifiMacAddr, macAddress, 6);
         } else {
@@ -51,6 +56,10 @@ public:
     ~HandshakeWirelessManager();
 
     void initialize(WirelessManager* wirelessManager);
+
+    void setLocalRole(bool isHunter);
+
+    bool getLocalIsHunter() const { return localIsHunter_; }
 
     int processHandshakeCommand(const uint8_t* macAddress, const uint8_t* data, const size_t dataLen);
 
@@ -70,6 +79,7 @@ public:
 
 private:
     WirelessManager* wirelessManager;
+    bool localIsHunter_ = true;
 
     std::map<SerialIdentifier, std::function<void(HandshakeCommand)>> callbacks;
 

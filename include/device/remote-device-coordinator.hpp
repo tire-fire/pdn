@@ -6,6 +6,7 @@
 #include "device/serial-manager.hpp"
 #include "utils/simple-timer.hpp"
 #include "wireless/handshake-wireless-manager.hpp"
+#include "device/device-type.hpp"
 
 class Device;
 class HandshakeApp;
@@ -50,7 +51,13 @@ public:
      * Returns a pointer to the peer's MAC address for the given port, or nullptr if no peer is connected.
      * Prefer this over getPortState() when only the MAC address is needed.
      */
-    const uint8_t* getPeerMac(SerialIdentifier port) const;
+    virtual const uint8_t* getPeerMac(SerialIdentifier port) const;
+
+    virtual DeviceType getPeerDeviceType(SerialIdentifier port) const;
+
+    virtual bool getPeerIsHunter(SerialIdentifier port) const;
+
+    void setLocalRole(bool isHunter);
 
 private:
     void notifyDisconnect();

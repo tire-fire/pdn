@@ -2,6 +2,8 @@
 #include "device/drivers/serial-wrapper.hpp"
 #include "device/wireless-manager.hpp"
 #include "device/device.hpp"
+#include "device/device-type.hpp"
+#include "device/device-constants.hpp"
 #include <functional>
 
 #define TAG "OUTPUT_IDLE_STATE"
@@ -33,10 +35,15 @@ void OutputIdleState::onStateDismounted(Device *PDN) {
 void OutputIdleState::onConnectionStarted(std::string remoteMac) {
     if(remoteMac.rfind(SEND_MAC_ADDRESS, 0) == 0) {
         std::string payload = remoteMac.substr(SEND_MAC_ADDRESS.length());
-        size_t portSeparatorIndex = payload.rfind('#');
+        size_t portSeparatorIndex = payload.rfind(PORT_SEPARATOR);
+        size_t deviceTypeSeparatorIndex = payload.rfind(DEVICE_TYPE_SEPARATOR);
 
         char portChar = payload[portSeparatorIndex + 1];
         int portNumber = portChar - '0';
+        size_t roleSeparatorIndex = payload.rfind(ROLE_SEPARATOR);
+        int deviceType = std::stoi(payload.substr(deviceTypeSeparatorIndex + 1, roleSeparatorIndex - deviceTypeSeparatorIndex - 1));
+        bool peerIsHunter = (roleSeparatorIndex != std::string::npos) ?
+            std::stoi(payload.substr(roleSeparatorIndex + 1)) != 0 : true;
 
         SerialIdentifier serialPort = static_cast<SerialIdentifier>(portNumber);
         std::string mac = payload.substr(0, portSeparatorIndex);
@@ -48,6 +55,8 @@ void OutputIdleState::onConnectionStarted(std::string remoteMac) {
         Peer peer;
         std::copy(macBytes, macBytes + 6, peer.macAddr.begin());
         peer.sid = serialPort;
+        peer.deviceType = static_cast<DeviceType>(deviceType);
+        peer.isHunter = peerIsHunter;
         handshakeWirelessManager->setMacPeer(SerialIdentifier::OUTPUT_JACK, peer);
         LOG_I(TAG, "Connection started with remote MAC: %s on port: %d", mac.c_str(), portNumber);
         transitionToOutputSendIdState = true;

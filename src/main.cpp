@@ -92,6 +92,14 @@ void setup() {
     Serial.begin(115200);
     while (!Serial) delay(100);
 
+    esp_reset_reason_t reason = esp_reset_reason();
+    if (reason != ESP_RST_POWERON && reason != ESP_RST_SW) {
+        Serial.printf("\n*** RESET REASON: %d ***\n", reason);
+        if (reason == ESP_RST_PANIC) Serial.println("*** PANIC/CRASH ***");
+        if (reason == ESP_RST_INT_WDT) Serial.println("*** INTERRUPT WATCHDOG ***");
+        if (reason == ESP_RST_TASK_WDT) Serial.println("*** TASK WATCHDOG ***");
+    }
+
     // Construct drivers FIRST (before anything that might use logging or timers)
     loggerDriver = new Esp32S3Logger(LOGGER_DRIVER_NAME);
     clockDriver = new Esp32S3Clock(PLATFORM_CLOCK_DRIVER_NAME);
@@ -155,7 +163,13 @@ void setup() {
     setupEspNow(quickdrawWirelessManager, remoteDebugManager, peerCommsDriver);
     
     game = new Quickdraw(player, pdn, quickdrawWirelessManager, remoteDebugManager);
-    
+
+    // Register team packet handler alongside other ESP-NOW handlers
+    peerCommsDriver->setPacketHandler(PktType::kTeamCommand,
+        [](const uint8_t* src, const uint8_t* data, size_t len, void* ctx) {
+            static_cast<Quickdraw*>(ctx)->onTeamPacketReceived(src, data, len);
+        }, game);
+
     pdn->getDisplay()->
     invalidateScreen()->
         drawImage(getImageForAllegiance(Allegiance::ALLEYCAT, ImageType::LOGO_LEFT))->

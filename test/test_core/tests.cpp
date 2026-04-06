@@ -15,6 +15,7 @@
 #include "quickdraw-tests.hpp"
 #include "quickdraw-integration-tests.hpp"
 #include "rdc-tests.hpp"
+#include "chain-tests.hpp"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -753,13 +754,6 @@ TEST_F(IdleStateTests, buttonCallbacksRegisteredAndRemoved) {
     idleButtonCallbacksRegisteredAndRemoved(this);
 }
 
-TEST_F(IdleStateTests, doesNotTransitionWithMatchButNotReady) {
-    idleDoesNotTransitionWithMatchButNotReady(this);
-}
-
-TEST_F(IdleStateTests, transitionsToDuelCountdownWhenMatchIsReady) {
-    idleTransitionsToDuelCountdownWhenMatchIsReady(this);
-}
 
 // ============================================
 // QUICKDRAW STATE TESTS - HANDSHAKE
@@ -1200,6 +1194,118 @@ TEST_F(RDCTests, getPeerMacReturnsMacWhenConnecting) {
 
 TEST_F(RDCTests, getPeerMacReturnsMacWhenConnected) {
     rdcGetPeerMacReturnsMacWhenConnected(this);
+}
+
+TEST_F(RDCTests, getPeerDeviceTypeReturnsUnknownWhenDisconnected) {
+    rdcGetPeerDeviceTypeReturnsUnknownWhenDisconnected(this);
+}
+
+TEST_F(RDCTests, getPeerDeviceTypeReturnsPDNAfterMacReceived) {
+    rdcGetPeerDeviceTypeReturnsPDNAfterMacReceived(this);
+}
+
+// ============================================
+// CHAIN TESTS
+// ============================================
+
+TEST_F(MatchManagerBoostTests, boostTurnsLossIntoWin) {
+    boostTurnsLossIntoWin(this);
+}
+
+TEST_F(SupporterReadyTests, winFromChampion) {
+    supporterReadyWinFromChampion(this);
+}
+
+TEST_F(SupporterReadyTests, ignoresWrongMac) {
+    supporterReadyIgnoresWrongMac(this);
+}
+
+TEST_F(SupporterReadyTests, buttonSendsConfirm) {
+    supporterReadyButtonSendsConfirm(this);
+}
+
+TEST_F(LoopDetectionTests, deregisterRemovesSingleSupporter) {
+    deregisterRemovesSingleSupporter(this);
+}
+
+TEST_F(LoopDetectionTests, confirmRejectedFromUnregisteredMac) {
+    confirmRejectedFromUnregisteredMac(this);
+}
+
+TEST_F(LoopDetectionTests, confirmAcceptedFromRegisteredMac) {
+    confirmAcceptedFromRegisteredMac(this);
+}
+
+TEST_F(LoopDetectionTests, rejectsInviteFromSupporterJackPeer) {
+    loopRejectsInviteFromSupporterJackPeer(this);
+}
+
+TEST_F(LoopDetectionTests, acceptsInviteFromNonSupporterJackPeer) {
+    loopAcceptsInviteFromNonSupporterJackPeer(this);
+}
+
+TEST_F(SupporterReadyTests, ringInviteNotForwardedToChampion) {
+    ringInviteNotForwardedToChampion(this);
+}
+
+TEST_F(LoopDetectionTests, supporterCountClearsOnDisconnect) {
+    supporterCountClearsOnDisconnect(this);
+}
+
+TEST_F(LoopDetectionTests, registerIsIdempotent) {
+    registerIsIdempotent(this);
+}
+
+TEST_F(LoopDetectionTests, confirmCappedAtSupporterCount) {
+    confirmCappedAtSupporterCount(this);
+}
+
+TEST_F(ChampionIdleLifecycleTests, sendsInviteWhenSupporterConnects) {
+    championSendsInviteWhenSupporterConnects(this);
+}
+
+TEST_F(ChampionIdleLifecycleTests, clearsChainWhenSupporterDisconnects) {
+    championClearsChainWhenSupporterDisconnects(this);
+}
+
+TEST_F(ChampionIdleLifecycleTests, ignoresInviteWithOwnMac) {
+    championIgnoresInviteWithOwnMacViaPacketHandler(this);
+}
+
+TEST_F(LoopDetectionTests, twoDeviceChainRegistrationFlow) {
+    twoDeviceChainRegistrationFlow(this);
+}
+
+TEST_F(ChampionIdleLifecycleTests, midChainDeviceDoesNotBecomeChampion) {
+    midChainDeviceDoesNotBecomeChampion(this);
+}
+
+TEST_F(ChampionIdleLifecycleTests, supporterDisappearsWithoutDeregister) {
+    supporterDisappearsWithoutDeregister(this);
+}
+
+TEST_F(LoopDetectionTests, twoSupportersOneDeregisters) {
+    twoSupportersOneDeregisters(this);
+}
+
+TEST_F(LoopDetectionTests, deregisterFromUnknownMacIsIgnored) {
+    deregisterFromUnknownMacIsIgnored(this);
+}
+
+TEST_F(LoopDetectionTests, supporterCanReregisterAfterDeregister) {
+    supporterCanReregisterAfterDeregister(this);
+}
+
+TEST_F(LoopDetectionTests, gameEventFromNonChampionIgnored) {
+    gameEventFromNonChampionIgnored(this);
+}
+
+TEST_F(LoopDetectionTests, noSupporterTransitionWithoutOpponent) {
+    noSupporterTransitionWithoutOpponent(this);
+}
+
+TEST_F(LoopDetectionTests, noSupporterTransitionWithOppositeRoleOpponent) {
+    noSupporterTransitionWithOppositeRoleOpponent(this);
 }
 
 // ============================================

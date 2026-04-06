@@ -28,5 +28,5 @@ private:
     SerialIdentifier jack;
 
     SimpleTimer handshakeTimer;
-    const int handshakeTimeout = 500;
+    const int handshakeTimeout = 2000;
 };

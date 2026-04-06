@@ -8,14 +8,10 @@
 struct HandshakePacket {
     int sendingJack;
     int receicingJack;
+    int deviceType;
+    int gameRole;
     int command;
 } __attribute__((packed));
-
-// Packets always travel OUTPUT<->INPUT, so the receiving port is always
-// the opposite of the sending port.
-static SerialIdentifier invertJack(SerialIdentifier jack) {
-    return jack == SerialIdentifier::OUTPUT_JACK ? SerialIdentifier::INPUT_JACK : SerialIdentifier::OUTPUT_JACK;
-}
 
 HandshakeWirelessManager::HandshakeWirelessManager() {}
 
@@ -25,6 +21,13 @@ HandshakeWirelessManager::~HandshakeWirelessManager() {
 
 void HandshakeWirelessManager::initialize(WirelessManager* wirelessManager) {
     this->wirelessManager = wirelessManager;
+}
+
+void HandshakeWirelessManager::setLocalRole(bool isHunter) {
+    localIsHunter_ = isHunter;
+    for (auto& [jack, peer] : macPeers) {
+        sendPacket(HSCommand::EXCHANGE_ID, jack);
+    }
 }
 
 void HandshakeWirelessManager::setPacketReceivedCallback(const std::function<void(HandshakeCommand)>& callback, SerialIdentifier jack) {
@@ -65,6 +68,8 @@ int HandshakeWirelessManager::sendPacket(int command, SerialIdentifier jack) {
     hsPacket.command = command;
     hsPacket.sendingJack = static_cast<int>(jack);
     hsPacket.receicingJack = static_cast<int>(it->second.sid);
+    hsPacket.deviceType = static_cast<int>(it->second.deviceType);
+    hsPacket.gameRole = localIsHunter_ ? 1 : 0;
 
     LOG_I("HWM", "Sending command %i to port %i", command, static_cast<int>(jack));
 
@@ -93,7 +98,7 @@ int HandshakeWirelessManager::processHandshakeCommand(const uint8_t* macAddress,
 
     SerialIdentifier sendingJack = static_cast<SerialIdentifier>(packet->sendingJack);
     SerialIdentifier receivingJack = static_cast<SerialIdentifier>(packet->receicingJack);
-    HandshakeCommand command(macAddress, packet->command, sendingJack, receivingJack);
+    HandshakeCommand command(macAddress, packet->command, packet->deviceType, packet->gameRole != 0, sendingJack, receivingJack);
 
     auto it = callbacks.find(receivingJack);
     if (it != callbacks.end() && it->second) {

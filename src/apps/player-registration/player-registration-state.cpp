@@ -19,7 +19,6 @@ PlayerRegistrationState::~PlayerRegistrationState() {
 
 void PlayerRegistrationState::onStateMounted(Device *PDN) {
     LOG_I(TAG, "State mounted - Starting player registration");
-
     PDN->getDisplay()->invalidateScreen()->
     setGlyphMode(FontMode::TEXT)->
     drawText("Pairing Code", 8, 16)->

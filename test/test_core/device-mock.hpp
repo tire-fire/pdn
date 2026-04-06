@@ -168,9 +168,50 @@ public:
         return PortStatus::DISCONNECTED;
     }
 
+    void setPeerDeviceType(SerialIdentifier id, DeviceType type) {
+        if (id == SerialIdentifier::OUTPUT_JACK) outputDeviceType = type;
+        else if (id == SerialIdentifier::INPUT_JACK) inputDeviceType = type;
+    }
+
+    DeviceType getPeerDeviceType(SerialIdentifier id) const override {
+        if (id == SerialIdentifier::OUTPUT_JACK) return outputDeviceType;
+        if (id == SerialIdentifier::INPUT_JACK) return inputDeviceType;
+        return DeviceType::UNKNOWN;
+    }
+
+    void setPeerIsHunter(SerialIdentifier id, bool isHunter) {
+        if (id == SerialIdentifier::OUTPUT_JACK) outputIsHunter = isHunter;
+        else if (id == SerialIdentifier::INPUT_JACK) inputIsHunter = isHunter;
+    }
+
+    bool getPeerIsHunter(SerialIdentifier id) const override {
+        if (id == SerialIdentifier::OUTPUT_JACK) return outputIsHunter;
+        if (id == SerialIdentifier::INPUT_JACK) return inputIsHunter;
+        return true;
+    }
+
+    void setPeerMac(SerialIdentifier id, const uint8_t* mac) {
+        if (id == SerialIdentifier::OUTPUT_JACK) { memcpy(outputMac, mac, 6); hasOutputMac = true; }
+        else if (id == SerialIdentifier::INPUT_JACK) { memcpy(inputMac, mac, 6); hasInputMac = true; }
+    }
+
+    const uint8_t* getPeerMac(SerialIdentifier id) const override {
+        if (id == SerialIdentifier::OUTPUT_JACK) return hasOutputMac ? outputMac : nullptr;
+        if (id == SerialIdentifier::INPUT_JACK) return hasInputMac ? inputMac : nullptr;
+        return nullptr;
+    }
+
 private:
     PortStatus outputStatus = PortStatus::DISCONNECTED;
     PortStatus inputStatus = PortStatus::DISCONNECTED;
+    DeviceType outputDeviceType = DeviceType::UNKNOWN;
+    DeviceType inputDeviceType = DeviceType::UNKNOWN;
+    bool outputIsHunter = true;
+    bool inputIsHunter = true;
+    uint8_t outputMac[6] = {};
+    uint8_t inputMac[6] = {};
+    bool hasOutputMac = false;
+    bool hasInputMac = false;
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.
@@ -254,6 +295,7 @@ public:
     MOCK_METHOD(int, begin, (), (override));
     MOCK_METHOD(void, setDeviceId, (const std::string&), (override));
     MOCK_METHOD(std::string, getDeviceId, (), (override));
+    DeviceType getDeviceType() override { return DeviceType::PDN; }
 
     // Getters return mock instances
     Display* getDisplay() override { return mockDisplay; }

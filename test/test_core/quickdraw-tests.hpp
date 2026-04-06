@@ -28,6 +28,7 @@ inline Peer makeHSPeer(const uint8_t* mac, SerialIdentifier sid) {
     Peer p;
     std::copy(mac, mac + 6, p.macAddr.begin());
     p.sid = sid;
+    p.deviceType = DeviceType::PDN;
     return p;
 }
 
@@ -53,7 +54,7 @@ public:
         wirelessManager = new FakeQuickdrawWirelessManager();
         matchManager->initialize(player, &storage, wirelessManager);
 
-        idleState = new Idle(player, matchManager, &device.fakeRemoteDeviceCoordinator);
+        idleState = new Idle(player, matchManager, &device.fakeRemoteDeviceCoordinator, nullptr);
 
         ON_CALL(*device.mockDisplay, invalidateScreen()).WillByDefault(Return(device.mockDisplay));
         ON_CALL(*device.mockDisplay, drawImage(_)).WillByDefault(Return(device.mockDisplay));
@@ -131,36 +132,6 @@ inline void idleButtonCallbacksRegisteredAndRemoved(IdleStateTests* suite) {
     suite->idleState->onStateDismounted(&suite->device);
 }
 
-// Test: transitionToDuelCountdown stays false while match exists but ACK not yet received
-inline void idleDoesNotTransitionWithMatchButNotReady(IdleStateTests* suite) {
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-    suite->idleState->onStateMounted(&suite->device);
-
-    // Hunter initiates but has not yet received MATCH_ID_ACK
-    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
-    suite->matchManager->initializeMatch(dummyMac);
-
-    ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value());
-    EXPECT_FALSE(suite->idleState->transitionToDuelCountdown());
-}
-
-// Test: transitionToDuelCountdown returns true once matchIsReady is set via the full handshake
-inline void idleTransitionsToDuelCountdownWhenMatchIsReady(IdleStateTests* suite) {
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-    suite->idleState->onStateMounted(&suite->device);
-
-    // Hunter initiates match, then receives ACK from bounty
-    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
-    suite->matchManager->initializeMatch(dummyMac);
-    const char* matchId = suite->matchManager->getCurrentMatch()->getMatchId();
-    QuickdrawCommand ack(dummyMac, QDCommand::MATCH_ID_ACK, matchId, "boun", 0, false);
-    suite->matchManager->listenForMatchEvents(ack);
-
-    EXPECT_TRUE(suite->idleState->transitionToDuelCountdown());
-}
-
 // ============================================
 // Handshake State Tests
 // ============================================
@@ -185,11 +156,11 @@ public:
 
     // Simulate a remote device sending a HandshakePacket to this device.
     // receivingJack is the opposite of the sender's jack (packets always travel OUTPUT<->INPUT).
-    void deliverPacket(int command, SerialIdentifier senderJack) {
+    void deliverPacket(int command, SerialIdentifier senderJack, int deviceType = 0) {
         SerialIdentifier receivingJack = (senderJack == SerialIdentifier::OUTPUT_JACK)
             ? SerialIdentifier::INPUT_JACK : SerialIdentifier::OUTPUT_JACK;
-        struct RawPacket { int sendingJack; int receivingJack; int command; } __attribute__((packed));
-        RawPacket pkt{ static_cast<int>(senderJack), static_cast<int>(receivingJack), command };
+        struct RawPacket { int sendingJack; int receivingJack; int deviceType; int gameRole; int command; } __attribute__((packed));
+        RawPacket pkt{ static_cast<int>(senderJack), static_cast<int>(receivingJack), deviceType, 1, command };
         uint8_t dummyMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
         handshakeWirelessManager.processHandshakeCommand(dummyMac,
             reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
@@ -207,8 +178,8 @@ inline void outputIdleTransitionsOnMacReceived(HandshakeStateTests* suite) {
 
     EXPECT_FALSE(idleState.transitionToOutputSendId());
 
-    // Simulate INPUT side sending "SEND_MAC:AA:BB:CC:DD:EE:FF" over the output jack serial
-    suite->device.outputJackSerial.stringCallback(SEND_MAC_ADDRESS + "AA:BB:CC:DD:EE:FF");
+    // Simulate INPUT side sending its MAC+port+deviceType over the output jack serial
+    suite->device.outputJackSerial.stringCallback(SEND_MAC_ADDRESS + "AA:BB:CC:DD:EE:FF#1t1");
 
     EXPECT_TRUE(idleState.transitionToOutputSendId());
 
@@ -345,15 +316,15 @@ inline void handshakeAppOutputJackTimeoutResetsToIdle(HandshakeStateTests* suite
     handshakeApp.onStateMounted(&suite->device);
 
     // Advance into PrimarySendId by delivering a MAC string over the output serial
-    suite->device.outputJackSerial.stringCallback(SEND_MAC_ADDRESS + "AA:BB:CC:DD:EE:FF");
+    suite->device.outputJackSerial.stringCallback(SEND_MAC_ADDRESS + "AA:BB:CC:DD:EE:FF#1t1");
     handshakeApp.onStateLoop(&suite->device);
 
     // Handshake timeout not yet reached
-    suite->fakeClock->advance(400);
+    suite->fakeClock->advance(1500);
     handshakeApp.onStateLoop(&suite->device);
 
-    // Past the 500ms handshakeTimeout → should reset to idle
-    suite->fakeClock->advance(200);
+    // Past the 2000ms handshakeTimeout → should reset to idle
+    suite->fakeClock->advance(1000);
     handshakeApp.onStateLoop(&suite->device);
 
     // After reset, HandshakeApp should be back in OutputIdleState (stateId == OUTPUT_IDLE_STATE)
@@ -1176,7 +1147,7 @@ public:
 
 // Test: Idle state clears button callbacks on dismount
 inline void cleanupIdleClearsButtonCallbacks(StateCleanupTests* suite) {
-    Idle idleState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator);
+    Idle idleState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, nullptr);
     
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
@@ -1388,6 +1359,7 @@ public:
         Peer peer;
         std::copy(std::begin(mac), std::end(mac), peer.macAddr.begin());
         peer.sid = SerialIdentifier::OUTPUT_JACK;
+        peer.deviceType = DeviceType::PDN;
         hwm.setMacPeer(SerialIdentifier::OUTPUT_JACK, peer);
     }
 

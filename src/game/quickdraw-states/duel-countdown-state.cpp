@@ -82,6 +82,7 @@ void DuelCountdown::onStateDismounted(Device *PDN) {
         matchManager->clearCurrentMatch();
     }
 
+    PDN->getHaptics()->setIntensity(0);
     doBattle = false;
     currentStepIndex = 0;
     countdownTimer.invalidate();

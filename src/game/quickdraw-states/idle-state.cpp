@@ -4,11 +4,14 @@
 #include "game/match-manager.hpp"
 #include "device/drivers/logger.hpp"
 #include "wireless/mac-functions.hpp"
+#include "wireless/team-packet.hpp"
+#include "game/jack-roles.hpp"
 #include "state/connect-state.hpp"
 
-Idle::Idle(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator) : ConnectState(remoteDeviceCoordinator, IDLE) {
+Idle::Idle(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, Quickdraw* quickdraw) : ConnectState(remoteDeviceCoordinator, IDLE) {
     this->matchManager = matchManager;
     this->player = player;
+    this->quickdraw_ = quickdraw;
 }
 
 Idle::~Idle() {
@@ -17,9 +20,9 @@ Idle::~Idle() {
 }
 
 void Idle::onStateMounted(Device *PDN) {
-
     // Switch to ESP-NOW mode for peer-to-peer communication
     PDN->getWirelessManager()->enablePeerCommsMode();
+    remoteDeviceCoordinator->setLocalRole(player->isHunter());
 
     AnimationConfig config;
     
@@ -52,14 +55,50 @@ void Idle::onStateMounted(Device *PDN) {
 }
 
 void Idle::onStateLoop(Device *PDN) {
+    int supporters = quickdraw_ ? quickdraw_->getSupporterCount() : 0;
+    if (supporters != lastSupporterCount_) {
+        lastSupporterCount_ = supporters;
+        statsIndex = 6;
+        displayIsDirty = true;
+    }
+
     if(displayIsDirty) {
         cycleStats(PDN);
         displayIsDirty = false;
     }
 
-    if (isConnected() && player->isHunter() && !matchInitialized) {
-        const uint8_t* peerMac = remoteDeviceCoordinator->getPeerMac(SerialIdentifier::OUTPUT_JACK);
-        if (peerMac != nullptr) {
+    SerialIdentifier sJack = supporterJack(player);
+    SerialIdentifier oJack = opponentJack(player);
+
+    bool oConnected = remoteDeviceCoordinator->getPortStatus(oJack) == PortStatus::CONNECTED;
+    bool oSameRole = oConnected && remoteDeviceCoordinator->getPeerIsHunter(oJack) == player->isHunter();
+    bool sConnected = remoteDeviceCoordinator->getPortStatus(sJack) == PortStatus::CONNECTED;
+    bool sSameRole = sConnected && remoteDeviceCoordinator->getPeerIsHunter(sJack) == player->isHunter();
+
+    const uint8_t* supporterMac = nullptr;
+    if (!oSameRole && sSameRole) {
+        supporterMac = remoteDeviceCoordinator->getPeerMac(sJack);
+    }
+    const uint8_t* myMac = PDN->getWirelessManager()->getMacAddress();
+    if (supporterMac && !inviteRetryTimer_.isRunning()) {
+        sendRegisterInvite(PDN->getPeerComms(), supporterMac, 0, myMac, player->getName().c_str());
+        inviteRetryTimer_.setTimer(INVITE_RETRY_MS);
+    } else if (supporterMac && inviteRetryTimer_.isRunning()) {
+        inviteRetryTimer_.updateTime();
+        if (inviteRetryTimer_.expired()) {
+            sendRegisterInvite(PDN->getPeerComms(), supporterMac, 0, myMac, player->getName().c_str());
+            inviteRetryTimer_.setTimer(INVITE_RETRY_MS);
+        }
+    } else if (!supporterMac && inviteRetryTimer_.isRunning()) {
+        inviteRetryTimer_.invalidate();
+        quickdraw_->clearChainState();
+    }
+
+    // Only hunters initiate duels
+    if (player->isHunter() && isConnected() && !matchInitialized) {
+        const uint8_t* peerMac = remoteDeviceCoordinator->getPeerMac(oJack);
+        static const uint8_t zeroMac[6] = {};
+        if (peerMac != nullptr && memcmp(peerMac, zeroMac, 6) != 0) {
             matchManager->initializeMatch(const_cast<uint8_t*>(peerMac));
             matchInitialized = true;
             matchInitializationTimer.setTimer(MATCH_INITIALIZATION_TIMEOUT);
@@ -69,6 +108,7 @@ void Idle::onStateLoop(Device *PDN) {
     if(matchInitializationTimer.expired()) {
         matchInitialized = false;
         matchManager->clearCurrentMatch();
+        matchManager->clearRoleMismatch();
     }
 }
 
@@ -76,6 +116,7 @@ void Idle::onStateDismounted(Device *PDN) {
     statsIndex = 0;
     matchInitializationTimer.invalidate();
     matchInitialized = false;
+    inviteRetryTimer_.invalidate();
     PDN->getDisplay()->setGlyphMode(FontMode::TEXT);
     PDN->getPrimaryButton()->removeButtonCallbacks();
     PDN->getSecondaryButton()->removeButtonCallbacks();
@@ -107,14 +148,15 @@ void Idle::cycleStats(Device *PDN) {
     } else if(statsIndex == 5) {
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)->drawText("Average",70, 20)->drawText("Reaction", 70, 35);
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_LARGE)->drawText(std::to_string(player->getAverageReactionTime()).c_str(), 80, 55);
+    } else if(statsIndex == 6) {
+        int supporters = quickdraw_ ? quickdraw_->getSupporterCount() : 0;
+        PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)->drawText("Support",70, 20);
+        PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_LARGE)->drawText(std::to_string(supporters).c_str(), 88, 40);
     }
 
     PDN->getDisplay()->render();
 
-    statsIndex++;
-    if(statsIndex > statsCount) {
-        statsIndex = 0;
-    }
+    statsIndex = (statsIndex + 1) % 7;
 }
 
 bool Idle::isPrimaryRequired() {

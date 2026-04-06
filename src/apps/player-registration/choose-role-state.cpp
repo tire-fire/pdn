@@ -32,6 +32,7 @@ void ChooseRoleState::onStateLoop(Device *PDN) {
 }
 
 void ChooseRoleState::onStateDismounted(Device *PDN) {
+    PDN->getRemoteDeviceCoordinator()->setLocalRole(player->isHunter());
     PDN->getPrimaryButton()->removeButtonCallbacks();
     PDN->getSecondaryButton()->removeButtonCallbacks();
     transitionToWelcomeMessageState = false;

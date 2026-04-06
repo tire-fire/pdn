@@ -1,6 +1,7 @@
 #include "apps/handshake/handshake-states.hpp"
 #include "game/quickdraw-resources.hpp"
 #include "device/device.hpp"
+#include "device/device-type.hpp"
 
 HandshakeConnectedState::HandshakeConnectedState(HandshakeWirelessManager* handshakeWirelessManager, SerialIdentifier jack, int stateId)
     : State(stateId), jack(jack) {
@@ -53,6 +54,13 @@ void HandshakeConnectedState::heartbeatMonitorStringCallback(const std::string& 
 void HandshakeConnectedState::listenForNotifyDisconnectCommand(HandshakeCommand command) {
     if (command.command == HSCommand::NOTIFY_DISCONNECT) {
         transitionToIdleState = true;
+    } else if (command.command == HSCommand::EXCHANGE_ID) {
+        Peer peer;
+        memcpy(peer.macAddr.data(), command.wifiMacAddr, 6);
+        peer.sid = command.sendingJack;
+        peer.deviceType = static_cast<DeviceType>(command.deviceType);
+        peer.isHunter = command.isHunter;
+        handshakeWirelessManager->setMacPeer(jack, peer);
     }
 }
 
