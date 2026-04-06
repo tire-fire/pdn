@@ -37,11 +37,43 @@ def signal_handler(sig, frame):
 
 
 # ---------------------------------------------------------------------------
+# esptool discovery
+# ---------------------------------------------------------------------------
+
+def _find_esptool():
+    """Find a working esptool command."""
+    pio_esptool = os.path.expanduser("~/.platformio/penv/bin/esptool")
+    if os.path.isfile(pio_esptool):
+        return [pio_esptool]
+    try:
+        subprocess.run([sys.executable, "-m", "esptool", "version"],
+                       capture_output=True, timeout=5)
+        return [sys.executable, "-m", "esptool"]
+    except Exception:
+        pass
+    import shutil
+    path = shutil.which("esptool") or shutil.which("esptool.py")
+    if path:
+        return [path]
+    print("Error: esptool not found. Install platformio or esptool.")
+    sys.exit(1)
+
+_ESPTOOL_CMD = None
+
+def _esptool(*args):
+    """Return a subprocess arg list that invokes esptool."""
+    global _ESPTOOL_CMD
+    if _ESPTOOL_CMD is None:
+        _ESPTOOL_CMD = _find_esptool()
+    return list(_ESPTOOL_CMD) + list(args)
+
+
+# ---------------------------------------------------------------------------
 # Port detection
 # ---------------------------------------------------------------------------
 
 def list_com_ports_with_pyserial():
-    """Return list of (port_name, description, vid, pid) for all serial ports."""
+    """Return list of (port_name, description, vid, pid) for all COM ports."""
     try:
         import serial.tools.list_ports
     except ImportError:
@@ -68,24 +100,25 @@ def is_jtag_port(port_description, vid, pid):
 
 def test_esp32_on_port(port_name):
     """Probe the port with esptool chip-id. Returns (is_esp32: bool, chip_info: str)."""
-    try:
-        result = subprocess.run(
-            _esptool("--port", port_name, "--before", "default-reset", "chip-id"),
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and "ESP32" in result.stdout:
-            out = result.stdout
-            chip = (
-                "ESP32-S3" if "ESP32-S3" in out
-                else "ESP32-C3" if "ESP32-C3" in out
-                else "ESP32-S2" if "ESP32-S2" in out
-                else "ESP32"
+    for subcmd in ("chip-id", "chip_id"):
+        try:
+            result = subprocess.run(
+                _esptool("--port", port_name, subcmd),
+                capture_output=True, text=True, timeout=5,
             )
-            return True, chip
-    except subprocess.TimeoutExpired:
-        return False, "Timeout"
-    except Exception as exc:
-        return False, str(exc)[:30]
+            if result.returncode == 0 and "ESP32" in result.stdout:
+                out = result.stdout
+                chip = (
+                    "ESP32-S3" if "ESP32-S3" in out
+                    else "ESP32-C3" if "ESP32-C3" in out
+                    else "ESP32-S2" if "ESP32-S2" in out
+                    else "ESP32"
+                )
+                return True, chip
+        except subprocess.TimeoutExpired:
+            return False, "Timeout"
+        except Exception as exc:
+            return False, str(exc)[:30]
     return False, ""
 
 
@@ -95,16 +128,6 @@ def test_esp32_on_port(port_name):
 
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x5000  # 20 KB — matches default_8MB.csv
-
-
-def _esptool(*args):
-    """Return a subprocess arg list that invokes esptool via the current Python interpreter.
-
-    Using sys.executable -m esptool avoids relying on an 'esptool' entry-point
-    on PATH, which on Windows would resolve to esptool.py and trigger an
-    "Open with" dialog if .py files have no shell association.
-    """
-    return [sys.executable, "-m", "esptool"] + list(args)
 
 
 def _run_esptool(port_name, cmd, timeout):
@@ -257,7 +280,7 @@ def main():
     print("Scanning for devices...")
     ports_info = list_com_ports_with_pyserial()
     if not ports_info:
-        print("No serial ports detected.")
+        print("No COM ports detected.")
         sys.exit(1)
 
     jtag_ports = [
