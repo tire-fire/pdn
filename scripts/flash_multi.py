@@ -18,6 +18,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 ESPRESSIF_VID = 0x303A
 ESP32S3_JTAG_PID = 0x1001
 
+
+def _find_python_with_esptool():
+    """Prefer PlatformIO's bundled Python (has esptool installed) over sys.executable."""
+    pio_python = os.path.expanduser("~/.platformio/penv/bin/python")
+    if os.path.exists(pio_python):
+        try:
+            subprocess.run(
+                [pio_python, "-c", "import esptool"],
+                check=True, capture_output=True, timeout=5,
+            )
+            return pio_python
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    return sys.executable
+
+
+PYTHON = _find_python_with_esptool()
+
 # Guards stdout so output lines from concurrent flashes don't interleave
 _print_lock = threading.Lock()
 # Set to True by the signal handler so threads can exit early
@@ -50,7 +68,7 @@ def list_com_ports_with_pyserial():
 
     ports = []
     for p in serial.tools.list_ports.comports():
-        port_name = p.device.upper()
+        port_name = p.device
         desc = p.description.upper() if p.description else ""
         ports.append((port_name, desc, p.vid, p.pid))
     return ports
@@ -71,7 +89,7 @@ def test_esp32_on_port(port_name):
     for subcmd in ("chip-id", "chip_id"):
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "esptool", "--port", port_name, subcmd],
+                [PYTHON, "-m", "esptool", "--port", port_name, subcmd],
                 capture_output=True, text=True, timeout=2,
             )
             if result.returncode == 0 and "ESP32" in result.stdout:
@@ -105,7 +123,7 @@ def _esptool(*args):
     on PATH, which on Windows would resolve to esptool.py and trigger an
     "Open with" dialog if .py files have no shell association.
     """
-    return [sys.executable, "-m", "esptool"] + list(args)
+    return [PYTHON, "-m", "esptool"] + list(args)
 
 
 def _run_esptool(port_name, cmd, timeout):
