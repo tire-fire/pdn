@@ -22,6 +22,7 @@
 #include "cli/cli-device.hpp"
 #include "cli/cli-renderer.hpp"
 #include "cli/cli-commands.hpp"
+#include "cli/cli-event-tap.hpp"
 
 // Native drivers for global instances
 #include "device/drivers/native/native-logger-driver.hpp"
@@ -178,6 +179,32 @@ static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer
 
     printf("ready devices=%zu pid=%d\n", devices.size(), (int)getpid());
     fflush(stdout);
+
+    bool eventsEnabled = true;
+    cli::EventTap::subscribe([&eventsEnabled](const cli::SimEvent& e) {
+        if (!eventsEnabled) return;
+        std::string line = "event ts=" + std::to_string(e.timestampMs);
+        if (e.deviceIndex >= 0) {
+            line += " device=" + std::to_string(e.deviceIndex);
+        }
+        line += " kind=" + e.kind;
+        for (const auto& [k, v] : e.kv) {
+            line += " " + k + "=";
+            bool needsQuote = v.find(' ') != std::string::npos || v.find('"') != std::string::npos;
+            if (needsQuote) {
+                std::string esc = v;
+                for (size_t i = 0; i < esc.size(); ++i) {
+                    if (esc[i] == '"') { esc.insert(i, "\\"); ++i; }
+                }
+                line += "\"" + esc + "\"";
+            } else {
+                line += v;
+            }
+        }
+        line += "\n";
+        fputs(line.c_str(), stdout);
+        fflush(stdout);
+    });
 
     std::string line;
     bool stdinOpen = true;
