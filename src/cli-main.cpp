@@ -176,6 +176,7 @@ std::vector<cli::DeviceInstance> createDevices(int count) {
 static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer& renderer) {
     cli::CommandProcessor commandProcessor;
     int selectedDevice = 0;
+    int pendingTicks = 0;
 
     printf("ready devices=%zu pid=%d\n", devices.size(), (int)getpid());
     fflush(stdout);
@@ -232,6 +233,30 @@ static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer
 
             if (cmd.empty()) continue;
 
+            if (cmd.rfind("tick ", 0) == 0) {
+                int ms = std::atoi(cmd.c_str() + 5);
+                if (ms <= 0) {
+                    printf("err: tick requires positive ms\n");
+                } else {
+                    pendingTicks += (ms + 32) / 33;  // ceil-divide by tick period
+                    printf("ok: %s\n", cmd.c_str());
+                }
+                fflush(stdout);
+                continue;
+            }
+            if (cmd == "events on") {
+                eventsEnabled = true;
+                printf("ok: events on\n");
+                fflush(stdout);
+                continue;
+            }
+            if (cmd == "events off") {
+                eventsEnabled = false;
+                printf("ok: events off\n");
+                fflush(stdout);
+                continue;
+            }
+
             auto result = commandProcessor.execute(cmd, devices, selectedDevice, renderer);
             std::string escaped;
             escaped.reserve(result.message.size());
@@ -254,6 +279,20 @@ static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer
         if (!stdinOpen && line.empty()) {
             g_running = false;
             break;
+        }
+
+        if (pendingTicks > 0) {
+            int extra = pendingTicks;
+            pendingTicks = 0;
+            for (int i = 0; i < extra; ++i) {
+                NativePeerBroker::getInstance().deliverPackets();
+                cli::SerialCableBroker::getInstance().transferData();
+                for (auto& device : devices) {
+                    device.pdn->loop();
+                    State* st = device.game->getCurrentState();
+                    device.updateStateHistory(st ? st->getStateId() : -1);
+                }
+            }
         }
 
         NativePeerBroker::getInstance().deliverPackets();
