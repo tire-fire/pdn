@@ -78,6 +78,9 @@ public:
         if (command == "l2" || command == "long2" || command == "longpress2") {
             return cmdButton2Long(tokens, devices, selectedDevice);
         }
+        if (command == "press") {
+            return cmdPress(tokens, devices, selectedDevice);
+        }
         if (command == "state" || command == "st") {
             return cmdState(tokens, devices, selectedDevice);
         }
@@ -249,6 +252,37 @@ private:
         return result;
     }
     
+    // press <device> primary|secondary  — named-button click
+    static CommandResult cmdPress(const std::vector<std::string>& tokens,
+                                  std::vector<DeviceInstance>& devices,
+                                  int selectedDevice) {
+        CommandResult result;
+        if (tokens.size() < 3) {
+            result.message = "Usage: press <device> primary|secondary";
+            result.success = false;
+            return result;
+        }
+        int targetDevice = findDevice(tokens[1], devices, selectedDevice);
+        if (targetDevice < 0 || targetDevice >= static_cast<int>(devices.size())) {
+            result.message = "Invalid device";
+            result.success = false;
+            return result;
+        }
+        std::string btn = tokens[2];
+        for (char& c : btn) { if (c >= 'A' && c <= 'Z') c += 32; }
+        if (btn == "primary") {
+            devices[targetDevice].primaryButtonDriver->execCallback(ButtonInteraction::CLICK);
+            result.message = "Press primary on " + devices[targetDevice].deviceId;
+        } else if (btn == "secondary") {
+            devices[targetDevice].secondaryButtonDriver->execCallback(ButtonInteraction::CLICK);
+            result.message = "Press secondary on " + devices[targetDevice].deviceId;
+        } else {
+            result.message = "Unknown button: " + tokens[2] + " (use primary or secondary)";
+            result.success = false;
+        }
+        return result;
+    }
+
     static CommandResult cmdState(const std::vector<std::string>& tokens,
                                   std::vector<DeviceInstance>& devices,
                                   int selectedDevice) {

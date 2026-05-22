@@ -2,6 +2,7 @@
 
 #include "device/drivers/driver-interface.hpp"
 #include "device/drivers/native/native-peer-broker.hpp"
+#include "cli/cli-event-tap.hpp"
 #include <map>
 #include <deque>
 #include <mutex>
@@ -88,6 +89,17 @@ public:
         entry.length = length;
         addToHistory(entry);
         
+        {
+            cli::SimEvent ev;
+            ev.timestampMs = cli::eventTimestampMs();
+            ev.deviceIndex = -1;
+            ev.kind = "packet_tx";
+            ev.kv.push_back({"src", getMacString()});
+            ev.kv.push_back({"dst", macToString(dst)});
+            ev.kv.push_back({"type", std::to_string(static_cast<int>(packetType))});
+            ev.kv.push_back({"bytes", std::to_string(length)});
+            cli::EventTap::publish(ev);
+        }
         NativePeerBroker::getInstance().sendPacket(macAddress_, dst, packetType, data, length);
         return 0; // Success
     }
@@ -160,6 +172,13 @@ public:
                  macAddress_[3], macAddress_[4], macAddress_[5]);
         return std::string(buf);
     }
+
+    static std::string macToString(const uint8_t* mac) {
+        char buf[18];
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return std::string(buf);
+    }
     
     /**
      * Get connection state as string for display.
@@ -201,13 +220,6 @@ private:
             packetHistory_.pop_front();
         }
     }
-    
-    static std::string macToString(const uint8_t* mac) {
-        char buf[18];
-        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        return std::string(buf);
-    }
 };
 
 // Implementation of broker's deliverPackets that depends on NativePeerCommsDriver
@@ -235,6 +247,16 @@ inline void NativePeerBroker::deliverPackets() {
                 if (!macEquals(mac, packet.srcMac.data())) {
                     peer->receivePacket(packet.srcMac.data(), packet.packetType,
                                        packet.data.data(), packet.data.size());
+
+                    cli::SimEvent ev;
+                    ev.timestampMs = cli::eventTimestampMs();
+                    ev.deviceIndex = -1;
+                    ev.kind = "packet_rx";
+                    ev.kv.push_back({"src", NativePeerCommsDriver::macToString(packet.srcMac.data())});
+                    ev.kv.push_back({"dst", NativePeerCommsDriver::macToString(mac.data())});
+                    ev.kv.push_back({"type", std::to_string(static_cast<int>(packet.packetType))});
+                    ev.kv.push_back({"bytes", std::to_string(packet.data.size())});
+                    cli::EventTap::publish(ev);
                 }
             }
         } else {
@@ -243,6 +265,16 @@ inline void NativePeerBroker::deliverPackets() {
             if (it != peersCopy.end()) {
                 it->second->receivePacket(packet.srcMac.data(), packet.packetType,
                                          packet.data.data(), packet.data.size());
+
+                cli::SimEvent ev;
+                ev.timestampMs = cli::eventTimestampMs();
+                ev.deviceIndex = -1;
+                ev.kind = "packet_rx";
+                ev.kv.push_back({"src", NativePeerCommsDriver::macToString(packet.srcMac.data())});
+                ev.kv.push_back({"dst", NativePeerCommsDriver::macToString(packet.dstMac.data())});
+                ev.kv.push_back({"type", std::to_string(static_cast<int>(packet.packetType))});
+                ev.kv.push_back({"bytes", std::to_string(packet.data.size())});
+                cli::EventTap::publish(ev);
             }
         }
     }

@@ -8,6 +8,7 @@
 #include <deque>
 #include <cstdio>
 #include <regex>
+#include "cli/cli-event-tap.hpp"
 
 namespace cli {
 
@@ -73,14 +74,24 @@ public:
      * @param responseBody Output: response body
      * @return HTTP status code (200, 404, 500, etc.)
      */
-    int handleRequest(const std::string& method, 
-                      const std::string& path, 
+    int handleRequest(const std::string& method,
+                      const std::string& path,
                       const std::string& body,
                       std::string& responseBody) {
-        
+
         int statusCode = 500;
         responseBody = R"({"errors":["Internal server error"]})";
-        
+
+        {
+            cli::SimEvent ev;
+            ev.timestampMs = cli::eventTimestampMs();
+            ev.deviceIndex = -1;
+            ev.kind = "http_request";
+            ev.kv.push_back({"method", method});
+            ev.kv.push_back({"path", path});
+            cli::EventTap::publish(ev);
+        }
+
         // Route the request
         if (method == "GET" && path.find("/api/players/") == 0) {
             statusCode = handleGetPlayer(path, responseBody);
@@ -100,7 +111,18 @@ public:
         entry.responseBody = responseBody;
         entry.success = (statusCode >= 200 && statusCode < 300);
         addToHistory(entry);
-        
+
+        {
+            cli::SimEvent ev;
+            ev.timestampMs = cli::eventTimestampMs();
+            ev.deviceIndex = -1;
+            ev.kind = "http_response";
+            ev.kv.push_back({"method", method});
+            ev.kv.push_back({"path", path});
+            ev.kv.push_back({"status", std::to_string(statusCode)});
+            cli::EventTap::publish(ev);
+        }
+
         return statusCode;
     }
     

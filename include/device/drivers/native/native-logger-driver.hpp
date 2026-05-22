@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device/drivers/driver-interface.hpp"
+#include "cli/cli-event-tap.hpp"
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -99,6 +100,16 @@ public:
         logBuffer_.push_back(entry);
         while (logBuffer_.size() > maxBufferSize_) {
             logBuffer_.pop_front();
+        }
+
+        if (level == LogLevel::ERROR) {
+            cli::SimEvent ev;
+            ev.timestampMs = (uint32_t)elapsed;
+            ev.deviceIndex = -1;
+            ev.kind = "error";
+            ev.kv.push_back({"tag", entry.tag});
+            ev.kv.push_back({"msg", entry.message});
+            cli::EventTap::publish(ev);
         }
 
         // Only print if not suppressed

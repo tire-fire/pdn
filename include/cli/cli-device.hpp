@@ -6,6 +6,8 @@
 #include <deque>
 #include <cstring>
 
+#include "cli/cli-event-tap.hpp"
+
 // Native drivers
 #include "device/drivers/native/native-logger-driver.hpp"
 #include "device/drivers/native/native-clock-driver.hpp"
@@ -109,11 +111,20 @@ struct DeviceInstance {
      */
     void updateStateHistory(int currentStateId) {
         if (currentStateId != lastStateId) {
+            int prev = lastStateId;
             stateHistory.push_back(currentStateId);
             while (stateHistory.size() > 4) {
                 stateHistory.pop_front();
             }
             lastStateId = currentStateId;
+
+            cli::SimEvent ev;
+            ev.timestampMs = cli::eventTimestampMs();
+            ev.deviceIndex = deviceIndex;
+            ev.kind = "state_transition";
+            ev.kv.push_back({"from", prev < 0 ? std::string("None") : getStateName(prev)});
+            ev.kv.push_back({"to", getStateName(currentStateId)});
+            cli::EventTap::publish(ev);
         }
     }
 };
@@ -148,7 +159,9 @@ public:
         instance.clockDriver = new NativeClockDriver(PLATFORM_CLOCK_DRIVER_NAME + suffix);
         instance.displayDriver = new NativeDisplayDriver(DISPLAY_DRIVER_NAME + suffix);
         instance.primaryButtonDriver = new NativeButtonDriver(PRIMARY_BUTTON_DRIVER_NAME + suffix, 0);
+        instance.primaryButtonDriver->setEventContext(deviceIndex, "primary");
         instance.secondaryButtonDriver = new NativeButtonDriver(SECONDARY_BUTTON_DRIVER_NAME + suffix, 1);
+        instance.secondaryButtonDriver->setEventContext(deviceIndex, "secondary");
         instance.lightDriver = new NativeLightStripDriver(LIGHT_DRIVER_NAME + suffix);
         instance.hapticsDriver = new NativeHapticsDriver(HAPTICS_DRIVER_NAME + suffix, 0);
         instance.serialOutDriver = new NativeSerialDriver(SERIAL_OUT_DRIVER_NAME + suffix);

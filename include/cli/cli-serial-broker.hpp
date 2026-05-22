@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "device/drivers/native/native-serial-driver.hpp"
+#include "cli/cli-event-tap.hpp"
 
 namespace cli {
 
@@ -140,9 +141,26 @@ public:
         }
         
         connections_.push_back(conn);
+
+        {
+            uint32_t ts = cli::eventTimestampMs();
+            cli::SimEvent evA;
+            evA.timestampMs = ts;
+            evA.deviceIndex = deviceA;
+            evA.kind = "cable_connected";
+            evA.kv.push_back({"peer", std::to_string(deviceB)});
+            cli::EventTap::publish(evA);
+
+            cli::SimEvent evB;
+            evB.timestampMs = ts;
+            evB.deviceIndex = deviceB;
+            evB.kind = "cable_connected";
+            evB.kv.push_back({"peer", std::to_string(deviceA)});
+            cli::EventTap::publish(evB);
+        }
         return true;
     }
-    
+
     /**
      * Disconnect two devices.
      * @return true if disconnected, false if not connected
@@ -151,7 +169,24 @@ public:
         for (auto it = connections_.begin(); it != connections_.end(); ++it) {
             if ((it->deviceA == deviceA && it->deviceB == deviceB) ||
                 (it->deviceA == deviceB && it->deviceB == deviceA)) {
+                int a = it->deviceA;
+                int b = it->deviceB;
                 connections_.erase(it);
+
+                uint32_t ts = cli::eventTimestampMs();
+                cli::SimEvent evA;
+                evA.timestampMs = ts;
+                evA.deviceIndex = a;
+                evA.kind = "cable_disconnected";
+                evA.kv.push_back({"peer", std::to_string(b)});
+                cli::EventTap::publish(evA);
+
+                cli::SimEvent evB;
+                evB.timestampMs = ts;
+                evB.deviceIndex = b;
+                evB.kind = "cable_disconnected";
+                evB.kv.push_back({"peer", std::to_string(a)});
+                cli::EventTap::publish(evB);
                 return true;
             }
         }

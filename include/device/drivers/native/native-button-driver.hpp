@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device/drivers/driver-interface.hpp"
+#include "cli/cli-event-tap.hpp"
 #include <map>
 
 // Structure to hold parameterized callback with its context
@@ -57,19 +58,30 @@ class NativeButtonDriver : public ButtonDriverInterface {
         return buttonParameterizedCallbacks.find(interactionType) != buttonParameterizedCallbacks.end();
     }
 
+    void setEventContext(int deviceIndex, const char* buttonName) {
+        eventDeviceIndex_ = deviceIndex;
+        eventButtonName_ = buttonName;
+    }
+
     /**
      * Execute any registered callback for the given interaction type.
      * This checks both non-parameterized and parameterized callbacks.
      * Parameterized callbacks are invoked with their stored context.
      */
     void execCallback(ButtonInteraction interactionType) {
-        // Try non-parameterized callback first
+        {
+            cli::SimEvent ev;
+            ev.timestampMs = cli::eventTimestampMs();
+            ev.deviceIndex = eventDeviceIndex_;
+            ev.kind = (interactionType == ButtonInteraction::LONG_PRESS) ? "button_long_press" : "button_press";
+            ev.kv.push_back({"button", eventButtonName_});
+            cli::EventTap::publish(ev);
+        }
+
         auto it = buttonCallbacks.find(interactionType);
         if (it != buttonCallbacks.end() && it->second) {
             it->second();
         }
-        
-        // Also try parameterized callback with stored context
         auto pit = buttonParameterizedCallbacks.find(interactionType);
         if (pit != buttonParameterizedCallbacks.end() && pit->second.callback) {
             pit->second.callback(pit->second.context);
@@ -86,4 +98,6 @@ class NativeButtonDriver : public ButtonDriverInterface {
     private:
     ButtonCallbackMap buttonCallbacks = ButtonCallbackMap();
     ButtonParameterizedCallbackMap buttonParameterizedCallbacks = ButtonParameterizedCallbackMap();
+    int eventDeviceIndex_ = -1;
+    const char* eventButtonName_ = "unknown";
 };

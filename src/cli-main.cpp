@@ -260,6 +260,8 @@ static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer
         cli::SerialCableBroker::getInstance().transferData();
         for (auto& device : devices) {
             device.pdn->loop();
+            State* st = device.game->getCurrentState();
+            device.updateStateHistory(st ? st->getStateId() : -1);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(33));
