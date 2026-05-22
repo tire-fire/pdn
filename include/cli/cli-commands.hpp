@@ -19,6 +19,7 @@ namespace cli {
 struct CommandResult {
     std::string message;      // Message to display to user
     bool shouldQuit = false;  // Whether the application should exit
+    bool success = true;      // False for usage errors and invalid-input paths
 };
 
 /**
@@ -109,6 +110,7 @@ public:
         }
 
         result.message = "Unknown command: " + command + " (try 'help')";
+        result.success = false;
         return result;
     }
 
@@ -159,6 +161,7 @@ private:
         CommandResult result;
         if (tokens.size() < 2) {
             result.message = "Usage: select <device_id or index>";
+            result.success = false;
             return result;
         }
         const std::string& target = tokens[1];
@@ -170,6 +173,7 @@ private:
             }
         }
         result.message = "Device not found: " + target;
+        result.success = false;
         return result;
     }
     
@@ -186,10 +190,11 @@ private:
             result.message = "Button1 click on " + devices[targetDevice].deviceId;
         } else {
             result.message = "Invalid device";
+            result.success = false;
         }
         return result;
     }
-    
+
     static CommandResult cmdButton1Long(const std::vector<std::string>& tokens,
                                         std::vector<DeviceInstance>& devices,
                                         int selectedDevice) {
@@ -203,6 +208,7 @@ private:
             result.message = "Button1 long press on " + devices[targetDevice].deviceId;
         } else {
             result.message = "Invalid device";
+            result.success = false;
         }
         return result;
     }
@@ -220,6 +226,7 @@ private:
             result.message = "Button2 click on " + devices[targetDevice].deviceId;
         } else {
             result.message = "Invalid device";
+            result.success = false;
         }
         return result;
     }
@@ -237,6 +244,7 @@ private:
             result.message = "Button2 long press on " + devices[targetDevice].deviceId;
         } else {
             result.message = "Invalid device";
+            result.success = false;
         }
         return result;
     }
@@ -256,16 +264,18 @@ private:
             result.message = dev.deviceId + ": " + getStateName(stateId);
         } else {
             result.message = "Invalid device";
+            result.success = false;
         }
         return result;
     }
-    
+
     static CommandResult cmdCable(const std::vector<std::string>& tokens,
                                   const std::vector<DeviceInstance>& devices) {
         CommandResult result;
         
         if (tokens.size() < 2) {
             result.message = "Usage: cable <devA> <devB> | cable -d <devA> <devB> | cable -l";
+            result.success = false;
             return result;
         }
         
@@ -308,12 +318,14 @@ private:
         CommandResult result;
         if (tokens.size() < 4) {
             result.message = "Usage: cable -d <deviceA> <deviceB>";
+            result.success = false;
             return result;
         }
         int devA = findDevice(tokens[2], devices, -1);
         int devB = findDevice(tokens[3], devices, -1);
         if (devA < 0 || devB < 0) {
             result.message = "Invalid device(s)";
+            result.success = false;
             return result;
         }
         if (SerialCableBroker::getInstance().disconnect(devA, devB)) {
@@ -329,16 +341,19 @@ private:
         CommandResult result;
         if (tokens.size() < 3) {
             result.message = "Usage: cable <deviceA> <deviceB>";
+            result.success = false;
             return result;
         }
         int devA = findDevice(tokens[1], devices, -1);
         int devB = findDevice(tokens[2], devices, -1);
         if (devA < 0 || devB < 0) {
             result.message = "Invalid device(s)";
+            result.success = false;
             return result;
         }
         if (devA == devB) {
             result.message = "Cannot connect device to itself";
+            result.success = false;
             return result;
         }
         if (SerialCableBroker::getInstance().connect(devA, devB)) {
@@ -347,22 +362,25 @@ private:
             result.message = "Connected " + devices[devA].deviceId + " <-> " + devices[devB].deviceId + typeStr;
         } else {
             result.message = "Failed to connect";
+            result.success = false;
         }
         return result;
     }
-    
+
     static CommandResult cmdPeer(const std::vector<std::string>& tokens,
                                  const std::vector<DeviceInstance>& devices) {
         CommandResult result;
         
         if (tokens.size() < 4) {
             result.message = "Usage: peer <src> <dst|broadcast> <type> [hexdata]";
+            result.success = false;
             return result;
         }
-        
+
         int srcDevice = findDevice(tokens[1], devices, -1);
         if (srcDevice < 0) {
             result.message = "Invalid source device: " + tokens[1];
+            result.success = false;
             return result;
         }
         
@@ -377,6 +395,7 @@ private:
             dstDevice = findDevice(tokens[2], devices, -1);
             if (dstDevice < 0) {
                 result.message = "Invalid destination device: " + tokens[2];
+                result.success = false;
                 return result;
             }
             std::string macStr = devices[dstDevice].peerCommsDriver->getMacString();
@@ -414,12 +433,14 @@ private:
         
         if (tokens.size() < 3) {
             result.message = "Usage: inject <dst> <type> [hexdata] - inject from external source";
+            result.success = false;
             return result;
         }
-        
+
         int dstDevice = findDevice(tokens[1], devices, -1);
         if (dstDevice < 0) {
             result.message = "Invalid destination device: " + tokens[1];
+            result.success = false;
             return result;
         }
         
@@ -460,6 +481,7 @@ private:
                 renderer.setDisplayMirror(false);
             } else {
                 result.message = "Usage: mirror [on|off] - toggles without argument";
+                result.success = false;
                 return result;
             }
         } else {
@@ -482,6 +504,7 @@ private:
                 renderer.setCaptions(false);
             } else {
                 result.message = "Usage: captions [on|off] - toggles without argument";
+                result.success = false;
                 return result;
             }
         } else {
@@ -506,6 +529,7 @@ private:
                 renderer.setCaptions(false);
             } else {
                 result.message = "Usage: display [on|off] - toggles without argument";
+                result.success = false;
                 return result;
             }
         } else {
@@ -535,6 +559,7 @@ private:
         }
         if (targetDevice < 0 || targetDevice >= static_cast<int>(devices.size())) {
             result.message = "Invalid device";
+            result.success = false;
             return result;
         }
         auto& dev = devices[targetDevice];
@@ -564,6 +589,7 @@ private:
         static constexpr int MAX_DEVICES = 8;
         if (devices.size() >= MAX_DEVICES) {
             result.message = "Cannot add more devices (max " + std::to_string(MAX_DEVICES) + ")";
+            result.success = false;
             return result;
         }
         
@@ -584,6 +610,7 @@ private:
                 isHunter = false;
             } else {
                 result.message = "Usage: add [hunter|bounty] - role defaults to alternating";
+                result.success = false;
                 return result;
             }
         }
@@ -631,6 +658,7 @@ private:
         // Validate target device
         if (targetDevice < 0 || targetDevice >= static_cast<int>(devices.size())) {
             result.message = "Invalid device";
+            result.success = false;
             return result;
         }
 

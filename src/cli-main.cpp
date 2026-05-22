@@ -9,6 +9,9 @@
 #include <csignal>
 #include <iostream>
 #include <string>
+#include <poll.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 // Platform abstraction
 #include "utils/simple-timer.hpp"
@@ -31,6 +34,7 @@ static constexpr int MAX_DEVICES = 8;
 
 // Global running flag for signal handling
 std::atomic<bool> g_running{true};
+static bool g_headless = false;
 
 // Command input state
 std::string g_commandBuffer;
@@ -49,7 +53,12 @@ void signalHandler(int signal) {
 int parseArgs(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        
+
+        if (arg == "--headless") {
+            g_headless = true;
+            continue;
+        }
+
         // Check for -n or --count flag
         if ((arg == "-n" || arg == "--count") && i + 1 < argc) {
             int count = std::atoi(argv[i + 1]);
@@ -70,6 +79,7 @@ int parseArgs(int argc, char** argv) {
             printf("Usage: %s [options] [device_count]\n\n", argv[0]);
             printf("Options:\n");
             printf("  -n, --count N   Create N devices (1-%d)\n", MAX_DEVICES);
+            printf("  --headless      Line-buffered REPL mode: read commands from stdin, print ok:/err: to stdout\n");
             printf("  -h, --help      Show this help message\n");
             printf("\nExamples:\n");
             printf("  %s           Interactive prompt for device count\n", argv[0]);
@@ -126,34 +136,107 @@ int promptDeviceCount() {
 std::vector<cli::DeviceInstance> createDevices(int count) {
     std::vector<cli::DeviceInstance> devices;
     devices.reserve(count);
-    
-    printf("\n\033[1;32m");  // Bold green
-    printf("Creating %d device%s...\n", count, count == 1 ? "" : "s");
-    printf("\033[0m");
-    
+
+    if (!g_headless) {
+        printf("\n\033[1;32m");  // Bold green
+        printf("Creating %d device%s...\n", count, count == 1 ? "" : "s");
+        printf("\033[0m");
+    }
+
     for (int i = 0; i < count; i++) {
         // All hunters so SerialCableBroker uses PRIMARY→AUXILIARY cabling
         // uniformly; alternating roles would double-book PRIMARY jacks.
         bool isHunter = true;
         devices.push_back(cli::DeviceFactory::createDevice(i, isHunter));
-        
-        printf("  Device %s: %s\n", 
-               devices.back().deviceId.c_str(),
-               isHunter ? "Hunter" : "Bounty");
+
+        if (!g_headless) {
+            printf("  Device %s: %s\n",
+                   devices.back().deviceId.c_str(),
+                   isHunter ? "Hunter" : "Bounty");
+        }
     }
-    
-    printf("\n");
-    printf("Press any key to start simulation...\n");
-    fflush(stdout);
-    
-    // Wait for keypress (blocking read)
-    #ifndef _WIN32
-    getchar();
-    #else
-    _getch();
-    #endif
-    
+
+    if (!g_headless) {
+        printf("\n");
+        printf("Press any key to start simulation...\n");
+        fflush(stdout);
+
+        // Wait for keypress (blocking read)
+        #ifndef _WIN32
+        getchar();
+        #else
+        _getch();
+        #endif
+    }
+
     return devices;
+}
+
+static void runHeadless(std::vector<cli::DeviceInstance>& devices, cli::Renderer& renderer) {
+    cli::CommandProcessor commandProcessor;
+    int selectedDevice = 0;
+
+    printf("ready devices=%zu pid=%d\n", devices.size(), (int)getpid());
+    fflush(stdout);
+
+    std::string line;
+    bool stdinOpen = true;
+
+    while (g_running) {
+        struct pollfd pfd{};
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        int pr = poll(&pfd, 1, 0);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            char buf[1024];
+            ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) {
+                stdinOpen = false;
+            } else {
+                line.append(buf, buf + n);
+            }
+        }
+
+        size_t nl;
+        while ((nl = line.find('\n')) != std::string::npos) {
+            std::string cmd = line.substr(0, nl);
+            line.erase(0, nl + 1);
+            if (!cmd.empty() && cmd.back() == '\r') cmd.pop_back();
+
+            if (cmd.empty()) continue;
+
+            auto result = commandProcessor.execute(cmd, devices, selectedDevice, renderer);
+            std::string escaped;
+            escaped.reserve(result.message.size());
+            for (char c : result.message) {
+                if (c == '\n') { escaped += "\\n"; }
+                else if (c == '\r') { /* drop */ }
+                else { escaped += c; }
+            }
+            printf("%s: %s\n", result.success ? "ok" : "err", escaped.c_str());
+            fflush(stdout);
+
+            if (result.shouldQuit) {
+                g_running = false;
+                break;
+            }
+        }
+
+        if (!g_running) break;
+
+        if (!stdinOpen && line.empty()) {
+            g_running = false;
+            break;
+        }
+
+        NativePeerBroker::getInstance().deliverPackets();
+        cli::SerialCableBroker::getInstance().transferData();
+        for (auto& device : devices) {
+            device.pdn->loop();
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
 }
 
 int main(int argc, char** argv) {
@@ -175,123 +258,139 @@ int main(int argc, char** argv) {
     // Initialize the ID generator singleton
     IdGenerator::initialize(globalClock->milliseconds());
     
-    // Show header (before raw mode)
-    cli::Terminal::clearScreen();
-    cli::printHeader();
-    
     // Determine device count from args or prompt
     int deviceCount = parseArgs(argc, argv);
-    if (deviceCount < 0) {
-        deviceCount = promptDeviceCount();
-    }
-    
-    // Create devices
-    std::vector<cli::DeviceInstance> devices = createDevices(deviceCount);
-    
-    // Now configure terminal for non-blocking input (Unix only)
-    #ifndef _WIN32
-    struct termios oldTermios = cli::Terminal::enableRawMode();
-    #endif
-    
-    // Set up display for simulation
-    cli::Terminal::clearScreen();
-    cli::Terminal::hideCursor();
-    cli::printHeader();
-    
-    // Create CLI components
+
+    // Renderer is constructed once and shared by both branches.
+    // In headless mode it is never repainted but commands that need it
+    // (state, display, mirror, captions) receive a valid reference.
     cli::Renderer renderer;
-    cli::CommandProcessor commandProcessor;
-    
-    // Show initial help hint
-    g_commandResult = "Ready! Use LEFT/RIGHT to select device, UP/DOWN for buttons. Type 'help' for commands.";
-    
-    // Main loop
-    while (g_running) {
-        // Handle input (non-blocking)
-        int key = cli::Terminal::readKey();
-        while (key != static_cast<int>(cli::Key::NONE)) {
-            if (key == static_cast<int>(cli::Key::ARROW_UP)) {
-                // Up arrow = primary button click on selected device
-                if (g_selectedDevice >= 0 && g_selectedDevice < static_cast<int>(devices.size())) {
-                    devices[g_selectedDevice].primaryButtonDriver->execCallback(ButtonInteraction::CLICK);
-                    g_commandResult = "Button1 click on " + devices[g_selectedDevice].deviceId;
-                }
-            } else if (key == static_cast<int>(cli::Key::ARROW_DOWN)) {
-                // Down arrow = secondary button click on selected device
-                if (g_selectedDevice >= 0 && g_selectedDevice < static_cast<int>(devices.size())) {
-                    devices[g_selectedDevice].secondaryButtonDriver->execCallback(ButtonInteraction::CLICK);
-                    g_commandResult = "Button2 click on " + devices[g_selectedDevice].deviceId;
-                }
-            } else if (key == static_cast<int>(cli::Key::ARROW_LEFT)) {
-                // Left arrow = select previous device
-                if (g_selectedDevice > 0) {
-                    g_selectedDevice--;
-                    g_commandResult = "Selected device " + devices[g_selectedDevice].deviceId;
-                }
-            } else if (key == static_cast<int>(cli::Key::ARROW_RIGHT)) {
-                // Right arrow = select next device
-                if (g_selectedDevice < static_cast<int>(devices.size()) - 1) {
-                    g_selectedDevice++;
-                    g_commandResult = "Selected device " + devices[g_selectedDevice].deviceId;
-                }
-            } else if (key == '\n' || key == '\r') {
-                // Execute command on Enter
-                auto result = commandProcessor.execute(g_commandBuffer, devices, g_selectedDevice, renderer);
-                g_commandResult = result.message;
-                if (result.shouldQuit) {
-                    g_running = false;
-                }
-                g_commandBuffer.clear();
-            } else if (key == 127 || key == '\b') {
-                // Backspace - remove last character
-                if (!g_commandBuffer.empty()) {
-                    g_commandBuffer.pop_back();
-                }
-            } else if (key == 27) {
-                // Escape - clear command buffer
-                g_commandBuffer.clear();
-                g_commandResult.clear();
-            } else if (key == 3) {
-                // Ctrl+C - quit
-                g_running = false;
-            } else if (key >= 32 && key < 127) {
-                // Printable character - add to buffer
-                g_commandBuffer += static_cast<char>(key);
-            }
-            key = cli::Terminal::readKey();
+
+    if (g_headless) {
+        if (deviceCount < 0) {
+            fprintf(stderr, "headless mode requires a device count argument\n");
+            return 1;
         }
-        
-        // Deliver pending peer-to-peer messages
-        NativePeerBroker::getInstance().deliverPackets();
-        
-        // Transfer serial data between connected devices
-        cli::SerialCableBroker::getInstance().transferData();
-        
-        // Update all devices
+        std::vector<cli::DeviceInstance> devices = createDevices(deviceCount);
+        runHeadless(devices, renderer);
         for (auto& device : devices) {
-            device.pdn->loop();
+            cli::DeviceFactory::destroyDevice(device);
         }
-        
-        // Render UI
-        renderer.renderUI(devices, g_commandResult, g_commandBuffer, g_selectedDevice);
-        
-        // Sleep to maintain ~30 FPS update rate
-        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    } else {
+        // Show header (before raw mode)
+        cli::Terminal::clearScreen();
+        cli::printHeader();
+
+        if (deviceCount < 0) {
+            deviceCount = promptDeviceCount();
+        }
+
+        // Create devices
+        std::vector<cli::DeviceInstance> devices = createDevices(deviceCount);
+
+        // Now configure terminal for non-blocking input (Unix only)
+        #ifndef _WIN32
+        struct termios oldTermios = cli::Terminal::enableRawMode();
+        #endif
+
+        // Set up display for simulation
+        cli::Terminal::clearScreen();
+        cli::Terminal::hideCursor();
+        cli::printHeader();
+
+        cli::CommandProcessor commandProcessor;
+
+        // Show initial help hint
+        g_commandResult = "Ready! Use LEFT/RIGHT to select device, UP/DOWN for buttons. Type 'help' for commands.";
+
+        // Main loop
+        while (g_running) {
+            // Handle input (non-blocking)
+            int key = cli::Terminal::readKey();
+            while (key != static_cast<int>(cli::Key::NONE)) {
+                if (key == static_cast<int>(cli::Key::ARROW_UP)) {
+                    // Up arrow = primary button click on selected device
+                    if (g_selectedDevice >= 0 && g_selectedDevice < static_cast<int>(devices.size())) {
+                        devices[g_selectedDevice].primaryButtonDriver->execCallback(ButtonInteraction::CLICK);
+                        g_commandResult = "Button1 click on " + devices[g_selectedDevice].deviceId;
+                    }
+                } else if (key == static_cast<int>(cli::Key::ARROW_DOWN)) {
+                    // Down arrow = secondary button click on selected device
+                    if (g_selectedDevice >= 0 && g_selectedDevice < static_cast<int>(devices.size())) {
+                        devices[g_selectedDevice].secondaryButtonDriver->execCallback(ButtonInteraction::CLICK);
+                        g_commandResult = "Button2 click on " + devices[g_selectedDevice].deviceId;
+                    }
+                } else if (key == static_cast<int>(cli::Key::ARROW_LEFT)) {
+                    // Left arrow = select previous device
+                    if (g_selectedDevice > 0) {
+                        g_selectedDevice--;
+                        g_commandResult = "Selected device " + devices[g_selectedDevice].deviceId;
+                    }
+                } else if (key == static_cast<int>(cli::Key::ARROW_RIGHT)) {
+                    // Right arrow = select next device
+                    if (g_selectedDevice < static_cast<int>(devices.size()) - 1) {
+                        g_selectedDevice++;
+                        g_commandResult = "Selected device " + devices[g_selectedDevice].deviceId;
+                    }
+                } else if (key == '\n' || key == '\r') {
+                    // Execute command on Enter
+                    auto result = commandProcessor.execute(g_commandBuffer, devices, g_selectedDevice, renderer);
+                    g_commandResult = result.message;
+                    if (result.shouldQuit) {
+                        g_running = false;
+                    }
+                    g_commandBuffer.clear();
+                } else if (key == 127 || key == '\b') {
+                    // Backspace - remove last character
+                    if (!g_commandBuffer.empty()) {
+                        g_commandBuffer.pop_back();
+                    }
+                } else if (key == 27) {
+                    // Escape - clear command buffer
+                    g_commandBuffer.clear();
+                    g_commandResult.clear();
+                } else if (key == 3) {
+                    // Ctrl+C - quit
+                    g_running = false;
+                } else if (key >= 32 && key < 127) {
+                    // Printable character - add to buffer
+                    g_commandBuffer += static_cast<char>(key);
+                }
+                key = cli::Terminal::readKey();
+            }
+
+            // Deliver pending peer-to-peer messages
+            NativePeerBroker::getInstance().deliverPackets();
+
+            // Transfer serial data between connected devices
+            cli::SerialCableBroker::getInstance().transferData();
+
+            // Update all devices
+            for (auto& device : devices) {
+                device.pdn->loop();
+            }
+
+            // Render UI
+            renderer.renderUI(devices, g_commandResult, g_commandBuffer, g_selectedDevice);
+
+            // Sleep to maintain ~30 FPS update rate
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+
+        // Restore terminal settings and cursor
+        cli::Terminal::showCursor();
+
+        // Move cursor below the UI for clean shutdown message
+        printf("\n\nShutting down...\n");
+
+        for (auto& device : devices) {
+            cli::DeviceFactory::destroyDevice(device);
+        }
     }
-    
-    // Restore terminal settings and cursor
-    cli::Terminal::showCursor();
-    
-    // Move cursor below the UI for clean shutdown message
-    printf("\n\nShutting down...\n");
-    
-    for (auto& device : devices) {
-        cli::DeviceFactory::destroyDevice(device);
-    }
-    
+
     delete globalLogger;
     delete globalClock;
-    
+
     return 0;
 }
 
