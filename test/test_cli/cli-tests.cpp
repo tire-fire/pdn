@@ -9,6 +9,7 @@
 // CLI-specific test headers
 #include "cli-broker-tests.hpp"
 #include "cli-http-server-tests.hpp"
+#include "event-tap-tests.hpp"
 #include "native-driver-tests.hpp"
 
 // ============================================
@@ -409,6 +410,22 @@ TEST_F(CliCommandTestSuite, RebootFromLaterState) {
 
 TEST_F(CliCommandTestSuite, RebootClearsHistory) {
     cliCommandRebootClearsHistory(this);
+}
+
+// ============================================
+// EVENT TAP TESTS
+// ============================================
+
+TEST_F(EventTapTestSuite, DeliversPublishedEventsToSubscribers) {
+    eventTapDeliversPublishedEventsToSubscribers(this);
+}
+
+TEST_F(EventTapTestSuite, DeliversToMultipleSubscribers) {
+    eventTapDeliversToMultipleSubscribers(this);
+}
+
+TEST_F(EventTapTestSuite, SubscribeAfterPublishGetsOnlyFutureEvents) {
+    eventTapSubscribeAfterPublishGetsOnlyFutureEvents(this);
 }
 
 // ============================================
