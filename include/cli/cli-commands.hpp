@@ -111,6 +111,9 @@ public:
         if (command == "role" || command == "roles") {
             return cmdRole(tokens, devices, selectedDevice);
         }
+        if (command == "http") {
+            return cmdHttp(tokens, devices);
+        }
 
         result.message = "Unknown command: " + command + " (try 'help')";
         result.success = false;
@@ -658,6 +661,34 @@ private:
         
         result.message = "Added " + devices.back().deviceId + 
                          " (" + (isHunter ? "Hunter" : "Bounty") + ") - now selected";
+        return result;
+    }
+
+    // http online|offline — toggle mock WiFi connectivity on all devices
+    static CommandResult cmdHttp(const std::vector<std::string>& tokens,
+                                 std::vector<DeviceInstance>& devices) {
+        CommandResult result;
+        if (tokens.size() < 2) {
+            result.message = "Usage: http online|offline";
+            result.success = false;
+            return result;
+        }
+        std::string mode = tokens[1];
+        for (char& c : mode) { if (c >= 'A' && c <= 'Z') c += 32; }
+        bool online;
+        if (mode == "online") {
+            online = true;
+        } else if (mode == "offline") {
+            online = false;
+        } else {
+            result.message = "Usage: http online|offline";
+            result.success = false;
+            return result;
+        }
+        for (auto& dev : devices) {
+            dev.httpClientDriver->setConnected(online);
+        }
+        result.message = std::string("HTTP ") + (online ? "online" : "offline");
         return result;
     }
 

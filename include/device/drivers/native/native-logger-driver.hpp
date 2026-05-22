@@ -104,7 +104,7 @@ public:
 
         if (level == LogLevel::ERROR) {
             cli::SimEvent ev;
-            ev.timestampMs = (uint32_t)elapsed;
+            ev.timestampMs = cli::eventTimestampMs();
             ev.deviceIndex = -1;
             ev.kind = "error";
             ev.kv.push_back({"tag", entry.tag});

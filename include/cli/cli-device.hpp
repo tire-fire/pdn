@@ -122,7 +122,7 @@ struct DeviceInstance {
             ev.timestampMs = cli::eventTimestampMs();
             ev.deviceIndex = deviceIndex;
             ev.kind = "state_transition";
-            ev.kv.push_back({"from", prev < 0 ? std::string("None") : getStateName(prev)});
+            ev.kv.push_back({"from", getStateName(prev)});
             ev.kv.push_back({"to", getStateName(currentStateId)});
             cli::EventTap::publish(ev);
         }
