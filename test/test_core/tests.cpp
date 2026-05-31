@@ -10,6 +10,8 @@
 #include "player-tests.hpp"
 #include "match-tests.hpp"
 #include "utility-tests.hpp"
+#include "crc16-tests.hpp"
+#include "wireless-transport-tests.hpp"
 #include "match-manager-tests.hpp"
 #include "integration-tests.hpp"
 #include "quickdraw-tests.hpp"

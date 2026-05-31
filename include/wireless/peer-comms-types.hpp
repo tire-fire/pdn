@@ -20,8 +20,17 @@ enum class PktType : uint8_t
     kShootoutCommandAck = 12,
     kSymbolMatchCommand = 13,
     kFdnConnect = 14,
+    kAck = 15,
     kNumPacketTypes //Not a real packet type, DO NOT USE
 };
+
+// Generic ack for the reliable-delivery transport (resender / wireless-transport).
+struct AckPayload
+{
+    uint8_t originalType;
+    uint8_t subType;
+    uint8_t seqId;
+} __attribute__((packed));
 
 struct DataPktHdr
 {
