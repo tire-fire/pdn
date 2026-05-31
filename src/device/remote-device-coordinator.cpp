@@ -201,8 +201,14 @@ void RemoteDeviceCoordinator::serviceConnectivity(unsigned long now) {
     for (SerialIdentifier port : {SerialIdentifier::INPUT_JACK, SerialIdentifier::OUTPUT_JACK}) {
         const uint8_t idx = portIndex(port);
         const unsigned long baseline = lastHelloRxMs_[idx];
+        // baseline can briefly exceed `now`: the RX path stamps lastHelloRxMs_
+        // from another task and may land between the `now` capture at the top of
+        // serviceConnectivity and this read. A HELLO that recent means the link
+        // is alive, so clamp to gap 0 instead of letting unsigned subtraction
+        // underflow to ~UINT32_MAX and fire a false silent-death.
+        const unsigned long gap = baseline >= now ? 0 : now - baseline;
         const bool silentLinkExpired =
-            baseline != 0 && now - baseline > helloSilentLinkMs_;
+            baseline != 0 && gap > helloSilentLinkMs_;
         bool gpioDisconnected = false;
         if (auto* sm = pdn_ ? pdn_->getSerialManager() : nullptr) {
             HWSerialWrapper* serial =
@@ -213,7 +219,7 @@ void RemoteDeviceCoordinator::serviceConnectivity(unsigned long now) {
         }
         if (gpioDisconnected || silentLinkExpired) {
             LOG_D(TAG, "JACKDEAD jack=%d reason=%s gap=%lu", (int)idx,
-                  gpioDisconnected ? "gpio" : "silent", now - baseline);
+                  gpioDisconnected ? "gpio" : "silent", gap);
             DeferredPacket ev;
             ev.kind = DeferredPacket::JACK_SILENT;
             ev.jack = port;
