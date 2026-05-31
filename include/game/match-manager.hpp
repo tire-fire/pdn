@@ -144,11 +144,27 @@ public:
 
     void sendNeverPressed(unsigned long pityTime);
 
-    // For testing purposes only DO NOT USE IN PRODUCTION
-    void setReceivedDrawResult();
+    void voidCurrentMatch();
+    bool isVoided() const {
+        return activeDuelState.match.has_value() && activeDuelState.match->isVoided();
+    }
+
+    // Shootout (SHT-prefixed) matches are venue-local: they never persist or
+    // upload, so they must not touch lifetime career stats either. Gates the
+    // same way finalizeMatch() gates persistence, keeping the two consistent.
+    bool currentMatchIsShootout() const;
+
+    // A reliable send is abandoned only after exhausting its retry budget.
+    // Only DRAW_RESULT (sent when we pressed) and NEVER_PRESSED (sent when we
+    // didn't) go reliably, so hasPressedButton identifies which was lost: a
+    // lost DRAW_RESULT means the opponent never learned our time, so void; a
+    // lost NEVER_PRESSED is harmless since our loss is already recorded locally.
+    void onReliableSendAbandoned();
+
+    // Marks that this device pressed its button. Public because the button-push
+    // callback (getDuelButtonPush) is a free function with no access to the
+    // private duel state; every other duel-state transition is internal.
     void setReceivedButtonPush();
-    void setNeverPressed();
-    void setOpponentNeverPressed() { activeDuelState.opponentNeverPressed = true; }
 
 
 private:

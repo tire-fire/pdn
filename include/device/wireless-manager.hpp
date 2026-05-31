@@ -160,7 +160,7 @@ public:
             LOG_I(WM_TAG, "Auto-switching to WiFi mode for HTTP request");
             enableWifiMode();
         }
-        
+
         // Note: We queue the request even if not fully connected yet,
         // the HTTP client will process it once connection is established
         return httpClient->queueRequest(request);

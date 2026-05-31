@@ -1,5 +1,5 @@
 #include "game/quickdraw-states.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include "game/quickdraw-resources.hpp"
 #include "device/device.hpp"
 #include "device/drivers/logger.hpp"
@@ -7,10 +7,10 @@
 
 #define TAG "SupporterReady"
 
-SupporterReady::SupporterReady(Player *player, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager)
+SupporterReady::SupporterReady(Player *player, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager)
     : ConnectState(remoteDeviceCoordinator, SUPPORTER_READY) {
     this->player = player;
-    this->chainDuelManager = chainDuelManager;
+    this->chainManager = chainManager;
 }
 
 SupporterReady::~SupporterReady() {
@@ -61,9 +61,9 @@ void SupporterReady::onStateMounted(Device *PDN) {
     auto onSupporterPress = [](void *ctx) {
         auto* self = static_cast<SupporterReady*>(ctx);
         if (!self || !self->buttonArmed || self->hasConfirmed) return;
-        if (self->chainDuelManager == nullptr) return;
+        if (self->chainManager == nullptr) return;
 
-        self->chainDuelManager->sendConfirm();
+        self->chainManager->sendConfirm();
 
         self->hasConfirmed = true;
         self->displayIsDirty = true;
@@ -75,7 +75,19 @@ void SupporterReady::onStateMounted(Device *PDN) {
 }
 
 void SupporterReady::onStateLoop(Device *PDN) {
-    if (chainDuelManager == nullptr || !chainDuelManager->isSupporter()) {
+    if (chainManager == nullptr || !chainManager->isSupporter()) {
+        transitionToIdleFlag = true;
+    }
+    // A closed loop means a shootout is forming on every ring member. A
+    // same-role-adjacent member is still a "supporter" (isSupporter stays
+    // true) and would otherwise sit here until a CONFIRM arrives — but no
+    // CONFIRM comes until someone presses confirm, and they can't reach the
+    // proposal screen to do so. Leave for Idle so the Idle→ShootoutProposal
+    // gate fires; the ring intent (tournament) supersedes the linear-chain
+    // supporter role. Gating on isInStableLoop is what keeps this exit from
+    // toggling: a view without isInStableLoop gives Idle no valid transition
+    // to ShootoutProposal, so it would bounce straight back to SupporterReady.
+    if (chainManager && chainManager->isInStableLoop()) {
         transitionToIdleFlag = true;
     }
 
@@ -143,9 +155,8 @@ void SupporterReady::onStateDismounted(Device *PDN) {
     PDN->getDisplay()->setGlyphMode(FontMode::TEXT);
 }
 
-// Runs on the ESP-NOW WiFi task on hardware. Touch only atomic fields here;
-// onStateLoop (main task) observes lastResult transitions and manages the
-// non-atomic resultClearTimer.
+// Touch only atomic fields here; onStateLoop (main task) observes lastResult
+// transitions and manages the non-atomic resultClearTimer.
 void SupporterReady::onChainGameEventReceived(uint8_t event_type, const uint8_t* senderMac) {
     (void)senderMac;
     ChainGameEventType et = static_cast<ChainGameEventType>(event_type);

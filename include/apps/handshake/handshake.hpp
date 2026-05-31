@@ -1,32 +1,34 @@
 #pragma once
 
-#include "state/state-machine.hpp"
-#include "apps/handshake/handshake-states.hpp"
-#include "game/player.hpp"
-#include "device/device.hpp"
 #include "device/serial-manager.hpp"
+#include "device/serial-frame-demuxer.hpp"
 
-constexpr int HANDSHAKE_APP_ID = 2;
-
-class HandshakeApp : public StateMachine {
+class HandshakeApp {
 public:
-    HandshakeApp(HandshakeWirelessManager* handshakeWirelessManager, SerialIdentifier jack);
-    ~HandshakeApp();
+    explicit HandshakeApp(SerialIdentifier jack);
 
-    void onStateMounted(Device *PDN) override;
-    void onStateLoop(Device *PDN) override;
-    void onStateDismounted(Device *PDN) override;
-    void populateStateMap() override;
+    // Install the byte demuxer's raw-bytes callback on the serial manager for
+    // this jack. The demuxer runs on the UART event task via this callback.
+    void start(SerialManager* serialManager);
+
+    // Defer the demuxer reset to the UART event task: clearing the parser's
+    // buffers synchronously would race feed() on the event task.
+    void resetDemuxer() { demuxer_.requestReset(); }
+
+    // Register a handler for validated binary roster frames. Bound by RDC
+    // (or by tests). Forwarded to the byte demuxer.
+    void setBinaryFrameHandler(BinaryFrameHandler cb) { demuxer_.setBinaryFrameHandler(std::move(cb)); }
+
+    // Field-telemetry hooks for the byte-level parser; RDC binds these to its
+    // RosterStats counters, tests can bind to inspect. Both default to no-op.
+    void setCrcFailHandler(SerialFrameDemuxer::ParserEventHandler cb) { demuxer_.setCrcFailHandler(std::move(cb)); }
+    void setParserResyncHandler(SerialFrameDemuxer::ParserEventHandler cb) { demuxer_.setParserResyncHandler(std::move(cb)); }
 
 private:
-    void createOutputJackStateMap();
-    void createInputJackStateMap();
+    SerialIdentifier jack_;
 
-    void resetApp(Device *PDN);
-
-    HandshakeWirelessManager* handshakeWirelessManager;
-    SerialIdentifier jack;
-
-    SimpleTimer handshakeTimer;
-    const int handshakeTimeout = 500;
+    // Owns the byte-stream parser. Fed on the UART event task via the serial
+    // wrapper's bytes callback; requestReset() is called from the main loop on
+    // jack teardown.
+    SerialFrameDemuxer demuxer_;
 };

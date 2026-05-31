@@ -25,101 +25,60 @@ public:  // Public for test function access
     void SetUp() override {
         driver_ = new NativeSerialDriver("TestSerial");
     }
-    
+
     void TearDown() override {
         delete driver_;
     }
-    
+
     NativeSerialDriver* driver_;
 };
 
 // Test: Output buffer has max size limit
 void serialDriverOutputBufferMaxSize(NativeSerialDriverTestSuite* suite) {
-    // Write a very long message
-    std::string longMsg(300, 'X');
-    suite->driver_->println(longMsg);
-    
+    // Write a very long byte burst
+    std::vector<uint8_t> longMsg(300, 'X');
+    suite->driver_->writeBytes(longMsg.data(), longMsg.size());
+
     // Should be capped at max size
     ASSERT_LE(suite->driver_->getOutputBufferSize(), NativeSerialDriver::MAX_OUTPUT_BUFFER_SIZE);
-}
-
-// Test: Input queue enforces FIFO limits
-void serialDriverInputQueueFIFO(NativeSerialDriverTestSuite* suite) {
-    // Inject more than max queue size
-    for (int i = 0; i < 50; i++) {
-        suite->driver_->injectInput("MSG" + std::to_string(i));
-    }
-    
-    // Queue should be capped
-    ASSERT_LE(suite->driver_->getInputQueueSize(), NativeSerialDriver::MAX_INPUT_QUEUE_SIZE);
 }
 
 // Test: Available for write reflects buffer state
 void serialDriverAvailableForWrite(NativeSerialDriverTestSuite* suite) {
     int initialCapacity = suite->driver_->availableForWrite();
     ASSERT_GT(initialCapacity, 0);
-    
+
     // Write something
-    suite->driver_->print('X');
-    
+    uint8_t b = 'X';
+    suite->driver_->writeBytes(&b, 1);
+
     int newCapacity = suite->driver_->availableForWrite();
     ASSERT_LT(newCapacity, initialCapacity);
 }
 
-// Test: Message history is tracked
-void serialDriverTracksHistory(NativeSerialDriverTestSuite* suite) {
-    const char* msg = "TestMessage";
-    suite->driver_->println(const_cast<char*>(msg));
-    
-    const auto& sentHistory = suite->driver_->getSentHistory();
-    ASSERT_GE(sentHistory.size(), 1);
-    ASSERT_EQ(sentHistory.back(), "TestMessage");
-    
-    suite->driver_->injectInput("ReceivedMsg");
-    
-    const auto& receivedHistory = suite->driver_->getReceivedHistory();
-    ASSERT_GE(receivedHistory.size(), 1);
-}
-
 // Test: Clear output clears buffer
 void serialDriverClearOutput(NativeSerialDriverTestSuite* suite) {
-    const char* msg = "TestMessage";
-    suite->driver_->println(const_cast<char*>(msg));
+    uint8_t msg[] = {'T', 'e', 's', 't'};
+    suite->driver_->writeBytes(msg, sizeof(msg));
     ASSERT_GT(suite->driver_->getOutputBufferSize(), 0);
-    
+
     suite->driver_->clearOutput();
     ASSERT_EQ(suite->driver_->getOutputBufferSize(), 0);
 }
 
-// Test: Callback is invoked on input
+// Test: Byte callback is invoked on injected input
 void serialDriverCallbackInvoked(NativeSerialDriverTestSuite* suite) {
-    bool callbackCalled = false;
-    std::string receivedMsg;
-    
-    suite->driver_->setStringCallback([&](const std::string& msg) {
-        callbackCalled = true;
-        receivedMsg = msg;
+    std::vector<uint8_t> received;
+    suite->driver_->setBytesCallback([&](const uint8_t* data, size_t len) {
+        for (size_t i = 0; i < len; ++i) received.push_back(data[i]);
     });
-    
-    suite->driver_->injectInput("CallbackTest");
-    
-    ASSERT_TRUE(callbackCalled);
-    ASSERT_EQ(receivedMsg, "CallbackTest");
-}
 
-// Test: Framing is stripped on injection
-void serialDriverStripsFraming(NativeSerialDriverTestSuite* suite) {
-    std::string receivedMsg;
-    
-    suite->driver_->setStringCallback([&](const std::string& msg) {
-        receivedMsg = msg;
-    });
-    
-    // Inject framed message (* at start, \r at end)
-    suite->driver_->injectInput("*FRAMED_MSG\r");
-    
-    // Should receive without framing
-    ASSERT_EQ(receivedMsg, "FRAMED_MSG");
+    uint8_t payload[] = {0xAA, 0x55, 0x42};
+    suite->driver_->injectInputBytes(payload, sizeof(payload));
+    suite->driver_->exec();
+
+    ASSERT_EQ(received.size(), 3u);
+    ASSERT_EQ(received[2], 0x42);
 }
 
 // ============================================
@@ -373,7 +332,7 @@ public:
     NativeDisplayDriver* driver_;
 };
 
-// --- Old behavior tests: text history, buffer, method chaining ---
+// --- Text history, buffer, method chaining ---
 
 // Test: drawText adds to text history
 void displayDriverDrawTextAddsToHistory(NativeDisplayDriverTestSuite* suite) {
@@ -480,7 +439,7 @@ void displayDriverFontModeTracking(NativeDisplayDriverTestSuite* suite) {
     ASSERT_EQ(suite->driver_->getFontModeName(), "INV_SM");
 }
 
-// --- New behavior tests: XBM decoding, mirror rendering ---
+// --- XBM decoding, mirror rendering ---
 
 // Test: XBM byte decoding sets correct pixels (LSB-first)
 void displayDriverXBMDecoding(NativeDisplayDriverTestSuite* suite) {

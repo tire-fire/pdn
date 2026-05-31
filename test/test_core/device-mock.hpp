@@ -14,7 +14,7 @@
 #include "device/drivers/storage-interface.hpp"
 #include "device/light-manager.hpp"
 #include "wireless/quickdraw-wireless-manager.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include <queue>
 #include <vector>
 
@@ -32,55 +32,32 @@ class FakeHWSerialWrapper : public HWSerialWrapper {
         return msgQueue.size() > 0;
     }
 
-    int peek() override {
-        return msgQueue.front();
-    }
-
-    int read() override {
-        char val = msgQueue.front();
-        msgQueue.pop_front();
-        return val;
-    }
-
-    std::string readStringUntil(char terminator) override {
-        vector<char> buffer;
-        while (msgQueue.front() != terminator) {
-            buffer.push_back(msgQueue.front());
-            msgQueue.pop_front();
-        }
-        msgQueue.pop_front();
-        return std::string(&buffer.front(), buffer.size());
-    }
-
-    void print(char msg) override {
-        msgQueue.emplace_back(msg);
-    }
-
-    void println(char* msg) override {
-        while(msg[0] != '\0') {
-            print(*msg);
-        }
-        print(STRING_TERM);
-    }
-
-    void println(const std::string& msg) override {
-        const char* str = msg.c_str();
-        for(size_t i = 0; i < msg.length(); i++) {
-            print(str[i]);
-        }
-        print(STRING_TERM);
-    }
-
     void flush() override {
         msgQueue.clear();
     }
 
-    void setStringCallback(const SerialStringCallback& callback) override {
-        stringCallback = callback;
+    void setBytesCallback(const SerialBytesCallback& callback) override {
+        bytesCallback = callback;
     }
 
+    void writeBytes(const uint8_t* data, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            msgQueue.emplace_back(static_cast<char>(data[i]));
+        }
+    }
+
+    // Tests can flip a flag to simulate the GPIO-level cable-yank signal RDC
+    // polls each sync() tick. Defaults to false (cable plugged). The
+    // convergence-time tests for cable-yank-mid-ring flip this on a single
+    // ring edge to exercise the fast adaptive-PROBE cascade.
+    bool isCableDisconnected() override { return cableDisconnectedForTest_; }
+    void setCableDisconnectedForTest(bool d) { cableDisconnectedForTest_ = d; }
+
     deque<char> msgQueue;
-    SerialStringCallback stringCallback;
+    SerialBytesCallback bytesCallback;
+
+private:
+    bool cableDisconnectedForTest_ = false;
 };
 
 class FakeDevice : public Device {
@@ -216,16 +193,27 @@ private:
     bool inputPeerSet = false;
 };
 
-// Stand-in CDM for tests that flip isLoop() without standing up the full
-// handshake stack. Used by ShootoutProposal/BracketReveal debounce tests.
-class FakeChainDuelManager : public ChainDuelManager {
+// Stand-in CDM for tests that flip isCoordinator() without standing up the
+// full handshake stack. Used by ShootoutProposal/BracketReveal debounce
+// tests to simulate a coordinator-loss event without driving the whole
+// loop-close pipeline.
+class FakeChainManager : public ChainManager {
 public:
-    FakeChainDuelManager(Player* p, WirelessManager* wm, RemoteDeviceCoordinator* rdc)
-        : ChainDuelManager(p, wm, rdc) {}
-    bool isLoop() const override { return isLoop_; }
-    void setIsLoop(bool v) { isLoop_ = v; }
+    FakeChainManager(Player* p, WirelessManager* wm, RemoteDeviceCoordinator* rdc)
+        : ChainManager(p, wm, rdc) {}
+    bool isCoordinator() const override { return isCoordinator_; }
+    void setIsCoordinator(bool v) { isCoordinator_ = v; }
+    // Stub the settled-topology signals so tests can drive loop presence/loss
+    // directly instead of priming a real roster. Default to "in a stable loop"
+    // since shootout tests run inside a ring.
+    bool isInStableLoop() const override { return inStableLoop_; }
+    void setInStableLoop(bool v) { inStableLoop_ = v; }
+    bool isRosterStable() const override { return rosterStable_; }
+    void setRosterStable(bool v) { rosterStable_ = v; }
 private:
-    bool isLoop_ = true;
+    bool isCoordinator_ = true;
+    bool inStableLoop_ = true;
+    bool rosterStable_ = true;
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.
@@ -236,6 +224,12 @@ public:
     FakeQuickdrawWirelessManager() : QuickdrawWirelessManager() {}
 
     int broadcastPacket(const uint8_t* /*macAddress*/, QuickdrawCommand& command) override {
+        sentCommands.push_back(command);
+        return 0;
+    }
+
+    int broadcastReliable(const uint8_t* /*macAddress*/, QuickdrawCommand& command) override {
+        // Funnels into sentCommands like broadcastPacket so test assertions are uniform.
         sentCommands.push_back(command);
         return 0;
     }
@@ -251,6 +245,7 @@ public:
         pkt.isHunter       = cmd.isHunter;
         pkt.playerDrawTime = cmd.playerDrawTime;
         pkt.command        = cmd.command;
+        pkt.seqId          = cmd.seqId;
 
         recipient->processQuickdrawCommand(
             senderMac,
@@ -285,7 +280,13 @@ public:
         mockSecondaryButton = new MockButton();
         mockHaptics = new MockHaptics();
         mockHttpClient = new MockHttpClient();
-        mockPeerComms = new MockPeerComms();
+        // NiceMock: the multi-device fixture calls getMacAddress/getPeerCommsState
+        // tens of thousands of times with only ON_CALL defaults (no EXPECT_CALL).
+        // Plain mocks emit a ~5-line "uninteresting call" warning per call —
+        // ~333K lines of output that `pio test`'s per-line parser then spends
+        // minutes chewing through. NiceMock suppresses the warnings; ON_CALL
+        // defaults and any EXPECT_CALL expectations still apply.
+        mockPeerComms = new testing::NiceMock<MockPeerComms>();
         mockStorage = new MockStorage();
         lightManager = new LightManager(fakeLightStrip);
         serialManager = new SerialManager(&outputJackSerial, &inputJackSerial);
@@ -322,11 +323,10 @@ public:
     LightManager* getLightManager() override { return lightManager; }
     WirelessManager* getWirelessManager() override { return wirelessManager; }
     SerialManager* getSerialManager() override { return serialManager; }
-    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override { return &fakeRemoteDeviceCoordinator; }
-
-    std::string getHead() {
-        return serialManager->getOutputHead();
+    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override {
+        return rdcOverride ? rdcOverride : &fakeRemoteDeviceCoordinator;
     }
+    void setRdcOverride(RemoteDeviceCoordinator* rdc) { rdcOverride = rdc; }
 
     // Mock interface instances
     MockDisplay* mockDisplay;
@@ -344,4 +344,5 @@ public:
     FakeHWSerialWrapper outputJackSerial;
     FakeHWSerialWrapper inputJackSerial;
     FakeRemoteDeviceCoordinator fakeRemoteDeviceCoordinator;
+    RemoteDeviceCoordinator* rdcOverride = nullptr;
 };

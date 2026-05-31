@@ -55,7 +55,7 @@ public:
         wifiConnected = false;
         httpClientInitialized = false;
         wifiGivenUp = false;
-        
+
         LOG_I(HTTP_TAG, "Connecting to: %s", wifiConfig->ssid.c_str());
         startWifiConnection();
         connectionAttemptTimer.setTimer(WIFI_CONNECTION_TIMEOUT_MS);

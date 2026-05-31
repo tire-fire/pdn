@@ -18,7 +18,7 @@
 #include <queue>
 #include <string>
 #include "device/remote-device-coordinator.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include "game/shootout-manager.hpp"
 
 enum QuickdrawStateId {
@@ -40,9 +40,6 @@ enum QuickdrawStateId {
     SHOOTOUT_ELIMINATED = 25,
     SHOOTOUT_FINAL_STANDINGS = 26,
     SHOOTOUT_ABORTED = 27,
-    // Symbol-match IDs sit after the shootout block so neither protocol's
-    // wire-visible state IDs collide. Main introduced SYMBOL=22/SYMBOL_MATCHED=23
-    // in parallel with shootout taking 22-27; they were renumbered here on merge.
     SYMBOL = 28,
     SYMBOL_MATCHED = 29,
 };
@@ -88,7 +85,7 @@ private:
 
 class Idle : public ConnectState {
 public:
-    Idle(Player *player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager);
+    Idle(Player *player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager);
     ~Idle();
 
     void onStateMounted(Device *PDN) override;
@@ -102,7 +99,7 @@ public:
 private:
     Player *player;
     MatchManager* matchManager;
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
     bool matchInitialized = false;
     bool displayIsDirty = false;
     int statsIndex = 0;
@@ -122,7 +119,7 @@ private:
 
 class SupporterReady : public ConnectState {
 public:
-    SupporterReady(Player *player, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager);
+    SupporterReady(Player *player, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager);
     ~SupporterReady();
 
     void onStateMounted(Device *PDN) override;
@@ -153,7 +150,7 @@ public:
     void startLEDs(Device *PDN, bool armed, bool confirmed);
 
 private:
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
     bool transitionToIdleFlag = false;
     int lastProcessedResult_ = 0;  // main-task-only; mirrors lastResult
 
@@ -165,7 +162,7 @@ private:
 
 class DuelCountdown : public ConnectState {
 public:
-    DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager);
+    DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager);
     ~DuelCountdown();
 
     void onStateMounted(Device *PDN) override;
@@ -224,14 +221,14 @@ private:
     const CountdownStage countdownQueue[4] = {THREE, TWO, ONE, BATTLE};
     int currentStepIndex = 0;
     MatchManager* matchManager;
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
 };
 
 class ShootoutManager;
 
 class Duel : public ConnectState {
 public:
-    Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager, ShootoutManager* shootoutManager);
+    Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager, ShootoutManager* shootoutManager);
     ~Duel();
 
     void onStateMounted(Device *PDN) override;
@@ -249,7 +246,7 @@ public:
 private:
     Player* player;
     MatchManager* matchManager;
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
     ShootoutManager* shootoutManager;
     parameterizedCallbackFunction buttonPress;
     bool transitionToDuelPushedState = false;
@@ -279,7 +276,12 @@ private:
     Player* player;
     MatchManager* matchManager;
     SimpleTimer gracePeriodTimer;
-    const int DUEL_RESULT_GRACE_PERIOD = 900;
+    // Sized to cover the opponent's worst-case NEVER_PRESSED delivery:
+    // their 750ms button-push grace + Resender retry budget (100+200+400 ms)
+    // plus margin. Below this, A's grace expires before B's NEVER_PRESSED
+    // can land and the duel gets voided on A's side even when B's local
+    // outcome (didn't press → loses) is unambiguous.
+    const int DUEL_RESULT_GRACE_PERIOD = 1700;
 };
 
 class DuelReceivedResult : public ConnectState {
@@ -298,7 +300,7 @@ public:
 
 private:
     SimpleTimer buttonPushGraceTimer;
-    bool transitionToDuelResultState = false;
+    bool neverPressedSent_ = false;
     const int BUTTON_PUSH_GRACE_PERIOD = 750;
     Player* player;
     MatchManager* matchManager;
@@ -319,6 +321,12 @@ public:
     // bracket advances exactly once per match.
     bool transitionToShootoutSpectator();
     bool transitionToShootoutEliminated();
+    // Voided duels (reliable-send abandoned, or receiver-side grace expired
+    // without result) skip win/lose entirely and return to Idle.
+    bool transitionToIdleOnVoid();
+    // Voiding inside a shootout aborts the tournament: neither duelist can
+    // broadcast a MATCH_RESULT, so the bracket cannot advance.
+    bool transitionToShootoutAbortOnVoid();
 
 private:
     Player* player;
@@ -327,11 +335,12 @@ private:
     ShootoutManager* shootoutManager;
     bool wonBattle = false;
     bool captured = false;
+    bool voided = false;
 };
 
 class Win : public State {
 public:
-    Win(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager);
+    Win(Player *player, ChainManager* chainManager, MatchManager* matchManager);
     ~Win();
 
     void onStateMounted(Device *PDN) override;
@@ -343,14 +352,14 @@ public:
 private:
     SimpleTimer winTimer = SimpleTimer();
     Player *player;
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
     MatchManager* matchManager;
     bool reset = false;
 };
 
 class Lose : public State {
 public:
-    Lose(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager);
+    Lose(Player *player, ChainManager* chainManager, MatchManager* matchManager);
     ~Lose();
 
     void onStateMounted(Device *PDN) override;
@@ -362,7 +371,7 @@ public:
 private:
     SimpleTimer loseTimer = SimpleTimer();
     Player *player;
-    ChainDuelManager* chainDuelManager;
+    ChainManager* chainManager;
     MatchManager* matchManager;
     bool reset = false;
 };
@@ -395,7 +404,7 @@ static constexpr unsigned long kLoopBreakDebounceMs = 500;
 
 class ShootoutProposal : public State {
 public:
-    ShootoutProposal(ShootoutManager* shootout, ChainDuelManager* chainDuelManager);
+    ShootoutProposal(ShootoutManager* shootout, ChainManager* chainManager);
     void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
     void onStateDismounted(Device *PDN) override;
@@ -406,7 +415,7 @@ public:
 
 private:
     ShootoutManager* shootout_;
-    ChainDuelManager* chainDuelManager_;
+    ChainManager* chainManager_;
     bool shouldGoToReveal_ = false;
     bool shouldGoToIdle_ = false;
     bool shouldGoToAborted_ = false;
@@ -415,7 +424,7 @@ private:
 
 class ShootoutBracketReveal : public State {
 public:
-    ShootoutBracketReveal(ShootoutManager* shootout, ChainDuelManager* chainDuelManager);
+    ShootoutBracketReveal(ShootoutManager* shootout, ChainManager* chainManager);
     void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
     void onStateDismounted(Device *PDN) override;
@@ -427,7 +436,7 @@ public:
 
 private:
     ShootoutManager* shootout_;
-    ChainDuelManager* chainDuelManager_;
+    ChainManager* chainManager_;
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
     bool shouldGoToAborted_ = false;
@@ -473,18 +482,20 @@ private:
 
 class ShootoutFinalStandings : public State {
 public:
-    ShootoutFinalStandings(ShootoutManager* shootout, ChainDuelManager* chainDuelManager);
+    ShootoutFinalStandings(ShootoutManager* shootout, ChainManager* chainManager);
     void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
     void onStateDismounted(Device *PDN) override;
     bool isTerminalState() override;
 
-    bool transitionToSleep();
+    bool transitionToIdle();
 
 private:
     ShootoutManager* shootout_;
-    ChainDuelManager* chainDuelManager_;
-    bool shouldGoToSleep_ = false;
+    ChainManager* chainManager_;
+    SimpleTimer displayTimer_;
+    bool shouldGoToIdle_ = false;
+    static constexpr unsigned long STANDINGS_DISPLAY_MS = 10000;
 };
 
 class ShootoutAborted : public State {

@@ -65,10 +65,6 @@ public:
     FakePlatformClock* fakeClock;
 };
 
-// ============================================
-// Boost (chain duel support)
-// ============================================
-
 inline void matchManagerSetBoostStoresValue(MatchManager* mm, Player* player) {
     mm->setBoostProvider([]() -> unsigned long { return 75; });
 }
@@ -95,6 +91,37 @@ inline void matchManagerBoostSubtractedFromHunterReactionTime(MatchManagerTestSu
     callback(suite->matchManager);
 
     EXPECT_EQ(suite->matchManager->getCurrentMatch()->getHunterDrawTime(), 150u);
+}
+
+// Shootout matches (SHT- prefixed) are venue-local: they never upload, so they
+// must not feed lifetime reaction-time stats. A normal match still does. This
+// guards the same gate finalizeMatch() uses for persistence.
+inline void matchManagerShootoutMatchExcludedFromReactionStats(MatchManagerTestSuite* suite) {
+    auto* mm = suite->matchManager;
+    auto* player = suite->player;
+    player->setIsHunter(true);
+    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    mm->initializeShootoutMatch("SHT-00000000000000000000000000000001", dummyMac);
+    EXPECT_TRUE(mm->currentMatchIsShootout());
+
+    suite->fakeClock->setTime(10000);
+    mm->setDuelLocalStartTime(10000);
+    suite->fakeClock->setTime(10200);  // 200ms reaction
+    mm->getDuelButtonPush()(mm);
+
+    EXPECT_EQ(player->getLastReactionTime(), 0u);  // shootout press recorded nothing
+
+    mm->clearCurrentMatch();
+
+    mm->initializeMatch(dummyMac);
+    EXPECT_FALSE(mm->currentMatchIsShootout());
+    suite->fakeClock->setTime(20000);
+    mm->setDuelLocalStartTime(20000);
+    suite->fakeClock->setTime(20150);  // 150ms reaction
+    mm->getDuelButtonPush()(mm);
+
+    EXPECT_EQ(player->getLastReactionTime(), 150u);  // normal match still counts
 }
 
 
@@ -188,7 +215,8 @@ inline void matchManagerHunterWinsWhenBountyNeverPressed(MatchManager* mm, Playe
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     mm->initializeMatch(dummyMac);
     mm->setHunterDrawTime(250);
-    mm->setOpponentNeverPressed();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::NEVER_PRESSED, mm->getCurrentMatch()->getMatchId(), "boun", 0, false));
 
     EXPECT_TRUE(mm->didWin());
 }
@@ -199,7 +227,8 @@ inline void matchManagerBountyWinsWhenHunterNeverPressed(MatchManager* mm, Playe
     QuickdrawCommand cmd(dummyMac, QDCommand::SEND_MATCH_ID, "duel-6", "hunt", 0, true);
     mm->listenForMatchEvents(cmd);
     mm->setBountyDrawTime(300);
-    mm->setOpponentNeverPressed();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::NEVER_PRESSED, "duel-6", "hunt", 0, true));
 
     EXPECT_TRUE(mm->didWin());
 }
@@ -221,15 +250,12 @@ inline void matchManagerTracksDuelState(MatchManager* mm, Player* player) {
     EXPECT_TRUE(mm->getHasPressedButton());
     EXPECT_FALSE(mm->matchResultsAreIn());
 
-    mm->setReceivedDrawResult();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::DRAW_RESULT, mm->getCurrentMatch()->getMatchId(), "boun", 0, false));
     EXPECT_TRUE(mm->getHasReceivedDrawResult());
     EXPECT_TRUE(mm->matchResultsAreIn());
 }
 
-// ============================================
-// Spoof rejection — packet-source authentication on duel commands
-// ============================================
-//
 // Commands that mutate an active match must only be accepted from the
 // match's established opponent (right MAC + right matchId). A neighbor
 // device forging results for someone else's duel must be ignored.
@@ -299,29 +325,81 @@ inline void matchManagerGracePeriodPath(MatchManager* mm, Player* player) {
     mm->initializeMatch(dummyMac);
 
     mm->setReceivedButtonPush();
-    mm->setOpponentNeverPressed();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::NEVER_PRESSED, mm->getCurrentMatch()->getMatchId(), "boun", 0, false));
 
     EXPECT_TRUE(mm->matchResultsAreIn());
 }
 
-// Regression guard for the both-timed-out deadlock: if our grace expired and
-// the opponent's NEVER_PRESSED packet dropped, we previously stayed stuck
-// because no clause in matchResultsAreIn fired. The deadlock-escape clause
-// `|| gracePeriodExpiredNoResult` must let us finalize from our own state.
+// If our grace expired and the opponent's NEVER_PRESSED never arrived, we
+// must still finalize from our own state alone. Otherwise both devices
+// deadlock waiting for each other.
 inline void matchManagerGraceExpiredAloneFinalizes(MatchManager* mm, Player* player) {
     player->setIsHunter(true);
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     mm->initializeMatch(dummyMac);
 
-    // Simulate: grace expired on our side (setNeverPressed sets the flag),
-    // but the opponent's NEVER_PRESSED never arrived (so neither
-    // hasReceivedDrawResult nor opponentNeverPressed is set), and we never
-    // pressed (hasPressedButton stays false).
-    mm->setNeverPressed();
+    // Grace expired on our side; opponent's NEVER_PRESSED dropped; we never
+    // pressed. Only the gracePeriodExpiredNoResult clause can unstick this.
+    mm->sendNeverPressed(1500);
 
-    // Pre-fix: all three clauses in matchResultsAreIn returned false → stuck.
-    // Post-fix: the 4th escape clause (gracePeriodExpiredNoResult alone) fires.
     EXPECT_TRUE(mm->matchResultsAreIn());
+}
+
+// Voided matches expose the voided flag on the Match object so the upload
+// payload carries it; the server uses this to detect packet-loss patterns.
+inline void matchManagerVoidedDuelPersistsWithFlag(MatchManager* mm, Player* player) {
+    player->setIsHunter(true);
+    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    mm->initializeMatch(dummyMac);
+
+    mm->setReceivedButtonPush();
+    mm->voidCurrentMatch();
+
+    EXPECT_TRUE(mm->isVoided());
+    EXPECT_TRUE(mm->matchResultsAreIn());
+    EXPECT_FALSE(mm->didWin());
+
+    ASSERT_TRUE(mm->getCurrentMatch().has_value());
+    EXPECT_TRUE(mm->getCurrentMatch()->isVoided());
+
+    std::string json = mm->getCurrentMatch()->toJson();
+    EXPECT_NE(json.find("\"voided\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"winner_is_hunter\""), std::string::npos);
+}
+
+// The non-presser locally knows they lose. A NEVER_PRESSED abandon
+// must preserve that loss instead of overwriting with void.
+inline void matchManagerNeverPressedAbandonPreservesLoss(MatchManager* mm, Player* player) {
+    player->setIsHunter(false);  // bounty — the non-presser
+    uint8_t opponentMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    QuickdrawCommand sendMatchId(opponentMac, QDCommand::SEND_MATCH_ID,
+                                  "test-match-abandon-np", "hunt", 0, true);
+    mm->listenForMatchEvents(sendMatchId);
+
+    mm->sendNeverPressed(1500);
+    mm->onReliableSendAbandoned();
+
+    EXPECT_FALSE(mm->isVoided());
+    EXPECT_TRUE(mm->matchResultsAreIn());
+    EXPECT_FALSE(mm->didWin());
+}
+
+// A DRAW_RESULT abandon means we pressed but the opponent never learned
+// our time, so we can't compute against their unknown state. Void.
+inline void matchManagerDrawResultAbandonVoids(MatchManager* mm, Player* player) {
+    player->setIsHunter(true);
+    uint8_t opponentMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    mm->initializeMatch(opponentMac);
+    mm->setReceivedButtonPush();
+
+    mm->onReliableSendAbandoned();
+
+    EXPECT_TRUE(mm->isVoided());
+    EXPECT_TRUE(mm->matchResultsAreIn());
+    EXPECT_FALSE(mm->didWin());
+    ASSERT_TRUE(mm->getCurrentMatch().has_value());
+    EXPECT_TRUE(mm->getCurrentMatch()->isVoided());
 }
 
 inline void matchManagerClearMatchResetsState(MatchManager* mm, Player* player) {
@@ -329,7 +407,8 @@ inline void matchManagerClearMatchResetsState(MatchManager* mm, Player* player) 
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     mm->initializeMatch(dummyMac);
     mm->setReceivedButtonPush();
-    mm->setReceivedDrawResult();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::DRAW_RESULT, mm->getCurrentMatch()->getMatchId(), "boun", 0, false));
     mm->setDuelLocalStartTime(1000);
 
     mm->clearCurrentMatch();

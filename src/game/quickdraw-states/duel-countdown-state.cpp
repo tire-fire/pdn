@@ -1,14 +1,14 @@
 #include "device/drivers/serial-wrapper.hpp"
 #include "game/quickdraw-states.hpp"
 #include "game/quickdraw-resources.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include "device/device.hpp"
 #include "device/drivers/logger.hpp"
 
-DuelCountdown::DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager) : ConnectState(remoteDeviceCoordinator, DUEL_COUNTDOWN) {
+DuelCountdown::DuelCountdown(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager) : ConnectState(remoteDeviceCoordinator, DUEL_COUNTDOWN) {
     this->player = player;
     this->matchManager = matchManager;
-    this->chainDuelManager = chainDuelManager;
+    this->chainManager = chainManager;
 }
 
 DuelCountdown::~DuelCountdown() {
@@ -20,7 +20,7 @@ DuelCountdown::~DuelCountdown() {
 void DuelCountdown::onStateMounted(Device *PDN) {
     // If this device is a champion, tell its supporter chain that the
     // duel is starting so they can arm their confirmation window.
-    chainDuelManager->sendGameEventToSupporters(ChainGameEventType::COUNTDOWN);
+    chainManager->sendGameEventToSupporters(ChainGameEventType::COUNTDOWN);
 
     PDN->getDisplay()->
     invalidateScreen()->
@@ -89,14 +89,20 @@ void DuelCountdown::onStateDismounted(Device *PDN) {
         matchManager->clearCurrentMatch();
         // Countdown aborted (opponent unplugged). Tell supporters to disarm
         // so they don't stay stuck on "PRESS".
-        if (chainDuelManager != nullptr) {
-            chainDuelManager->sendGameEventToSupporters(ChainGameEventType::DRAW);
+        if (chainManager != nullptr) {
+            chainManager->sendGameEventToSupporters(ChainGameEventType::DRAW);
         }
     }
 
     doBattle = false;
     currentStepIndex = 0;
     countdownTimer.invalidate();
+    hapticTimer.invalidate();
+    // The countdown pulses the haptic for HAPTIC_DURATION on each step and
+    // relies on onStateLoop to clear it when the pulse timer expires. If we
+    // leave mid-pulse (loop-close yield, abort, disconnect), that clear never
+    // runs and the motor latches on. Force it off here.
+    PDN->getHaptics()->setIntensity(0);
     PDN->getPrimaryButton()->removeButtonCallbacks();
     PDN->getSecondaryButton()->removeButtonCallbacks();
 }

@@ -19,6 +19,7 @@
 #include "game/player.hpp"
 #include "state/state-machine.hpp"
 #include "device/pdn.hpp"
+#include "device/device-constants.hpp"
 #include "game/quickdraw.hpp"
 #include "id-generator.hpp"
 #include "wireless/remote-player-manager.hpp"
@@ -29,6 +30,9 @@
 #include "wireless/symbol-wireless-manager.hpp"
 #include "device/drivers/peer-comms-interface.hpp"
 #include "game/quickdraw-resources.hpp"
+#include "wireless/resender.hpp"
+#include "wireless/wireless-transport.hpp"
+#include "device/remote-device-coordinator.hpp"
 
 // WiFi configuration - injected at compile time from wifi_credentials.ini
 // See wifi_credentials.ini.example for template
@@ -70,6 +74,7 @@ Quickdraw* game = nullptr;
 QuickdrawWirelessManager* quickdrawWirelessManager = nullptr;
 SymbolWirelessManager* symbolWirelessManager = nullptr;
 RemoteDebugManager* remoteDebugManager = nullptr;
+WirelessTransport* gWirelessTransport = nullptr;
 
 void setupEspNow(
     QuickdrawWirelessManager* quickdrawWirelessManager,
@@ -83,6 +88,15 @@ void setupEspNow(
             ((QuickdrawWirelessManager*)userArg)->processQuickdrawCommand(src, data, len);
         },
         quickdrawWirelessManager
+    );
+
+    // Unified ack: WirelessTransport dispatches acks to the channel that owns the seqId.
+    peerCommsDriver->setPacketHandler(
+        PktType::kAck,
+        [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+            static_cast<WirelessTransport*>(ctx)->onAckPacket(src, data, len);
+        },
+        gWirelessTransport
     );
     
     peerCommsDriver->setPacketHandler(
@@ -100,6 +114,23 @@ void setupEspNow(
         },
         symbolWirelessManager
     );
+
+}
+
+// Drives connectivity (HELLO emit + silent-link watchdog) on a fixed 20ms
+// cadence independent of the main loop. The main loop's jitter (HTTP, display
+// render, ESP-NOW bursts) could otherwise delay the watchdog past its threshold
+// and false-fire a disconnect, or starve HELLO emission so a peer thinks WE
+// vanished. The receive side (HELLO/BEACON parsing) runs on the UART event
+// tasks; this task and those feed RDC's lock-guarded recv queue, which the main
+// loop drains in rdc->sync().
+static void connectivityTask(void* arg) {
+    auto* rdc = static_cast<RemoteDeviceCoordinator*>(arg);
+    TickType_t last = xTaskGetTickCount();
+    for (;;) {
+        rdc->serviceConnectivity(millis());
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(20));
+    }
 }
 
 void setup() {
@@ -152,6 +183,28 @@ void setup() {
     IdGenerator::initialize(clockDriver->milliseconds());
     player = new Player();
     player->setUserID(IdGenerator::getInstance().generateId());
+
+#ifdef AUTO_REGISTER
+    // Skip manual onboarding so hardware test runs don't need 4 button-press
+    // sessions per reflash. FetchUserDataState recognizes TEST_HUNTER_ID and
+    // TEST_BOUNTY_ID and auto-sets role + name without HTTP, falling straight
+    // through WelcomeMessage (which has its own timeout transition) into
+    // Quickdraw. Role split derives from mac[4] parity — empirically this
+    // gives a balanced 2-2 split across the hardware in the lab, while
+    // mac[5] parity collapsed all four to HUNTER. Deterministic per device.
+    {
+        uint8_t mac[6] = {};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        bool isBounty = (mac[4] & 1) != 0;
+        std::string autoId = isBounty ? TEST_BOUNTY_ID : TEST_HUNTER_ID;
+        std::vector<char> buf(autoId.begin(), autoId.end());
+        buf.push_back('\0');
+        player->setUserID(buf.data());
+        LOG_W("SETUP", "AUTO_REGISTER mac=%02X:%02X role=%s",
+              mac[4], mac[5], isBounty ? "BOUNTY" : "HUNTER");
+    }
+#endif
+
     pdn->begin();
     // Create wireless managers
     LOG_I("SETUP", "Creating QuickdrawWirelessManager...");
@@ -164,13 +217,14 @@ void setup() {
     // WiFi credentials are compile-time constants from build flags
     remoteDebugManager->Initialize(WIFI_SSID, WIFI_PASSWORD, BASE_URL);
 
-    quickdrawWirelessManager->initialize(player, pdn->getWirelessManager(), 1000);
+    gWirelessTransport = new WirelessTransport(pdn->getWirelessManager());
+    quickdrawWirelessManager->initialize(player, pdn->getWirelessManager(), gWirelessTransport, 1000);
     symbolWirelessManager->initialize(pdn->getWirelessManager(), pdn->getRemoteDeviceCoordinator());
-    
+
     // Register ESP-NOW packet handlers
     setupEspNow(quickdrawWirelessManager, remoteDebugManager, symbolWirelessManager, peerCommsDriver);
     
-    game = new Quickdraw(player, pdn, quickdrawWirelessManager, remoteDebugManager, symbolWirelessManager);
+    game = new Quickdraw(player, pdn, quickdrawWirelessManager, remoteDebugManager, symbolWirelessManager, gWirelessTransport);
     
     pdn->getDisplay()->
     invalidateScreen()->
@@ -184,8 +238,20 @@ void setup() {
         {StateId(QUICKDRAW_APP_ID), game}
     };
     pdn->loadAppConfig(apps, StateId(QUICKDRAW_APP_ID));
+
+    // Hand connectivity timing to a dedicated task so it stops sharing the main
+    // loop's jitter. setExternalConnectivityTask(true) makes rdc->sync() skip
+    // its inline serviceConnectivity call (native tests keep driving it inline).
+    // Priority 2 sits just above the Arduino loop (1) so the 20ms cadence holds
+    // under load; pinned to APP_CPU to leave PRO_CPU for the WiFi/ESP-NOW stack.
+    if (auto* rdc = pdn->getRemoteDeviceCoordinator()) {
+        rdc->setExternalConnectivityTask(true);
+        xTaskCreatePinnedToCore(connectivityTask, "pdn-conn", 4096, rdc, 2,
+                                nullptr, APP_CPU_NUM);
+    }
 }
 
 void loop() {
     pdn->loop();
+    if (gWirelessTransport) gWirelessTransport->sync();
 }
