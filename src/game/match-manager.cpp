@@ -45,11 +45,9 @@ void MatchManager::clearCurrentMatch() {
                 activeDuelState.opponentMac.data());
         }
         activeDuelState.match.reset();
-        activeDuelState.hasReceivedDrawResult = false;
-        activeDuelState.hasPressedButton = false;
+        activeDuelState.myResult.reset();
+        activeDuelState.theirResult.reset();
         activeDuelState.duelLocalStartTime = 0;
-        activeDuelState.gracePeriodExpiredNoResult = false;
-        activeDuelState.opponentNeverPressed = false;
         activeDuelState.buttonMasherCount = 0;
         activeDuelState.matchIsReady = false;
     }
@@ -63,7 +61,7 @@ void MatchManager::voidCurrentMatch() {
 }
 
 void MatchManager::onReliableSendAbandoned() {
-    if (!activeDuelState.hasPressedButton) return;
+    if (!getHasPressedButton()) return;
     voidCurrentMatch();
 }
 
@@ -146,13 +144,12 @@ bool MatchManager::matchResultsAreIn() {
 
     if (activeDuelState.match->isVoided()) return true;
 
-    // Final clause is the deadlock escape for both-timed-out duels where the
-    // opponent's NEVER_PRESSED packet drops. Gated on !hasPressedButton so a
-    // button-press in the same tick as grace expiry still takes the press
-    // path (clauses 1/2) — otherwise didWin() would spuriously return false.
-    return (activeDuelState.hasReceivedDrawResult && activeDuelState.hasPressedButton)
-    || (activeDuelState.opponentNeverPressed && activeDuelState.hasPressedButton)
-    || (activeDuelState.gracePeriodExpiredNoResult && !activeDuelState.hasPressedButton);
+    const auto& mine = activeDuelState.myResult;
+    if (!mine) return false;
+    // If I timed out, the duel resolves without waiting on the opponent (the
+    // deadlock escape for a dropped NEVER_PRESSED). If I pressed, the opponent's
+    // outcome is needed to compare times.
+    return mine->pressed ? activeDuelState.theirResult.has_value() : true;
 }
 
 bool MatchManager::didWin() {
@@ -162,10 +159,13 @@ bool MatchManager::didWin() {
 
     if (activeDuelState.match->isVoided()) return false;
 
-    if (activeDuelState.opponentNeverPressed) {
+    // Opponent timed out -> I win. Checked before my own timeout to preserve the
+    // both-timed-out tiebreak (server match_id dedup reconciles the rare
+    // symmetric double-claim).
+    if (activeDuelState.theirResult && !activeDuelState.theirResult->pressed) {
         return true;
     }
-    if (activeDuelState.gracePeriodExpiredNoResult) {
+    if (activeDuelState.myResult && !activeDuelState.myResult->pressed) {
         return false;
     }
 
@@ -217,11 +217,11 @@ bool MatchManager::currentMatchIsShootout() const {
 }
 
 bool MatchManager::getHasReceivedDrawResult() {
-    return activeDuelState.hasReceivedDrawResult;
+    return activeDuelState.theirResult.has_value();
 }
 
 bool MatchManager::getHasPressedButton() {
-    return activeDuelState.hasPressedButton;
+    return activeDuelState.myResult.has_value() && activeDuelState.myResult->pressed;
 }
 
 parameterizedCallbackFunction MatchManager::getDuelButtonPush() {
@@ -229,7 +229,7 @@ parameterizedCallbackFunction MatchManager::getDuelButtonPush() {
 }
 
 void MatchManager::setReceivedButtonPush() {
-    activeDuelState.hasPressedButton = true;
+    activeDuelState.myResult = ActiveDuelState::SideResult{true};
 }
 
 bool MatchManager::setHunterDrawTime(unsigned long hunter_time_ms) {
@@ -381,8 +381,8 @@ void MatchManager::initialize(Player* player, StorageInterface* storage, Quickdr
         Player *player = matchManager->player;
         QuickdrawWirelessManager* quickdrawWirelessManager = matchManager->quickdrawWirelessManager;
 
-        if(matchManager->getHasPressedButton()) {
-            LOG_I(MATCH_MANAGER_TAG, "Button already pressed - skipping");
+        if(activeDuelState->myResult.has_value()) {
+            LOG_I(MATCH_MANAGER_TAG, "Duel outcome already resolved - skipping press");
             return;
         }
 
@@ -507,11 +507,12 @@ void MatchManager::listenForMatchEvents(const QuickdrawCommand& command) {
         setHunterDrawTime(opponentTime)
         : setBountyDrawTime(opponentTime);
 
-        if (command.command == QDCommand::NEVER_PRESSED) {
-            activeDuelState.opponentNeverPressed = true;
+        // First terminal packet from the opponent resolves their side; ignore a
+        // later one (a retransmit, or a NEVER_PRESSED racing a DRAW_RESULT).
+        if (!activeDuelState.theirResult) {
+            activeDuelState.theirResult = ActiveDuelState::SideResult{
+                command.command != QDCommand::NEVER_PRESSED};
         }
-
-        activeDuelState.hasReceivedDrawResult = true;
     } else {
         LOG_W(MATCH_MANAGER_TAG, "Received unexpected command in Match Manager: %d", command.command);
     }
@@ -522,9 +523,14 @@ void MatchManager::sendNeverPressed(unsigned long pityTime) {
         LOG_E(MATCH_MANAGER_TAG, "Cannot send NEVER_PRESSED - no active match");
         return;
     }
+    // First writer wins: a press landing the same tick the grace expired already
+    // resolved my side (execDrivers runs the button handler before the state
+    // loop). Don't overwrite it with a timeout or broadcast a spurious
+    // NEVER_PRESSED. This is the guard the caller used to hold.
+    if (activeDuelState.myResult.has_value()) return;
 
     localIsHunterForMatch() ? setHunterDrawTime(pityTime) : setBountyDrawTime(pityTime);
-    activeDuelState.gracePeriodExpiredNoResult = true;
+    activeDuelState.myResult = ActiveDuelState::SideResult{false};
     // Mirror what gets uploaded: every duel contributes a draw time to the server,
     // so on-device "average reaction" should include pity times too. Shootout
     // matches upload nothing, so they contribute nothing here either.

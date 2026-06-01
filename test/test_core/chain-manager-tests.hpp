@@ -305,32 +305,6 @@ inline void cdmDirectPeerConnectDoesNotClaim(ChainManagerTests* suite) {
     EXPECT_FALSE(cdm.isCoordinator());
 }
 
-// Second connect-edge variant retained for the empty-confirmedSupporters_
-// precondition path: even with confirms=0 (typical tail-of-ring state) no
-// claim must happen. Coverage is otherwise identical to the test above.
-inline void cdmDirectPeerConnectEmptyConfirmsDoesNotClaim(ChainManagerTests* suite) {
-    suite->setupHunterChampion();
-    WirelessTransport transport(suite->device.wirelessManager);
-    ChainManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
-    cdm.initialize(&transport);
-    suite->applyHunterChampionRoles(cdm);
-    ASSERT_FALSE(cdm.isCoordinator());
-    ASSERT_EQ(cdm.getConfirmedSupporterCount(), 0u)
-        << "Test precondition: no confirms accumulated";
-
-    EXPECT_CALL(*suite->device.mockPeerComms, sendData(_, _, _, _)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-
-    std::array<uint8_t, 6> someMac = {0x99, 0x99, 0x99, 0x99, 0x99, 0x99};
-    RemoteDeviceCoordinator::Peer peer{someMac, DeviceType::PDN};
-    cdm.onDirectPeerChange(SerialIdentifier::OUTPUT_JACK,
-                           std::nullopt,
-                           std::optional<RemoteDeviceCoordinator::Peer>(peer));
-
-    EXPECT_FALSE(cdm.isCoordinator())
-        << "Connect edge must not claim regardless of confirm count";
-}
-
 // sendConfirm targets championMac_ directly with a ChainConfirmPayload.
 inline void cdmSendConfirmTargetsChampionMac(ChainManagerTests* suite) {
     suite->setupHunterChampion();
@@ -1323,10 +1297,10 @@ inline void cdmOneSecondMinStabilityGuard(ChainManagerTests* suite) {
     EXPECT_TRUE(cdm.isCoordinator()) << "Min stable for one cycle → claim allowed";
 }
 
-// onConfirmReceived's stability gate only applies in loop topologies, where
-// partial bracket assembly mid-convergence would be unsafe. Linear chains
-// skip the gate so a 2-device same-role pair can form a posse immediately
-// without waiting for the 2-cycle isTopologyStable window.
+// onConfirmReceived applies the isTopologyStable gate unconditionally: a confirm
+// arriving while the roster is still settling is deferred until the topology
+// holds for the stability window, so partial bracket assembly mid-convergence
+// can't latch a stale supporter count. This case drives a ring member.
 inline void cdmConfirmDroppedWhenRosterUnstable(ChainManagerTests* suite) {
     FakeRosterRDC fakeRdc;
     // The confirming device is a member of our ring; topology-membership

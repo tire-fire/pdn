@@ -39,7 +39,13 @@ void SerialFrameDemuxer::resetParser() {
 void SerialFrameDemuxer::checkTimeout() {
     if (parser_.state == ParseState::ScanForSync) return;
     const unsigned long now = nowMs();
-    if (now - lastByteMs_ > kParserTimeoutMs) {
+    // Clamp a backwards clock (now < lastByteMs_) to gap 0 so unsigned
+    // subtraction can't underflow to ~UINT_MAX and fire a spurious mid-frame
+    // resync. The null-clock case still times out: nowMs() returns max() there,
+    // which is never below lastByteMs_, so it yields a large gap unclamped.
+    // Mirrors the gap guards in PeerGraph and RemoteDeviceCoordinator.
+    const unsigned long gap = now >= lastByteMs_ ? now - lastByteMs_ : 0;
+    if (gap > kParserTimeoutMs) {
         resetParser();
         if (parserResyncHandler_) parserResyncHandler_();
     }

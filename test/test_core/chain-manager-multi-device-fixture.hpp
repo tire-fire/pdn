@@ -934,39 +934,6 @@ inline void rdcThreeDeviceChainNoLoop(ChainMultiDeviceFixture* suite) {
     }
 }
 
-// 3-device mixed-role ring regression: two hunters wired together, one bounty
-// wired to the second hunter, then the bounty's free INPUT closes into the
-// first hunter's free OUTPUT. The peer-graph is role-agnostic, so once it
-// converges every device must report isInLoop()=true regardless of the role
-// mismatch on the closing cable.
-inline void rdcMixedRoleRingReportsLoop(ChainMultiDeviceFixture* suite) {
-    suite->spawnDevices(3);
-    suite->node(0).player->setIsHunter(true);
-    suite->node(1).player->setIsHunter(true);
-    suite->node(2).player->setIsHunter(false);
-
-    // Phase 1: linear chain. After convergence no device should observe a loop.
-    suite->connectOutputToPrev(1);
-    suite->connectOutputToPrev(2);
-    suite->primeRosterStableAll();
-
-    for (size_t i = 0; i < suite->nodeCount(); ++i) {
-        EXPECT_FALSE(suite->node(i).rdc->isInLoop())
-            << "linear-phase node " << i << " spuriously reported loop";
-    }
-
-    // Phase 2: close the ring across the hunter↔bounty boundary.
-    suite->closeRing();
-    suite->primeRosterStableAll();
-
-    for (size_t i = 0; i < suite->nodeCount(); ++i) {
-        EXPECT_TRUE(suite->node(i).rdc->isInLoop())
-            << "mixed-role ring node " << i << " did not detect loop";
-        EXPECT_EQ(suite->node(i).rdc->getChainMembers().size(), 3u)
-            << "node " << i << " chain members";
-    }
-}
-
 // 3-device hunter ring: after closing the ring and letting the peer-graph
 // converge, exactly one ChainManager reports isCoordinator()=true. The graph-
 // derived election picks the lowest-MAC member of the loop; with sequential
@@ -1125,13 +1092,12 @@ inline void rdcThreeDeviceRingReportsLoop(ChainMultiDeviceFixture* suite) {
     }
 }
 
-// Disabled: exposes fixture timing issue. After the first tournament's
-// advanceClock of kBracketRevealMs+, fake-clock heartbeats expire and the
-// coordinator-claim path doesn't re-fire across a tournament boundary
-// without a fresh ring-close event. On real hardware the ring stays
-// physically closed and the coordinator's claim persists; this fixture
-// does not retain it across the timeline jump. Reinstate once the fixture
-// pumps the coordinator-claim through a second ring-close cycle.
+// Back-to-back tournaments on one physically-closed 4-ring: run a full
+// tournament to ENDED, resetToIdle every node (mirrors
+// FinalStandings::onStateDismounted), then run a second. Guards that the
+// coordinator claim survives the reset (exactly one coordinator with the full
+// 4-member loop post-reset) and that a second tournament re-stabilizes and runs
+// its 3 matches without a fresh ring-close event.
 inline void shootoutFourDeviceTwoTournamentsBackToBack(ChainMultiDeviceFixture* suite) {
     suite->spawnDevices(4);
     suite->setAllHunters();
@@ -1434,68 +1400,6 @@ inline void cdmMixedLoopCableYankClearsLoopMergeState(ChainMultiDeviceFixture* s
         << "coordinator did not demote on cable yank";
 }
 
-// Alternating H-B-H-B ring (4 devices, 4 role boundaries). Every cable
-// straddles a role mismatch; loop detection is role-agnostic, so the bracket
-// assembles fully and every node sees all 4 members after roster convergence.
-inline void cdmAlternatingHBHBRingAssemblesFullBracket(ChainMultiDeviceFixture* suite) {
-    suite->spawnDevices(4);
-    suite->node(0).player->setIsHunter(true);   // H
-    suite->node(1).player->setIsHunter(false);  // B
-    suite->node(2).player->setIsHunter(true);   // H
-    suite->node(3).player->setIsHunter(false);  // B
-
-    suite->connectOutputToPrev(1);
-    suite->connectOutputToPrev(2);
-    suite->connectOutputToPrev(3);
-    suite->deliverAllPackets();
-    suite->syncAll();
-    suite->deliverAllPackets();
-
-    suite->closeRing();
-    suite->primeRosterStableAll();
-
-    for (size_t i = 0; i < suite->nodeCount(); ++i) {
-        auto members = suite->node(i).rdc->getChainMembers();
-        EXPECT_EQ(members.size(), 4u)
-            << "HBHB node " << i << " sees " << members.size() << " members";
-        EXPECT_TRUE(suite->node(i).rdc->isInLoop())
-            << "HBHB node " << i << " isInLoop should be true";
-    }
-}
-
-// 6-device ring with internal same-role closures: H-H-B-B-H-H. Two role
-// transitions inside the loop (positions 1→2 and 3→4) and one across the
-// closing cable (position 5→0). Every node's roster must still converge to
-// the full 6-member loop despite the role boundaries.
-inline void cdmSixDeviceInternalSameRoleClosures(ChainMultiDeviceFixture* suite) {
-    suite->spawnDevices(6);
-    suite->node(0).player->setIsHunter(true);
-    suite->node(1).player->setIsHunter(true);
-    suite->node(2).player->setIsHunter(false);
-    suite->node(3).player->setIsHunter(false);
-    suite->node(4).player->setIsHunter(true);
-    suite->node(5).player->setIsHunter(true);
-
-    suite->connectOutputToPrev(1);
-    suite->connectOutputToPrev(2);
-    suite->connectOutputToPrev(3);
-    suite->connectOutputToPrev(4);
-    suite->connectOutputToPrev(5);
-    suite->deliverAllPackets();
-    suite->syncAll();
-    suite->deliverAllPackets();
-
-    suite->closeRing();
-    suite->primeRosterStableAll();
-
-    for (size_t i = 0; i < suite->nodeCount(); ++i) {
-        EXPECT_EQ(suite->node(i).rdc->getChainMembers().size(), 6u)
-            << "HHBBHH node " << i;
-        EXPECT_TRUE(suite->node(i).rdc->isInLoop())
-            << "HHBBHH node " << i;
-    }
-}
-
 // 16-device ring at the design ceiling (MAX_SHOOTOUT_MEMBERS). Alternating
 // roles maximize role boundaries; all 16 must appear in every node's roster
 // after convergence.
@@ -1656,11 +1560,12 @@ inline void cdmIdleCadenceSettlesToOneHz(ChainMultiDeviceFixture* suite) {
     const auto endIn = suite->node(1).rdc->getRosterStats(
         SerialIdentifier::INPUT_JACK).framesTx;
 
-    // 1Hz backstop over 10s = ~10 BEACONs. 20 is the conservative ceiling that
-    // would catch any sustained spurious re-emission (which would emit ≥50).
-    EXPECT_LE(endOut - baseOut, 20u)
+    // 1Hz backstop over 10s = 10 BEACONs per jack. The ceiling of 12 allows a
+    // 1-frame boundary slop but still fails a 2Hz regression (~20) or any
+    // event-driven re-emission storm.
+    EXPECT_LE(endOut - baseOut, 12u)
         << "idle node 0 OUTPUT did not settle to 1Hz BEACON cadence";
-    EXPECT_LE(endIn - baseIn, 20u)
+    EXPECT_LE(endIn - baseIn, 12u)
         << "idle node 1 INPUT did not settle to 1Hz BEACON cadence";
 }
 

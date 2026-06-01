@@ -65,18 +65,6 @@ public:
     FakePlatformClock* fakeClock;
 };
 
-inline void matchManagerSetBoostStoresValue(MatchManager* mm, Player* player) {
-    mm->setBoostProvider([]() -> unsigned long { return 75; });
-}
-
-inline void matchManagerClearCurrentMatchResetsBoost(MatchManager* mm, Player* player) {
-    mm->setBoostProvider([]() -> unsigned long { return 60; });
-    player->setIsHunter(true);
-    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
-    mm->initializeMatch(dummyMac);
-    mm->clearCurrentMatch();
-}
-
 inline void matchManagerBoostSubtractedFromHunterReactionTime(MatchManagerTestSuite* suite) {
     suite->player->setIsHunter(true);
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
@@ -260,6 +248,31 @@ inline void matchManagerBountyWinsWhenHunterNeverPressed(MatchManager* mm, Playe
     EXPECT_TRUE(mm->didWin());
 }
 
+// First-writer-wins on the opponent's outcome (spec rule OpponentResultReceived,
+// requires their_result = null): once a DRAW_RESULT has resolved the opponent's
+// side, a later NEVER_PRESSED from the same opponent must not re-resolve it. A
+// stale or racing timeout packet cannot turn a loss into a win.
+inline void matchManagerOpponentResultIsFirstWriterWins(MatchManager* mm, Player* player) {
+    player->setIsHunter(true);
+    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    mm->initializeMatch(dummyMac);
+
+    // We pressed slow (350); the opponent's DRAW_RESULT says they pressed fast
+    // (200), so we lose.
+    mm->setHunterDrawTime(350);
+    mm->setReceivedButtonPush();
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::DRAW_RESULT, mm->getCurrentMatch()->getMatchId(), "boun", 200, false));
+    ASSERT_TRUE(mm->matchResultsAreIn());
+    ASSERT_FALSE(mm->didWin());
+
+    // A late NEVER_PRESSED from the same opponent must NOT flip the resolved loss
+    // into a win.
+    mm->listenForMatchEvents(QuickdrawCommand(
+        dummyMac, QDCommand::NEVER_PRESSED, mm->getCurrentMatch()->getMatchId(), "boun", 0, false));
+    EXPECT_FALSE(mm->didWin());
+}
+
 // ============================================
 // Match State Tests
 // ============================================
@@ -287,8 +300,8 @@ inline void matchManagerTracksDuelState(MatchManager* mm, Player* player) {
 // match's established opponent (right MAC + right matchId). A neighbor
 // device forging results for someone else's duel must be ignored.
 
-// NEVER_PRESSED forged by a non-opponent MAC must not set opponentNeverPressed
-// (which would otherwise force didWin() to true).
+// NEVER_PRESSED forged by a non-opponent MAC must not resolve the opponent's
+// side as a no-show (which would otherwise force didWin() to true).
 inline void matchManagerRejectsNeverPressedFromStranger(MatchManager* mm, Player* player) {
     player->setIsHunter(true);
     uint8_t opponentMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
@@ -367,7 +380,7 @@ inline void matchManagerGraceExpiredAloneFinalizes(MatchManager* mm, Player* pla
     mm->initializeMatch(dummyMac);
 
     // Grace expired on our side; opponent's NEVER_PRESSED dropped; we never
-    // pressed. Only the gracePeriodExpiredNoResult clause can unstick this.
+    // pressed. Only our own timed-out result (myResult, not pressed) unsticks this.
     mm->sendNeverPressed(1500);
 
     EXPECT_TRUE(mm->matchResultsAreIn());
@@ -477,23 +490,33 @@ inline void matchManagerDuelStartTimeTracking(MatchManager* mm, Player* player) 
 // Button Masher Count Reset Test
 // ============================================
 
-inline void matchManagerClearCurrentMatchResetsMasherCount(MatchManager* mm, Player* player) {
-    player->setIsHunter(true);
+// initializeMatch zeroes buttonMasherCount, so a masher penalty racked up in
+// one duel must not bleed into the next match's reaction time.
+inline void matchManagerClearCurrentMatchResetsMasherCount(MatchManagerTestSuite* suite) {
+    MatchManager* mm = suite->matchManager;
+    suite->player->setIsHunter(true);
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     mm->initializeMatch(dummyMac);
 
-    auto masherCallback = mm->getButtonMasher();
-    masherCallback(mm);
-    masherCallback(mm);
-    masherCallback(mm);
+    // Rack up a 3-press masher penalty in the first match.
+    auto masher = mm->getButtonMasher();
+    masher(mm);
+    masher(mm);
+    masher(mm);
 
     mm->clearCurrentMatch();
-
     mm->initializeMatch(dummyMac);
 
-    EXPECT_TRUE(mm->getCurrentMatch().has_value());
-    mm->clearCurrentMatch();
-    EXPECT_FALSE(mm->getCurrentMatch().has_value());
+    // A press 200ms after the draw in the fresh match must read 200ms exactly,
+    // with no carried-over 3*75ms penalty. No boost provider set, so the stored
+    // hunter draw time equals the raw reaction time.
+    suite->fakeClock->setTime(10000);
+    mm->setDuelLocalStartTime(10000);
+    suite->fakeClock->setTime(10200);
+    auto press = mm->getDuelButtonPush();
+    press(mm);
+
+    EXPECT_EQ(mm->getCurrentMatch()->getHunterDrawTime(), 200u);
 }
 
 // ============================================

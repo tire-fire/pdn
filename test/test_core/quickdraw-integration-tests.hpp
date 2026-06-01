@@ -468,22 +468,40 @@ inline void listenForMatchResultsHandlesNeverPressed(PacketParsingTests* suite) 
     suite->wirelessManager->setPacketReceivedCallback(
         std::bind(&MatchManager::listenForMatchEvents, suite->matchManager, std::placeholders::_1)
     );
-    
+
+    // We pressed, but slower than the opponent's recorded time. The opponent
+    // then reports NEVER_PRESSED. didWin must still be true: a timed-out opponent
+    // loses regardless of times — the pressed=false branch short-circuits the
+    // time comparison. This is what distinguishes NEVER_PRESSED from DRAW_RESULT.
+    suite->matchManager->setHunterDrawTime(50000);
+    suite->matchManager->setReceivedButtonPush();
+
     TestQuickdrawPacket packet = suite->createPacket(QDCommand::NEVER_PRESSED, 0, 9999);
     suite->processPacket(packet);
-    
+
     EXPECT_TRUE(suite->matchManager->getHasReceivedDrawResult());
     EXPECT_EQ(suite->matchManager->getCurrentMatch()->getBountyDrawTime(), 9999);
+    EXPECT_TRUE(suite->matchManager->matchResultsAreIn());
+    EXPECT_TRUE(suite->matchManager->didWin())
+        << "opponent NEVER_PRESSED => win even though our 50000ms > their 9999ms";
 }
 
 inline void listenForMatchResultsIgnoresUnexpectedCommands(PacketParsingTests* suite) {
-    static const char kMatchId[37] = "000000000000000000000000000000000000";
+    // A SEND_MATCH_ID from a MAC that isn't our RDC peer must be ignored: it must
+    // neither register a draw result nor hijack the already-active match.
+    const std::string originalMatchId = suite->matchManager->getCurrentMatch()->getMatchId();
+    static const char kStrangerMatchId[37] = "000000000000000000000000000000000000";
+    ASSERT_NE(originalMatchId, kStrangerMatchId);
+
     uint8_t strangerMac[6] = {0x99, 0x99, 0x99, 0x99, 0x99, 0x99};
-    QuickdrawCommand cmd(strangerMac, QDCommand::SEND_MATCH_ID, kMatchId, "test", 0, true);
-    
+    QuickdrawCommand cmd(strangerMac, QDCommand::SEND_MATCH_ID, kStrangerMatchId, "test", 0, true);
+
     suite->matchManager->listenForMatchEvents(cmd);
-    
+
     EXPECT_FALSE(suite->matchManager->getHasReceivedDrawResult());
+    ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value());
+    EXPECT_EQ(suite->matchManager->getCurrentMatch()->getMatchId(), originalMatchId)
+        << "stranger SEND_MATCH_ID must not replace the active match";
 }
 
 // ============================================
@@ -647,9 +665,9 @@ inline void stateFlowDutReceivesFirstLoses(StateFlowIntegrationTests* suite) {
 
 // Regression: a press landing the same iteration the button-push grace expires
 // must count, not be reported as NEVER_PRESSED. execDrivers() runs the button
-// handler before onStateLoop, so both hasPressedButton and the timer expiry are
-// true at one onStateLoop visit. Sending NEVER_PRESSED there sets
-// gracePeriodExpiredNoResult and loses a duel the player actually won.
+// handler before onStateLoop, so my side is already resolved (pressed) when the
+// timer expires at one onStateLoop visit. sendNeverPressed must no-op there
+// rather than resolve my side as a timeout and lose a duel the player won.
 inline void stateFlowPressAtGraceExpiryStillCounts(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(2);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(2);
@@ -795,14 +813,6 @@ inline void stateFlowThroughDuelResultToLose(StateFlowIntegrationTests* suite) {
     
     EXPECT_FALSE(resultState.transitionToWin());
     EXPECT_TRUE(resultState.transitionToLose());
-}
-
-inline void stateFlowDuelToWin(StateFlowIntegrationTests* suite) {
-    stateFlowThroughDuelResultToWin(suite);
-}
-
-inline void stateFlowDuelToLose(StateFlowIntegrationTests* suite) {
-    stateFlowThroughDuelResultToLose(suite);
 }
 
 // ============================================

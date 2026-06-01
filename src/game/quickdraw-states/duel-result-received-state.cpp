@@ -34,12 +34,11 @@ void DuelReceivedResult::onStateLoop(Device *PDN) {
 
     buttonPushGraceTimer.updateTime();
 
-    // execDrivers() runs the button handler before this loop, so a press can
-    // land the same iteration the grace expires. It must take the press path,
-    // not be reported as a no-show: sendNeverPressed sets gracePeriodExpiredNoResult,
-    // which flips didWin() to a loss regardless of the recorded reaction time.
-    // Mirrors DuelPushed's !matchResultsAreIn() void guard.
-    if(buttonPushGraceTimer.expired() && !neverPressedSent_ && !matchManager->getHasPressedButton()) {
+    // sendNeverPressed is first-writer-wins: if a press landed the same tick the
+    // grace expired (execDrivers runs the button handler before this loop), it
+    // already resolved my side and sendNeverPressed no-ops. So this no longer
+    // needs to know about that race.
+    if(buttonPushGraceTimer.expired() && !neverPressedSent_) {
         LOG_I(DUEL_RESULT_RECEIVED_TAG, "Button push grace period expired");
 
         unsigned long pityTime = SimpleTimer::getPlatformClock()->milliseconds() - matchManager->getDuelLocalStartTime();

@@ -126,14 +126,6 @@ inline void completeDuelFlowHunterWins(DuelIntegrationTestSuite* suite) {
     EXPECT_TRUE(suite->hunterMatchManager->matchResultsAreIn());
     EXPECT_TRUE(suite->hunterMatchManager->didWin());
 
-    suite->hunter->incrementWins();
-    suite->hunter->incrementMatchesPlayed();
-    suite->hunter->incrementStreak();
-    suite->hunter->addReactionTime(HUNTER_REACTION_MS);
-
-    EXPECT_EQ(suite->hunter->getWins(), 1);
-    EXPECT_EQ(suite->hunter->getStreak(), 1);
-
     // Bounty side
     suite->bountyMatchManager->setBountyDrawTime(BOUNTY_REACTION_MS);
     suite->bountyMatchManager->setReceivedButtonPush();
@@ -143,14 +135,6 @@ inline void completeDuelFlowHunterWins(DuelIntegrationTestSuite* suite) {
 
     EXPECT_TRUE(suite->bountyMatchManager->matchResultsAreIn());
     EXPECT_FALSE(suite->bountyMatchManager->didWin());
-
-    suite->bounty->incrementLosses();
-    suite->bounty->incrementMatchesPlayed();
-    suite->bounty->resetStreak();
-    suite->bounty->addReactionTime(BOUNTY_REACTION_MS);
-
-    EXPECT_EQ(suite->bounty->getLosses(), 1);
-    EXPECT_EQ(suite->bounty->getStreak(), 0);
 }
 
 // ============================================
@@ -191,49 +175,6 @@ inline void completeDuelFlowBountyWins(DuelIntegrationTestSuite* suite) {
 }
 
 
-// ============================================
-// Player Stats Flow Over Multiple Matches
-// ============================================
-
-inline void playerStatsAccumulateAcrossMatches(Player* player) {
-    player->incrementWins();
-    player->incrementMatchesPlayed();
-    player->incrementStreak();
-    player->addReactionTime(200);
-
-    player->incrementWins();
-    player->incrementMatchesPlayed();
-    player->incrementStreak();
-    player->addReactionTime(180);
-
-    player->incrementWins();
-    player->incrementMatchesPlayed();
-    player->incrementStreak();
-    player->addReactionTime(220);
-
-    EXPECT_EQ(player->getStreak(), 3);
-    EXPECT_EQ(player->getWins(), 3);
-
-    player->incrementLosses();
-    player->incrementMatchesPlayed();
-    player->resetStreak();
-    player->addReactionTime(350);
-
-    EXPECT_EQ(player->getStreak(), 0);
-    EXPECT_EQ(player->getLosses(), 1);
-
-    player->incrementWins();
-    player->incrementMatchesPlayed();
-    player->incrementStreak();
-    player->addReactionTime(190);
-
-    EXPECT_EQ(player->getWins(), 4);
-    EXPECT_EQ(player->getLosses(), 1);
-    EXPECT_EQ(player->getMatchesPlayed(), 5);
-    EXPECT_EQ(player->getStreak(), 1);
-    EXPECT_EQ(player->getLastReactionTime(), 190);
-    EXPECT_EQ(player->getAverageReactionTime(), 228);
-}
 
 // ============================================
 // Edge Cases

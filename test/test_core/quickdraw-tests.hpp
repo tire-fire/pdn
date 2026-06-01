@@ -99,9 +99,6 @@ inline void idleMountRegistersButtonCallbacks(IdleStateTests* suite) {
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
 
     suite->idleState->onStateMounted(&suite->device);
-
-    // With FakeRemoteDeviceCoordinator always returning DISCONNECTED, should not transition
-    EXPECT_FALSE(suite->idleState->transitionToDuelCountdown());
 }
 
 // Test: Idle state does not transition without a connection
@@ -120,19 +117,6 @@ inline void idleDoesNotTransitionWhenDisconnected(IdleStateTests* suite) {
 
 // Test: State cleanup on dismount
 inline void idleStateClearsOnDismount(IdleStateTests* suite) {
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-
-    suite->idleState->onStateMounted(&suite->device);
-
-    EXPECT_CALL(*suite->device.mockPrimaryButton, removeButtonCallbacks()).Times(1);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, removeButtonCallbacks()).Times(1);
-
-    suite->idleState->onStateDismounted(&suite->device);
-}
-
-// Test: Button callbacks are registered and removed properly
-inline void idleButtonCallbacksRegisteredAndRemoved(IdleStateTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
 
@@ -265,59 +249,6 @@ public:
     FakePlatformClock* fakeClock;
 };
 
-// Test: Button masher penalty increments on button press
-inline void countdownButtonMasherPenaltyIncrementsOnButtonPress(DuelCountdownTests* suite) {
-    // Capture the button callback when it's set
-    parameterizedCallbackFunction capturedCallback = nullptr;
-    void* capturedCtx = nullptr;
-    
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _))
-        .WillOnce(DoAll(
-            SaveArg<0>(&capturedCallback),
-            SaveArg<1>(&capturedCtx)
-        ));
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
-
-    suite->countdownState->onStateMounted(&suite->device);
-    
-    // Invoke the button callback (simulating early button press)
-    ASSERT_NE(capturedCallback, nullptr);
-    capturedCallback(capturedCtx);
-    
-    // The button masher count should be tracked in the match manager
-    // We can verify this by checking that a subsequent duel button press has penalty applied
-    // For now, we verify the callback was invokable
-    SUCCEED();
-}
-
-// Test: Multiple early presses accumulate penalty  
-inline void countdownMultipleEarlyPressesAccumulatePenalty(DuelCountdownTests* suite) {
-    parameterizedCallbackFunction capturedCallback = nullptr;
-    void* capturedCtx = nullptr;
-    
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _))
-        .WillOnce(DoAll(
-            SaveArg<0>(&capturedCallback),
-            SaveArg<1>(&capturedCtx)
-        ));
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
-
-    suite->countdownState->onStateMounted(&suite->device);
-    
-    ASSERT_NE(capturedCallback, nullptr);
-    
-    // Simulate 3 early button presses
-    capturedCallback(capturedCtx);
-    capturedCallback(capturedCtx);
-    capturedCallback(capturedCtx);
-    
-    // The penalty should now be 3 * 75ms = 225ms
-    // This will be verified when the duel button is pressed
-    SUCCEED();
-}
-
 // Test: Countdown progresses through stages
 inline void countdownProgressesThroughStages(DuelCountdownTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
@@ -344,35 +275,6 @@ inline void countdownProgressesThroughStages(DuelCountdownTests* suite) {
     suite->countdownState->onStateLoop(&suite->device);
     
     // After ONE expires, BATTLE should trigger
-    EXPECT_TRUE(suite->countdownState->shallWeBattle());
-}
-
-// Test: Battle transition sets flag
-inline void countdownBattleTransitionSetsFlag(DuelCountdownTests* suite) {
-    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
-    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
-    
-    suite->countdownState->onStateMounted(&suite->device);
-    
-    // Should not battle initially
-    EXPECT_FALSE(suite->countdownState->shallWeBattle());
-    
-    // Advance through each stage properly:
-    // THREE -> TWO (2000ms)
-    suite->fakeClock->advance(2100);
-    suite->countdownState->onStateLoop(&suite->device);
-    EXPECT_FALSE(suite->countdownState->shallWeBattle());
-    
-    // TWO -> ONE (2000ms)
-    suite->fakeClock->advance(2100);
-    suite->countdownState->onStateLoop(&suite->device);
-    EXPECT_FALSE(suite->countdownState->shallWeBattle());
-    
-    // ONE -> BATTLE (2000ms)
-    suite->fakeClock->advance(2100);
-    suite->countdownState->onStateLoop(&suite->device);
-    
     EXPECT_TRUE(suite->countdownState->shallWeBattle());
 }
 
@@ -1048,12 +950,10 @@ inline void resultMatchFinalizedOnResult(DuelResultTests* suite) {
         dummyMac, QDCommand::DRAW_RESULT, suite->matchManager->getCurrentMatch()->getMatchId(),
         "boun", 300, false));
 
+    // Mounting the result state finalizes the match: the storage write/writeUChar
+    // EXPECT_CALLs above are the assertion, verified at mock teardown.
     DuelResult resultState(suite->player, suite->matchManager, suite->wirelessManager, nullptr);
     resultState.onStateMounted(&suite->device);
-
-    // Match should be finalized (saved to storage)
-    // We verify this by checking the mock was called
-    SUCCEED();
 }
 
 // ============================================

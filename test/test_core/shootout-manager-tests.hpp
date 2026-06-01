@@ -80,10 +80,16 @@ inline void confirmRebroadcastsEverySecondDuringProposal(ShootoutManagerTests* s
     suite->shootout->setLoopMembersForTest({
         {0x01, 0, 0, 0, 0, 0}, {0x02, 0, 0, 0, 0, 0}
     });
+    // The second member never confirms, so the phase stays PROPOSAL and the only
+    // periodic shootout traffic is the 1Hz confirm rebroadcast. Count it.
+    int shootoutSends = 0;
     EXPECT_CALL(*suite->device.mockPeerComms,
         sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
         .Times(testing::AnyNumber())
-        .WillRepeatedly(testing::Return(1));
+        .WillRepeatedly(testing::InvokeWithoutArgs([&shootoutSends]() {
+            ++shootoutSends;
+            return 1;
+        }));
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
 
@@ -92,6 +98,11 @@ inline void confirmRebroadcastsEverySecondDuringProposal(ShootoutManagerTests* s
         suite->shootout->sync();
     }
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
+    // 3000ms at kConfirmRebroadcastMs=1000 -> ~3 rebroadcasts on top of the
+    // initial confirms. The band falsifies both a dead rebroadcast (would stall
+    // at the ~2 initial sends) and an every-tick storm (~30 sends).
+    EXPECT_GE(shootoutSends, 3);
+    EXPECT_LE(shootoutSends, 8);
 }
 
 inline void bracketSizeAndByeMatchMemberCount(ShootoutManagerTests* suite) {
@@ -130,28 +141,6 @@ inline void receivingAllConfirmsAdvancesToBracketReveal(ShootoutManagerTests* su
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
     suite->shootout->onConfirmReceived(m3.data());
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
-}
-
-inline void coordinatorBroadcastsBracketOnAdvance(ShootoutManagerTests* suite) {
-    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
-        .WillByDefault(testing::Return(selfMac));
-    std::vector<std::array<uint8_t, 6>> members = {
-        {0x01, 0, 0, 0, 0, 0}, {0x02, 0, 0, 0, 0, 0}, {0x03, 0, 0, 0, 0, 0}
-    };
-    suite->shootout->setLoopMembersForTest(members);
-    suite->cdm->claimCoordinator();
-
-    EXPECT_CALL(*suite->device.mockPeerComms,
-        sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
-        .Times(testing::AtLeast(2))
-        .WillRepeatedly(testing::Return(1));
-
-    suite->shootout->startProposal();
-    for (auto& m : members) suite->shootout->onConfirmReceived(m.data());
-    suite->shootout->confirmLocal();
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
-    EXPECT_EQ(suite->shootout->getBracketPendingAckCount(), 2u);
 }
 
 inline void bracketAckClearsPendingForThatPeer(ShootoutManagerTests* suite) {

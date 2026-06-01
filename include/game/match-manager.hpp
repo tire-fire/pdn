@@ -33,10 +33,13 @@ struct LastMatchDisplay {
 
 struct ActiveDuelState {
     bool matchIsReady = false;
-    bool hasReceivedDrawResult = false;
-    bool hasPressedButton = false;
-    bool gracePeriodExpiredNoResult = false;
-    bool opponentNeverPressed = false;
+    // Each side's duel outcome, resolved once (first writer wins). Absent means
+    // not yet known; pressed=false means that side timed out and its draw time
+    // is the pity time. "Pressed" and "timed out" are the same field, so the
+    // contradiction (pressed AND timed-out) cannot be represented.
+    struct SideResult { bool pressed; };
+    std::optional<SideResult> myResult;
+    std::optional<SideResult> theirResult;
     unsigned long duelLocalStartTime = 0;
     unsigned long BUTTON_MASHER_PENALTY_MS = 75;
     int buttonMasherCount = 0;
@@ -171,7 +174,7 @@ public:
 
     // A reliable send is abandoned only after exhausting its retry budget.
     // Only DRAW_RESULT (sent when we pressed) and NEVER_PRESSED (sent when we
-    // didn't) go reliably, so hasPressedButton identifies which was lost: a
+    // didn't) go reliably, so whether we pressed identifies which was lost: a
     // lost DRAW_RESULT means the opponent never learned our time, so void; a
     // lost NEVER_PRESSED is harmless since our loss is already recorded locally.
     void onReliableSendAbandoned();

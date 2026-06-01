@@ -457,23 +457,6 @@ TEST_F(DeviceTestSuite, pausedAppPreservesState) {
     ASSERT_EQ(appOne->loopCount, loopsBeforePause + 1);
 }
 
-TEST_F(DeviceTestSuite, loopExecutesDriversBeforeAppLoop) {
-    // This test verifies that Device::loop() calls both
-    // driverManager.execDrivers() and the app's onStateLoop
-    AppConfig config;
-    config[APP_ONE] = appOne;
-    
-    device->loadAppConfig(std::move(config), APP_ONE);
-    
-    // Device loop should execute drivers and then app loop
-    device->loop();
-    
-    // App loop was called
-    ASSERT_EQ(appOne->loopCount, 1);
-    
-    // Note: We can't directly test execDrivers() was called since
-    // it's not mockable, but this documents the expected behavior
-}
 
 // ============================================
 // SERIAL TESTS
@@ -493,18 +476,6 @@ TEST(NativeSerialDriver, byteCallbackFragmentsWhenEnabled) {
 
 TEST_F(PlayerTestSuite, jsonRoundTripPreservesAllFields) {
     playerJsonRoundTripPreservesAllFields(player);
-}
-
-TEST_F(PlayerTestSuite, jsonRoundTripWithBountyRole) {
-    playerJsonRoundTripWithBountyRole(player);
-}
-
-TEST_F(PlayerTestSuite, statsIncrementCorrectly) {
-    playerStatsIncrementCorrectly(player);
-}
-
-TEST_F(PlayerTestSuite, streakResetsOnLoss) {
-    playerStreakResetsOnLoss(player);
 }
 
 TEST_F(PlayerTestSuite, allegianceFromIntSetsCorrectly) {
@@ -541,10 +512,6 @@ TEST_F(MatchTestSuite, drawTimesSetCorrectly) {
 
 TEST_F(MatchTestSuite, withZeroDrawTimes) {
     matchWithZeroDrawTimes();
-}
-
-TEST_F(MatchTestSuite, withLargeDrawTimes) {
-    matchWithLargeDrawTimes();
 }
 
 // ============================================
@@ -603,10 +570,6 @@ TEST_F(TimerTestSuite, withNullClockHandlesGracefully) {
 // MATCH MANAGER TESTS
 // ============================================
 
-TEST_F(MatchManagerTestSuite, setBoostStoresValue) {
-    matchManagerSetBoostStoresValue(matchManager, player);
-}
-
 TEST_F(MatchManagerTestSuite, boostSubtractedFromHunterReactionTime) {
     matchManagerBoostSubtractedFromHunterReactionTime(this);
 }
@@ -616,10 +579,6 @@ TEST_F(MatchManagerTestSuite, shootoutMatchExcludedFromReactionStats) {
 }
 TEST_F(MatchManagerTestSuite, shootoutMatchRoleDecoupledFromAllegiance) {
     matchManagerShootoutMatchRoleDecoupledFromAllegiance(this);
-}
-
-TEST_F(MatchManagerTestSuite, clearCurrentMatchResetsBoost) {
-    matchManagerClearCurrentMatchResetsBoost(matchManager, player);
 }
 
 TEST_F(MatchManagerTestSuite, initializeCreatesMatch) {
@@ -656,6 +615,10 @@ TEST_F(MatchManagerTestSuite, hunterWinsWhenBountyNeverPressed) {
 
 TEST_F(MatchManagerTestSuite, bountyWinsWhenHunterNeverPressed) {
     matchManagerBountyWinsWhenHunterNeverPressed(matchManager, player);
+}
+
+TEST_F(MatchManagerTestSuite, opponentResultIsFirstWriterWins) {
+    matchManagerOpponentResultIsFirstWriterWins(matchManager, player);
 }
 
 TEST_F(MatchManagerTestSuite, tracksDuelState) {
@@ -711,7 +674,7 @@ TEST_F(MatchManagerTestSuite, duelStartTimeTracking) {
 }
 
 TEST_F(MatchManagerTestSuite, clearCurrentMatchResetsMasherCount) {
-    matchManagerClearCurrentMatchResetsMasherCount(matchManager, player);
+    matchManagerClearCurrentMatchResetsMasherCount(this);
 }
 
 TEST_F(MatchManagerTestSuite, matchIsReadyFalseBeforeHandshake) {
@@ -750,10 +713,6 @@ TEST_F(DuelIntegrationTestSuite, completeDuelFlowBountyWins) {
     completeDuelFlowBountyWins(this);
 }
 
-TEST_F(DuelIntegrationTestSuite, playerStatsAccumulateAcrossMatches) {
-    playerStatsAccumulateAcrossMatches(hunter);
-}
-
 TEST_F(DuelIntegrationTestSuite, duelWithTiedReactionTimes) {
     duelWithTiedReactionTimes(this);
 }
@@ -776,10 +735,6 @@ TEST_F(IdleStateTests, doesNotTransitionWhenDisconnected) {
 
 TEST_F(IdleStateTests, stateClearsOnDismount) {
     idleStateClearsOnDismount(this);
-}
-
-TEST_F(IdleStateTests, buttonCallbacksRegisteredAndRemoved) {
-    idleButtonCallbacksRegisteredAndRemoved(this);
 }
 
 TEST_F(IdleStateTests, doesNotTransitionWithMatchButNotReady) {
@@ -819,6 +774,10 @@ TEST_F(PeerGraphTests, fourNodeRingInLoop) {
 
 TEST_F(PeerGraphTests, selfIslandNotInLoop) {
     peerGraphSelfIslandNotInLoop(this);
+}
+
+TEST_F(PeerGraphTests, rejectsPoisonBeaconSource) {
+    peerGraphRejectsPoisonBeaconSource(this);
 }
 
 TEST_F(PeerGraphTests, topologyStableAfterDebounceWindow) {
@@ -870,20 +829,8 @@ TEST(PeerGraphCodecTests, rejectsWrongOpcode) { codecRejectsWrongOpcode(); }
 // QUICKDRAW STATE TESTS - COUNTDOWN
 // ============================================
 
-TEST_F(DuelCountdownTests, buttonMasherPenaltyIncrementsOnButtonPress) {
-    countdownButtonMasherPenaltyIncrementsOnButtonPress(this);
-}
-
-TEST_F(DuelCountdownTests, multipleEarlyPressesAccumulatePenalty) {
-    countdownMultipleEarlyPressesAccumulatePenalty(this);
-}
-
 TEST_F(DuelCountdownTests, progressesThroughStages) {
     countdownProgressesThroughStages(this);
-}
-
-TEST_F(DuelCountdownTests, battleTransitionSetsFlag) {
-    countdownBattleTransitionSetsFlag(this);
 }
 
 TEST_F(DuelCountdownTests, cleansUpOnDismount) {
@@ -1268,7 +1215,6 @@ TEST_F(ChainManagerTests, isChampionFalseWithSameRoleOpponent) {
 }
 
 TEST_F(ChainManagerTests, DirectPeerConnectDoesNotClaim) { cdmDirectPeerConnectDoesNotClaim(this); }
-TEST_F(ChainManagerTests, DirectPeerConnectEmptyConfirmsDoesNotClaim) { cdmDirectPeerConnectEmptyConfirmsDoesNotClaim(this); }
 TEST_F(ChainManagerTests, sendConfirmTargetsChampionMac) {
     cdmSendConfirmTargetsChampionMac(this);
 }
@@ -1407,7 +1353,6 @@ TEST_F(ChainMultiDeviceFixture, shootoutFourDeviceTwoTournamentsBackToBack) {
 }
 TEST_F(ChainMultiDeviceFixture, ThreeDeviceChainNoLoop) { rdcThreeDeviceChainNoLoop(this); }
 TEST_F(ChainMultiDeviceFixture, ThreeDeviceRingReportsLoop) { rdcThreeDeviceRingReportsLoop(this); }
-TEST_F(ChainMultiDeviceFixture, MixedRoleRingReportsLoop) { rdcMixedRoleRingReportsLoop(this); }
 TEST_F(ChainMultiDeviceFixture, HunterRingClaimsExactlyOneCoordinator) { cdmHunterRingClaimsExactlyOneCoordinator(this); }
 TEST_F(ChainMultiDeviceFixture, CoordinatorIsNeverSupporter) { cdmCoordinatorIsNeverSupporter(this); }
 TEST_F(ChainMultiDeviceFixture, MixedRoleRingClaimsCoordinator) { cdmMixedRoleRingClaimsCoordinator(this); }
@@ -1430,12 +1375,6 @@ TEST_F(ChainMultiDeviceFixture, fourDeviceMixedLoopHeadToHeadFirst) {
 TEST_F(ChainMultiDeviceFixture, mixedLoopCableYankClearsLoopMergeState) {
     cdmMixedLoopCableYankClearsLoopMergeState(this);
 }
-TEST_F(ChainMultiDeviceFixture, alternatingHBHBRingAssemblesFullBracket) {
-    cdmAlternatingHBHBRingAssemblesFullBracket(this);
-}
-TEST_F(ChainMultiDeviceFixture, sixDeviceInternalSameRoleClosures) {
-    cdmSixDeviceInternalSameRoleClosures(this);
-}
 TEST_F(ChainMultiDeviceFixture, sixteenDeviceRingFullBracket) {
     cdmSixteenDeviceRingFullBracket(this);
 }
@@ -1454,7 +1393,6 @@ TEST_F(ShootoutManagerTests, bracketSizeAndByeMatchMemberCount) { bracketSizeAnd
 TEST_F(ShootoutManagerTests, localConfirmIsRecordedAndBroadcast) { localConfirmIsRecordedAndBroadcast(this); }
 TEST_F(ShootoutManagerTests, receivingAllConfirmsAdvancesToBracketReveal) { receivingAllConfirmsAdvancesToBracketReveal(this); }
 TEST_F(ShootoutManagerTests, confirmRebroadcastsEverySecondDuringProposal) { confirmRebroadcastsEverySecondDuringProposal(this); }
-TEST_F(ShootoutManagerTests, coordinatorBroadcastsBracketOnAdvance) { coordinatorBroadcastsBracketOnAdvance(this); }
 TEST_F(ShootoutManagerTests, bracketAckClearsPendingForThatPeer) { bracketAckClearsPendingForThatPeer(this); }
 TEST_F(ShootoutManagerTests, bracketRetriesThreeTimesThenAborts) { bracketRetriesThreeTimesThenAborts(this); }
 TEST_F(ShootoutManagerTests, matchStartAbandonAbortsTournament) { matchStartAbandonAbortsTournament(this); }

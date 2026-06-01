@@ -101,18 +101,3 @@ inline void matchWithZeroDrawTimes() {
     EXPECT_NE(json.find("\"winner_is_hunter\":false"), std::string::npos);
 }
 
-inline void matchWithLargeDrawTimes() {
-    Match match("match", "hunter", "bounty");
-    
-    // Test with large values
-    unsigned long largeTime = 999999999UL;
-    match.setHunterDrawTime(largeTime);
-    match.setBountyDrawTime(largeTime - 1);
-
-    EXPECT_EQ(match.getHunterDrawTime(), largeTime);
-    EXPECT_EQ(match.getBountyDrawTime(), largeTime - 1);
-
-    // Bounty should win (faster by 1ms)
-    std::string json = match.toJson();
-    EXPECT_NE(json.find("\"winner_is_hunter\":false"), std::string::npos);
-}

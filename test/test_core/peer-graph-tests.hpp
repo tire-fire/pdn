@@ -69,6 +69,35 @@ inline void peerGraphFourNodeRingInLoop(PeerGraphTests* suite) {
     EXPECT_EQ(g.getChainMembers().size(), 4u);
 }
 
+// An open jack reads as an all-zero peer. If acceptBeacon cached an all-zero
+// (or broadcast) source as a node, hasMutualEdge(realNode, {0}) would hold for
+// any device with a free jack, fabricating a false loop and inflating the
+// chain. The poison gate must reject the beacon at the cache owner, before it
+// ever enters beaconsBySource_.
+inline void peerGraphRejectsPoisonBeaconSource(PeerGraphTests* suite) {
+    PeerGraph g;
+    g.setSelfMac(suite->mac(0x01));
+    g.setSelfPeers({}, {}, 0);  // both jacks open -> self peers are all-zero
+
+    // All-zero source: rejected, not cached, no graph-change side effect.
+    EXPECT_FALSE(g.acceptBeacon({net::Mac{}, suite->mac(0x01), {}}, 100));
+    EXPECT_FALSE(g.getBeacon(net::Mac{}).has_value());
+
+    // Broadcast source: also rejected.
+    net::Mac broadcast{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    EXPECT_FALSE(g.acceptBeacon({broadcast, suite->mac(0x01), {}}, 100));
+    EXPECT_FALSE(g.getBeacon(broadcast).has_value());
+
+    // No poison node leaked in: self with two open jacks is an island, never a loop.
+    EXPECT_FALSE(g.isInLoop());
+    EXPECT_EQ(g.getChainMembers().size(), 1u);
+
+    // inPeer/outPeer may legitimately be all-zero (open jacks) — only source is
+    // validated, so a real source with open peers is still accepted.
+    EXPECT_TRUE(g.acceptBeacon({suite->mac(0x02), {}, {}}, 200));
+    EXPECT_TRUE(g.getBeacon(suite->mac(0x02)).has_value());
+}
+
 inline void peerGraphSelfIslandNotInLoop(PeerGraphTests* suite) {
     PeerGraph g;
     g.setSelfMac(suite->mac(0x01));
