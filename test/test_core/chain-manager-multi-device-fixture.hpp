@@ -219,7 +219,7 @@ public:
         MultiDeviceNode& upper = *nodes[i];       // initiates on OUTPUT_JACK
 
         // Record full-duplex serial links so propagateSerialMessages() can
-        // route chain-roster binary frames between the now-connected jacks.
+        // route peer-graph HELLO/BEACON frames between the now-connected jacks.
         serialLinks_.push_back({i,     SerialIdentifier::OUTPUT_JACK,
                                  i - 1, SerialIdentifier::INPUT_JACK});
         serialLinks_.push_back({i - 1, SerialIdentifier::INPUT_JACK,
@@ -370,7 +370,7 @@ public:
         MultiDeviceNode& head = *nodes[0];
         MultiDeviceNode& tailNode = *nodes[tail];
 
-        // Record the ring-close serial links so chain-roster binary frames
+        // Record the ring-close serial links so peer-graph HELLO/BEACON frames
         // propagate across the closing cable after it goes CONNECTED.
         serialLinks_.push_back({0,    SerialIdentifier::OUTPUT_JACK,
                                  tail, SerialIdentifier::INPUT_JACK});
@@ -695,7 +695,7 @@ inline void shootoutFourDeviceConsensusAndMatchStart(ChainMultiDeviceFixture* su
     suite->syncAll();
     suite->deliverAllPackets();
     suite->closeRing();
-    // Let the chain roster converge so isInLoop() + isTopologyStable() agree,
+    // Let the peer-graph converge so isInLoop() + isTopologyStable() agree,
     // and the 1Hz coord-derivation cycle fires the claim.
     suite->primeRosterStableAll();
 
@@ -936,7 +936,7 @@ inline void rdcThreeDeviceChainNoLoop(ChainMultiDeviceFixture* suite) {
 
 // 3-device mixed-role ring regression: two hunters wired together, one bounty
 // wired to the second hunter, then the bounty's free INPUT closes into the
-// first hunter's free OUTPUT. The chain roster is role-agnostic, so once it
+// first hunter's free OUTPUT. The peer-graph is role-agnostic, so once it
 // converges every device must report isInLoop()=true regardless of the role
 // mismatch on the closing cable.
 inline void rdcMixedRoleRingReportsLoop(ChainMultiDeviceFixture* suite) {
@@ -967,8 +967,8 @@ inline void rdcMixedRoleRingReportsLoop(ChainMultiDeviceFixture* suite) {
     }
 }
 
-// 3-device hunter ring: after closing the ring and letting the chain roster
-// converge, exactly one ChainManager reports isCoordinator()=true. The roster-
+// 3-device hunter ring: after closing the ring and letting the peer-graph
+// converge, exactly one ChainManager reports isCoordinator()=true. The graph-
 // derived election picks the lowest-MAC member of the loop; with sequential
 // MACs 0x10/0x11/0x12 in spawnDevices, node 0 wins.
 inline void cdmHunterRingClaimsExactlyOneCoordinator(ChainMultiDeviceFixture* suite) {
@@ -1008,8 +1008,8 @@ inline void cdmHunterRingClaimsExactlyOneCoordinator(ChainMultiDeviceFixture* su
         << "Expected exactly one coordinator in 3-hunter ring (got " << coordCount << ")";
 }
 
-// Mixed-role ring (H1—H2—B1 closed): the chain roster is role-agnostic, so
-// after the closing cable plugs in and the roster converges, exactly one
+// Mixed-role ring (H1—H2—B1 closed): the peer-graph is role-agnostic, so
+// after the closing cable plugs in and the graph converges, exactly one
 // ChainManager — the lowest-MAC member of the loop — reports isCoordinator()
 // regardless of role mix. Regression case for election across the
 // hunter/bounty boundary.
@@ -1219,8 +1219,8 @@ inline void cdmSixDeviceMixedLoopHeadToHeadFirst(ChainMultiDeviceFixture* suite)
 
 // 6-device mixed loop assembled tail-to-tail first. After both chains are
 // built, the AUX-to-AUX cable joins them (no duel triggered). The head-to-head
-// closer triggers loop closure on both sides; under chain-roster, all six
-// devices' rosters converge to the same 6-member set and the lowest-MAC node
+// closer triggers loop closure on both sides; under the peer-graph, all six
+// devices converge to the same 6-member set and the lowest-MAC node
 // claims coordinator after the 1-cycle stability window.
 //
 // Wiring layout after connectOutputToPrev(1), (2), (4), (5):
@@ -1283,7 +1283,7 @@ inline void cdmSixDeviceMixedLoopTailToTailFirst(ChainMultiDeviceFixture* suite)
     }
 }
 
-// 4-device HHBB mixed loop, tail-to-tail first. Under the chain-roster
+// 4-device HHBB mixed loop, tail-to-tail first. Under the peer-graph
 // protocol, role mix is irrelevant for election; the lowest-MAC member of the
 // 4-device loop is the single coordinator and its loop view contains all 4.
 inline void cdmFourDeviceMixedLoopTailToTailFirst(ChainMultiDeviceFixture* suite) {
@@ -1469,7 +1469,7 @@ inline void cdmSixteenDeviceRingFullBracket(ChainMultiDeviceFixture* suite) {
 }
 
 // 4-device HHBB mixed loop, head-to-head first. Same final topology as
-// tail-to-tail-first; the chain-roster protocol is order-independent and
+// tail-to-tail-first; the peer-graph protocol is order-independent and
 // converges to exactly one coordinator with a 4-member loop view.
 inline void cdmFourDeviceMixedLoopHeadToHeadFirst(ChainMultiDeviceFixture* suite) {
     suite->spawnDevices(4);
