@@ -196,9 +196,9 @@ TEST(WirelessTransportTest, ackRoutesByChannelSubType) {
 
     uint8_t target[6] = {1,2,3,4,5,6};
     TransportTestPayload p{};
-    // Send B first so its pending entry is inserted ahead of A's in the
-    // Resender vector. The buggy onAck (matching only on type+target+seqId)
-    // would erase B when A is acked.
+    // Send B first so its pending entry sits ahead of A's in the Resender
+    // vector. An ack for A must clear only A's slot, never B's, even though
+    // they share (type, target, seqId) and differ only by channel sub_type.
     uint8_t seqB = chB->sendReliable(target, p);
     uint8_t seqA = chA->sendReliable(target, p);
     ASSERT_EQ(seqA, seqB);
@@ -219,8 +219,8 @@ TEST(WirelessTransportTest, ackRoutesByChannelSubType) {
 TEST(ResenderTest, distinctSeqIdsToSameTargetCoexist) {
     // A batch of distinct reliable packets to one peer on one channel (e.g. one
     // BRACKET_ENTRY per bracket slot) must each retain an independent retry
-    // slot. The old (type, subType, target) replacement rule kept only the last,
-    // so a dropped non-final slot was never retransmitted.
+    // slot keyed by seqId; sharing (type, subType, target) must not collapse
+    // them into one, or a dropped non-final slot would never retransmit.
     Resender resender(nullptr);  // null wm: transmit() no-ops, retry bookkeeping intact
     uint8_t target[6] = {1,2,3,4,5,6};
     uint8_t payload[4] = {0};
@@ -248,8 +248,8 @@ TEST(ResenderTest, distinctSeqIdsToSameTargetCoexist) {
 TEST(WirelessTransportTest, droppedNonFinalSlotStillRetransmits) {
     // End-to-end: a coordinator sends three distinct reliable packets to one
     // peer on one channel, the peer acks the later two but the first is lost.
-    // The first must remain armed and ultimately abandon — under the old
-    // one-slot rule the later sends clobbered it, so it silently vanished.
+    // The first must remain armed and ultimately abandon, not be silently
+    // dropped because two later sends share its (type, subType, target).
     ::testing::NiceMock<MockPeerComms> mockComms;
     WirelessManager wm(&mockComms, nullptr);
     WirelessTransport transport(&wm);

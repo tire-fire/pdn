@@ -35,7 +35,6 @@ public:  // Public for test function access
 
 // Test: Output buffer has max size limit
 void serialDriverOutputBufferMaxSize(NativeSerialDriverTestSuite* suite) {
-    // Write a very long byte burst
     std::vector<uint8_t> longMsg(300, 'X');
     suite->driver_->writeBytes(longMsg.data(), longMsg.size());
 

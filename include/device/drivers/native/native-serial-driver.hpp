@@ -46,7 +46,6 @@ public:
     }
 
     int availableForWrite() override {
-        // Return remaining space in output buffer
         return static_cast<int>(MAX_OUTPUT_BUFFER_SIZE - outputBuffer_.size());
     }
 

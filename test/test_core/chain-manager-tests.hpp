@@ -172,8 +172,8 @@ inline void cdmRoleDerivationWithChampionTopology(ChainManagerTests* suite) {
     EXPECT_TRUE(cdm.getSupporterChainPeers().empty());
 
     suite->setupHunterChampion();
-    // canInitiateMatch now requires a settled roster (act only on stable
-    // topology), so drive the stability counter before asserting it can init.
+    // canInitiateMatch acts only on a stable topology, so drive the stability
+    // counter before asserting it can init.
     suite->primeRosterStable();
     ChainManager cdm2(&suite->player, suite->device.wirelessManager, &suite->rdc);
     suite->applyHunterChampionRoles(cdm2);

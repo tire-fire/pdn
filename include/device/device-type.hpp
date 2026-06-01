@@ -1,12 +1,8 @@
 #pragma once
 
-// WIRE-FORMAT STABLE — do not reorder; new values must be appended at the end.
-// This integer mapping is transmitted on serial as part of the HELLO frame (opcode 0x00).
-// Reordering would silently break wire compatibility in multi-firmware scenarios.
-// Today's deployment is single-firmware so the cost is currently theoretical;
-// preserve this constraint anyway. If future contributors need to reorder for
-// style, introduce a separate WireDeviceType enum with explicit value assignments
-// and a translation function.
+// These values are the wire encoding: transmitted on serial in the HELLO frame
+// (opcode 0x00), not just internal ids. Don't renumber or reorder existing
+// values — append new ones at the end.
 enum class DeviceType {
     UNKNOWN = 0,
     PDN = 1,

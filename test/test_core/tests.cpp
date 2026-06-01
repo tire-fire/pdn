@@ -547,26 +547,6 @@ TEST_F(MatchTestSuite, withLargeDrawTimes) {
     matchWithLargeDrawTimes();
 }
 
-// // ============================================
-// // UUID TESTS
-// // ============================================
-
-// TEST_F(UUIDTestSuite, stringToBytesProducesCorrectOutput) {
-//     uuidStringToBytesProducesCorrectOutput();
-// }
-
-// TEST_F(UUIDTestSuite, bytesToStringProducesValidFormat) {
-//     uuidBytesToStringProducesValidFormat();
-// }
-
-// TEST_F(UUIDTestSuite, roundTripPreservesData) {
-//     uuidRoundTripPreservesData();
-// }
-
-// TEST_F(UUIDTestSuite, generatorProducesValidFormat) {
-//     uuidGeneratorProducesValidFormat();
-// }
-
 // ============================================
 // MAC ADDRESS TESTS
 // ============================================

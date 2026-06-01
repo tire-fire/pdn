@@ -332,8 +332,8 @@ inline void lowerMacBracketEntryStandsDownAndAdoptsPostBracket(ShootoutManagerTe
     // generated, and anchored its own bracket (coordinatorMac_ == self). A
     // BRACKET_ENTRY then arrives from a strictly-lower-MAC coordinator. Self
     // must stand down (drop its coordinator anchor and bracket) and adopt the
-    // lower-MAC bracket, not keep running its own (the split-brain the dead
-    // demote branch used to allow).
+    // lower-MAC bracket, not keep running its own (which would split-brain the
+    // tournament).
     uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
     ON_CALL(*suite->device.mockPeerComms, getMacAddress())
         .WillByDefault(testing::Return(selfMac));

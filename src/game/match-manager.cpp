@@ -139,7 +139,6 @@ unsigned long MatchManager::getDuelLocalStartTime() {
     return activeDuelState.duelLocalStartTime;
 }
 
-// //Pretty sure this needs to be refactored. will come back to it.
 bool MatchManager::matchResultsAreIn() {
     if (!activeDuelState.match) {
         return false;

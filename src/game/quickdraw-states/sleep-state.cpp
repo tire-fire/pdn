@@ -41,8 +41,8 @@ void Sleep::onStateLoop(Device *PDN) {
         transitionToAwakenSequenceState = true;
     }
 
-    // TODO: Implement this breathing effect as an Animation class. The
-    // setLight direct-LED API it relied on is no longer available.
+    // TODO: reimplement this breathing effect as an Animation (no direct-LED
+    // setLight API exists).
     /*
     EVERY_N_MILLIS(16) {
         if (breatheUp) {

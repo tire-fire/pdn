@@ -1008,8 +1008,8 @@ inline void cdmHunterRingClaimsExactlyOneCoordinator(ChainMultiDeviceFixture* su
         << "Expected exactly one coordinator in 3-hunter ring (got " << coordCount << ")";
 }
 
-// CoordinatorIsExclusive (rdc-chain.allium): a coordinator is never a
-// supporter, even though in an all-hunter ring it sits on a same-role
+// CoordinatorIsExclusive: a coordinator is never a supporter, even though in
+// an all-hunter ring it sits on a same-role
 // opponent jack -- the exact condition that makes every non-coordinator
 // member a supporter. Without the !isCoordinator_ guard in isSupporter(),
 // the coordinator's 1Hz confirm backstop would emit ChainConfirms and
