@@ -1413,6 +1413,9 @@ TEST_F(ChainMultiDeviceFixture, shootoutEightDeviceFullTournament) {
 TEST_F(ChainMultiDeviceFixture, shootoutFourDeviceConsensusAndMatchStart) {
     shootoutFourDeviceConsensusAndMatchStart(this);
 }
+TEST_F(ChainMultiDeviceFixture, shootoutFourDeviceTwoTournamentsBackToBack) {
+    shootoutFourDeviceTwoTournamentsBackToBack(this);
+}
 TEST_F(ChainMultiDeviceFixture, ThreeDeviceChainNoLoop) { rdcThreeDeviceChainNoLoop(this); }
 TEST_F(ChainMultiDeviceFixture, ThreeDeviceRingReportsLoop) { rdcThreeDeviceRingReportsLoop(this); }
 TEST_F(ChainMultiDeviceFixture, MixedRoleRingReportsLoop) { rdcMixedRoleRingReportsLoop(this); }

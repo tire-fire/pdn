@@ -1085,7 +1085,7 @@ inline void rdcThreeDeviceRingReportsLoop(ChainMultiDeviceFixture* suite) {
 // physically closed and the coordinator's claim persists; this fixture
 // does not retain it across the timeline jump. Reinstate once the fixture
 // pumps the coordinator-claim through a second ring-close cycle.
-inline void shootoutFourDeviceTwoTournamentsBackToBack_DISABLED(ChainMultiDeviceFixture* suite) {
+inline void shootoutFourDeviceTwoTournamentsBackToBack(ChainMultiDeviceFixture* suite) {
     suite->spawnDevices(4);
     suite->setAllHunters();
     suite->connectLinearHunterChain();
@@ -1095,6 +1095,11 @@ inline void shootoutFourDeviceTwoTournamentsBackToBack_DISABLED(ChainMultiDevice
     suite->closeRing();
 
     auto runOne = [&]() {
+        // Let roster stability re-derive over BEACON cycles before proposing.
+        // In firmware this is the time a device spends back in Idle before the
+        // Idle->ShootoutProposal edge re-fires; tournament 2 must re-stabilize
+        // just like tournament 1.
+        suite->primeRosterStableAll();
         for (size_t i = 0; i < suite->nodeCount(); ++i) {
             suite->node(i).shootout->startProposal();
         }
@@ -1119,6 +1124,8 @@ inline void shootoutFourDeviceTwoTournamentsBackToBack_DISABLED(ChainMultiDevice
             }
             if (duelistIdx < 0) break;
             suite->node(duelistIdx).shootout->reportLocalWin();
+            suite->deliverAllPackets();
+            suite->syncAll();
             suite->deliverAllPackets();
             suite->syncAll();
             suite->deliverAllPackets();

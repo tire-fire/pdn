@@ -27,9 +27,10 @@ void ShootoutFinalStandings::onStateLoop(Device *PDN) {
     // Leave the standings screen back to Idle on either trigger: the player
     // unplugs a cable (ring opens), or the display timeout elapses. Returning
     // to Idle (not Sleep) keeps the device playable without a power-cycle.
-    // No phantom re-proposal results: Idle→ShootoutProposal is gated on
-    // isTopologyStable() && isInLoop(), so a device whose ring has opened sees
-    // no loop and starts no proposal.
+    // If the ring is still intact when the timeout fires, Idle→ShootoutProposal
+    // (gated on isTopologyStable() && isInLoop()) re-fires and a fresh
+    // tournament begins: a plugged-in ring rolls into back-to-back rounds by
+    // design. A device whose ring has opened sees no loop and stays idle.
     auto* rdc = PDN ? PDN->getRemoteDeviceCoordinator() : nullptr;
     if (rdc == nullptr) return;
     bool ringStillClosed = (rdc->getPeerMac(SerialIdentifier::OUTPUT_JACK) != nullptr) &&
