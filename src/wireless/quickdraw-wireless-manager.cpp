@@ -35,15 +35,9 @@ void QuickdrawWirelessManager::initialize(Player *player, WirelessManager* wirel
                 (unsigned)seqId);
             if (abandonCallback_) abandonCallback_();
         });
-    channel_->onReceive([this](const uint8_t* fromMac, const QuickdrawPacket& packet) {
-        // Transport-driven ingress: reached only if kQuickdrawCommand is routed
-        // through transport->deliverIncoming. Production routes it to the inline
-        // processQuickdrawCommand path instead (see main.cpp), so this callback
-        // is currently dormant; kept wired for the channel-driven path. The
-        // channel has already acked here, so deliverDecoded skips the redundant
-        // ack when the entry point is the channel.
-        deliverDecoded(fromMac, packet);
-    });
+    // No channel onReceive: production ingress for kQuickdrawCommand is the
+    // inline processQuickdrawCommand path (see main.cpp), which acks and
+    // dedups itself. The channel here is used only for reliable sends.
 }
 
 void QuickdrawWirelessManager::clearCallbacks() {

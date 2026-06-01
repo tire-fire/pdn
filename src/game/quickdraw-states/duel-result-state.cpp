@@ -87,9 +87,10 @@ bool DuelResult::transitionToIdleOnVoid() {
     // tournament. Routing this device to Idle touches no shared state, so it
     // does not clobber the standings other devices are viewing.
     if (shootoutManager && shootoutManager->active()) {
-        auto phase = shootoutManager->getPhase();
-        if (phase != ShootoutManager::Phase::ENDED
-            && phase != ShootoutManager::Phase::ABORTED) return false;
+        // ABORTED is routed to the abort screen by the phaseIsAborted transition
+        // registered ahead of this one, so only the ENDED terminal phase needs
+        // an Idle escape here.
+        if (shootoutManager->getPhase() != ShootoutManager::Phase::ENDED) return false;
     }
     return true;
 }
