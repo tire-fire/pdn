@@ -46,18 +46,8 @@ class FakeHWSerialWrapper : public HWSerialWrapper {
         }
     }
 
-    // Tests can flip a flag to simulate the GPIO-level cable-yank signal RDC
-    // polls each sync() tick. Defaults to false (cable plugged). The
-    // convergence-time tests for cable-yank-mid-ring flip this on a single
-    // ring edge to exercise the fast adaptive-PROBE cascade.
-    bool isCableDisconnected() override { return cableDisconnectedForTest_; }
-    void setCableDisconnectedForTest(bool d) { cableDisconnectedForTest_ = d; }
-
     deque<char> msgQueue;
     SerialBytesCallback bytesCallback;
-
-private:
-    bool cableDisconnectedForTest_ = false;
 };
 
 class FakeDevice : public Device {

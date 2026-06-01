@@ -209,17 +209,8 @@ void RemoteDeviceCoordinator::serviceConnectivity(unsigned long now) {
         const unsigned long gap = baseline >= now ? 0 : now - baseline;
         const bool silentLinkExpired =
             baseline != 0 && gap > helloSilentLinkMs_;
-        bool gpioDisconnected = false;
-        if (auto* sm = pdn_ ? pdn_->getSerialManager() : nullptr) {
-            HWSerialWrapper* serial =
-                (port == SerialIdentifier::INPUT_JACK) ? sm->getInputJack() : sm->getOutputJack();
-            if (serial != nullptr && enableGpioDisconnectDetection_) {
-                gpioDisconnected = serial->isCableDisconnected();
-            }
-        }
-        if (gpioDisconnected || silentLinkExpired) {
-            LOG_D(TAG, "JACKDEAD jack=%d reason=%s gap=%lu", (int)idx,
-                  gpioDisconnected ? "gpio" : "silent", gap);
+        if (silentLinkExpired) {
+            LOG_D(TAG, "JACKDEAD jack=%d reason=silent gap=%lu", (int)idx, gap);
             DeferredPacket ev;
             ev.kind = DeferredPacket::JACK_SILENT;
             ev.jack = port;

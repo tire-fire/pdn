@@ -128,14 +128,12 @@ public:
         peerGraph_.setOnGraphChanged(std::move(cb));
     }
 
-    // Toggle GPIO-level cable-disconnect detection: a yanked cable lets the RX
-    // line float HIGH against the internal pullup and hits streak=10 within
-    // ~1ms, while a connected jack stays at streak=0 (remote-driven LOW resets
-    // the counter on each data bit). Off by default — see
-    // enableGpioDisconnectDetection_ for why. Tests use this to drive the
-    // synthetic disconnect path in the multi-device fixture.
-    void setGpioDisconnectDetectionEnabled(bool on) {
-        enableGpioDisconnectDetection_ = on;
+    // Test hook: synchronously declare a specific jack dead, the same teardown
+    // the silent-link watchdog runs on a real disconnect. Lets the multi-device
+    // fixture simulate a cable yank on one named jack without waiting out the
+    // silent-link window (which it pins to 60s to survive clock-stepping).
+    void declareJackDeadForTest(SerialIdentifier jack, Device* PDN) {
+        declareJackDead(jack, PDN);
     }
 
     // Test hook to override the silent-link jack-dead threshold (production:
@@ -176,16 +174,6 @@ private:
     // setJackDeadSilentLinkMsForTest.
     static constexpr unsigned long kHelloSilentLinkMs = 100;
     unsigned long helloSilentLinkMs_ = kHelloSilentLinkMs;
-
-    // GPIO disconnect detection is OFF by default: on the real PDN PCB the
-    // OUTPUT-jack RX (GPIO 38 = TXr) is wired to the cable TIP conductor, the
-    // least-reliable TRS contact, so on a marginal/flexing connection the line +
-    // the driver's pullup float HIGH and the line-state read false-fires,
-    // spuriously clearing macPeer. (The onboard-RGB-LED-on-38 story is a
-    // dev-board-only fact, not the real-board cause.) The HELLO silent-link
-    // (kHelloSilentLinkMs) is a reliable disconnect path that makes the GPIO read
-    // redundant. Tests opt specific jacks in via setGpioDisconnectDetectionEnabled.
-    bool enableGpioDisconnectDetection_ = false;
 
     // Surrender a jack: clear its direct-peer slot, fire the synthetic
     // disconnect callback, reset the handshake. reconcileSelfPeers() on the

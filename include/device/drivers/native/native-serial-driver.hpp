@@ -73,14 +73,6 @@ public:
         addToHistory(sentHistory_, describeBytes(data, len));
     }
 
-    // Native build has no UART pin to monitor; tests drive the protocol-level
-    // disconnect path directly. If a test ever needs to simulate the GPIO
-    // electrical-level path, add a test setter that flips a stub flag here.
-    bool isCableDisconnected() override { return cableDisconnectedForTest_; }
-
-    // Test helper to simulate GPIO-level cable disconnect detection.
-    void setCableDisconnectedForTest(bool d) { cableDisconnectedForTest_ = d; }
-
     // Toggle artificial fragmentation of byte deliveries — used by tests to
     // exercise byte-stream parser accumulators that would otherwise never see
     // partial input on native.
@@ -121,7 +113,6 @@ private:
     std::deque<uint8_t> pendingBytes_;
     bool fragmentDeliveries_ = false;
     size_t fragmentCounter_ = 0;
-    bool cableDisconnectedForTest_ = false;
 
     // Message history (most recent at back)
     std::deque<std::string> sentHistory_;

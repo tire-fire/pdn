@@ -50,40 +50,15 @@ public:
         // link, flapping the link. A pulldown holds the line at the correct
         // idle level through a poor contact; the remote's active HIGH data
         // pulses overpower the weak internal pulldown, so reception is intact.
-        // The GPIO float-detector that the bias direction would feed is unused
-        // (enableGpioDisconnectDetection_ = false); disconnect is detected by the
-        // HELLO silent-link, so the bias only has to keep reception clean.
+        // Disconnect itself is detected by the HELLO silent-link, not the pin
+        // level, so the bias only has to keep reception clean.
         gpio_set_pull_mode(static_cast<gpio_num_t>(TXr), GPIO_PULLDOWN_ONLY);
         return 0;
     };
 
-    void exec() override {
-        // Sample the RX pin level once per exec. Maintain a saturating
-        // up/down score (rises on HIGH, falls on LOW, clamped 0..ceiling).
-        // Floating cable averages mostly-HIGH so the score climbs to ceiling
-        // within ~50ms (kRxFloatScoreCeiling=500 samples × ~104μs/sample);
-        // a connected remote drives the line LOW during idle and the score
-        // stays at 0. Latch a disconnect state at ceiling and only clear it
-        // when score returns to 0 — prevents thrashing on mechanical bounce
-        // when the cable is partially seated.
-        const int level = gpio_get_level(static_cast<gpio_num_t>(TXr));
-        if (level == 1) {
-            if (rxHighScore_ < kRxFloatScoreCeiling) rxHighScore_++;
-        } else if (rxHighScore_ > 0) {
-            rxHighScore_--;
-        }
-        if (!rxDisconnected_ && rxHighScore_ == kRxFloatScoreCeiling) {
-            rxDisconnected_ = true;
-            LOG_W("GPIO_O", "yank detected pin=%d", (int)TXr);
-        } else if (rxDisconnected_ && rxHighScore_ == 0) {
-            rxDisconnected_ = false;
-            LOG_W("GPIO_O", "yank cleared pin=%d", (int)TXr);
-        }
-    }
-
-    bool isCableDisconnected() override {
-        return rxDisconnected_;
-    }
+    // RX is drained on the UART event task (onReceive), so the per-tick driver
+    // pump has nothing to do.
+    void exec() override {}
 
     int availableForWrite() override {
         return Serial1.availableForWrite();
@@ -107,23 +82,6 @@ public:
 
     private:
     SerialBytesCallback bytesCallback;
-    // GPIO disconnect detection: count of consecutive exec() ticks where the
-    // RX pin was HIGH. exec runs every ~5-10ms; threshold of 10 = ~50-100ms
-    // of sustained HIGH before declaring disconnect. Brief data-driven HIGHs
-    // (~52μs at 19200 baud) never cross threshold.
-    // Disconnect-state machine. The RX pin on an unplugged cable floats
-    // mostly HIGH against the internal pullup but picks up enough noise to
-    // occasionally read LOW. A strict "N consecutive HIGH samples" check
-    // resets on every brief LOW; instead use a saturating up/down counter
-    // (rises on HIGH samples, falls on LOW samples, clamped 0..ceiling),
-    // and latch a disconnect state at the high threshold + clear it only
-    // when the counter drops back to 0. exec() runs at ~10kHz on hardware
-    // (~104μs/tick), so a ceiling of 500 ≈ 50ms of "mostly HIGH" accumulation
-    // — well past any mechanical bounce, well inside the 300ms perception
-    // window for cable yank.
-    uint16_t rxHighScore_ = 0;
-    bool rxDisconnected_ = false;
-    static constexpr uint16_t kRxFloatScoreCeiling = 500;
 
     // Runs on the UART event task. Drains the RX FIFO and feeds each burst into
     // the binary frame demuxer (bytesCallback). Touches only event-task-owned
@@ -169,34 +127,16 @@ public:
         // Drain RX on the UART event task — see Esp32s3SerialOut::initialize().
         Serial2.onReceive([this]() { drainUart(); });
 
-        // Same rationale as Esp32s3SerialOut: pullup on the RX pin lets us
-        // tell "remote disconnected" (line floats HIGH against the pullup)
-        // from "remote idle" (actively driven LOW by the remote in invert=true
-        // mode). Sustained HIGH = physical unplug. ~50ms detection budget.
+        // Pullup on the RX pin so a disconnected jack idles HIGH and the
+        // remote's invert=true active-LOW idle is distinguishable; reception
+        // stays clean through a marginal contact. Disconnect is detected by the
+        // HELLO silent-link, not the pin level.
         gpio_pullup_en(static_cast<gpio_num_t>(RXr));
         return 0;
     };
 
-    void exec() override {
-        // GPIO disconnect sampling — see Esp32s3SerialOut::exec() for rationale.
-        const int level = gpio_get_level(static_cast<gpio_num_t>(RXr));
-        if (level == 1) {
-            if (rxHighScore_ < kRxFloatScoreCeiling) rxHighScore_++;
-        } else if (rxHighScore_ > 0) {
-            rxHighScore_--;
-        }
-        if (!rxDisconnected_ && rxHighScore_ == kRxFloatScoreCeiling) {
-            rxDisconnected_ = true;
-            LOG_W("GPIO_I", "yank detected pin=%d", (int)RXr);
-        } else if (rxDisconnected_ && rxHighScore_ == 0) {
-            rxDisconnected_ = false;
-            LOG_W("GPIO_I", "yank cleared pin=%d", (int)RXr);
-        }
-    }
-
-    bool isCableDisconnected() override {
-        return rxDisconnected_;
-    }
+    // RX is drained on the UART event task (onReceive); nothing per-tick.
+    void exec() override {}
 
     int availableForWrite() override {
         return Serial2.availableForWrite();
@@ -220,23 +160,6 @@ public:
 
     private:
     SerialBytesCallback bytesCallback;
-    // GPIO disconnect detection: count of consecutive exec() ticks where the
-    // RX pin was HIGH. exec runs every ~5-10ms; threshold of 10 = ~50-100ms
-    // of sustained HIGH before declaring disconnect. Brief data-driven HIGHs
-    // (~52μs at 19200 baud) never cross threshold.
-    // Disconnect-state machine. The RX pin on an unplugged cable floats
-    // mostly HIGH against the internal pullup but picks up enough noise to
-    // occasionally read LOW. A strict "N consecutive HIGH samples" check
-    // resets on every brief LOW; instead use a saturating up/down counter
-    // (rises on HIGH samples, falls on LOW samples, clamped 0..ceiling),
-    // and latch a disconnect state at the high threshold + clear it only
-    // when the counter drops back to 0. exec() runs at ~10kHz on hardware
-    // (~104μs/tick), so a ceiling of 500 ≈ 50ms of "mostly HIGH" accumulation
-    // — well past any mechanical bounce, well inside the 300ms perception
-    // window for cable yank.
-    uint16_t rxHighScore_ = 0;
-    bool rxDisconnected_ = false;
-    static constexpr uint16_t kRxFloatScoreCeiling = 500;
 
     void drainUart() {
         uint8_t buf[64];

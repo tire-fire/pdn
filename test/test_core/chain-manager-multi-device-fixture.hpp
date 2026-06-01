@@ -391,11 +391,13 @@ public:
     }
 
     // Simulate a physical cable yank between two adjacent ring members.
-    // Removes the full-duplex serial links so no further bytes cross, then
-    // flips the GPIO-level cable-disconnect flag on the matching wrappers so
-    // the next RDC sync() runs declareJackDead via the GPIO path. The
-    // synthetic disconnect cascades a REMOVE into the roster and arms the
-    // adaptive-PROBE fast cadence.
+    // Removes the full-duplex serial links so no further bytes (HELLOs) cross,
+    // then declares the specific yanked jack dead on each side via the same
+    // teardown path the production silent-link watchdog drives. Surgical to the
+    // named jack (the fixture pins the silent-link threshold to 60s, so a
+    // clock-based expiry would risk killing the node's other, still-connected
+    // jack). The synthetic disconnect cascades a REMOVE into the roster and
+    // arms the adaptive-PROBE fast cadence.
     void breakSerialLink(size_t nodeA, SerialIdentifier jackA,
                          size_t nodeB, SerialIdentifier jackB) {
         serialLinks_.erase(
@@ -407,20 +409,8 @@ public:
                             l.receiverNode == nodeA && l.receiverJack == jackA);
                 }),
             serialLinks_.end());
-        auto markDisconnected = [&](size_t idx, SerialIdentifier jack) {
-            FakeHWSerialWrapper& hw =
-                (jack == SerialIdentifier::OUTPUT_JACK)
-                    ? nodes[idx]->device->outputJackSerial
-                    : nodes[idx]->device->inputJackSerial;
-            hw.setCableDisconnectedForTest(true);
-        };
-        markDisconnected(nodeA, jackA);
-        markDisconnected(nodeB, jackB);
-        // Tests opt the affected nodes' RDCs into the GPIO-disconnect path;
-        // production stays off until the electrical-level behavior of the
-        // invert-mode UART idle is verified. See RDC::enableGpioDisconnectDetection_.
-        nodes[nodeA]->rdc->setGpioDisconnectDetectionEnabled(true);
-        nodes[nodeB]->rdc->setGpioDisconnectDetectionEnabled(true);
+        nodes[nodeA]->rdc->declareJackDeadForTest(jackA, nodes[nodeA]->device.get());
+        nodes[nodeB]->rdc->declareJackDeadForTest(jackB, nodes[nodeB]->device.get());
     }
 
     // Pump all captured outgoing packets into the intended recipient's handlers
