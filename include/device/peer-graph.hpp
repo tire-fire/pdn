@@ -69,4 +69,11 @@ private:
     static constexpr unsigned long kTopologyStabilityMs = 200;
 
     bool hasMutualEdge(const net::Mac& a, const net::Mac& b) const;
+
+    // Nodes reachable from `start` by walking mutual edges, never crossing any
+    // node in `blocked` and never revisiting. `start` is always included in the
+    // result. The membership/count/loop queries differ only in their seed and
+    // what they tally, so they all express their walk through this.
+    std::vector<net::Mac> reachableFrom(
+        const net::Mac& start, std::initializer_list<net::Mac> blocked) const;
 };

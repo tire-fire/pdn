@@ -175,7 +175,7 @@ void ChainManager::onConfirmReceived(
     // so it covers multi-hop supporters in both linear chains and rings -- the
     // ring coordinator still accumulates every member's confirm to detect loop
     // closure. Without this gate a device holding a stale championMac_ (after a
-    // topology reshuffle) could unicast a confirm and inflate boostMs_.
+    // topology reshuffle) could unicast a confirm and inflate the boost.
     if (rdc_ != nullptr) {
         bool isMember = false;
         const uint8_t* directSupporter = rdc_->getPeerMac(supporterJack());
@@ -204,7 +204,6 @@ void ChainManager::onConfirmReceived(
     std::array<uint8_t, 6> macArr;
     memcpy(macArr.data(), originatorMac, 6);
     confirmedSupporters_.push_back(macArr);
-    boostMs_ = confirmedSupporters_.size() * BOOST_PER_SUPPORTER_MS;
     LOG_W(TAG, "onConfirmReceived ACCEPTED from=%02X:%02X:%02X:%02X:%02X:%02X newCount=%u",
           originatorMac[0], originatorMac[1], originatorMac[2],
           originatorMac[3], originatorMac[4], originatorMac[5],
@@ -319,7 +318,7 @@ void ChainManager::setPeerRole(SerialIdentifier port, bool isHunter) {
 }
 
 unsigned long ChainManager::getBoostMs() const {
-    return boostMs_;
+    return confirmedSupporters_.size() * BOOST_PER_SUPPORTER_MS;
 }
 
 size_t ChainManager::getConfirmedSupporterCount() const {
@@ -338,7 +337,6 @@ size_t ChainManager::getChainLength() const {
 
 void ChainManager::clearSupporterConfirms() {
     confirmedSupporters_.clear();
-    boostMs_ = 0;
 }
 
 const uint8_t* ChainManager::getChampionMac() const {

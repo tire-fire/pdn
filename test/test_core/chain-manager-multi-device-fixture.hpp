@@ -396,8 +396,8 @@ public:
     // teardown path the production silent-link watchdog drives. Surgical to the
     // named jack (the fixture pins the silent-link threshold to 60s, so a
     // clock-based expiry would risk killing the node's other, still-connected
-    // jack). The synthetic disconnect cascades a REMOVE into the roster and
-    // arms the adaptive-PROBE fast cadence.
+    // jack). declareJackDead drops the now-dead edge from the peer-graph; the
+    // next sync re-emits BEACONs that propagate the break around the ring.
     void breakSerialLink(size_t nodeA, SerialIdentifier jackA,
                          size_t nodeB, SerialIdentifier jackB) {
         serialLinks_.erase(
@@ -1468,10 +1468,10 @@ inline void cdmFourDeviceMixedLoopHeadToHeadFirst(ChainMultiDeviceFixture* suite
     }
 }
 
-// Cable-yank-mid-ring convergence test. Build a converged N-device ring,
-// snap one cable, and assert isInLoop() returns false on every node within
-// (N/2 × 100ms) of adaptive-PROBE propagation plus one settle cycle. Pins
-// the adaptive-PROBE rate the spec relies on for human-perception responsive
+// Cable-yank-mid-ring convergence test. Build a converged N-device ring, snap
+// one cable, and assert isInLoop() returns false on every node. The edge break
+// propagates one hop per sync as each node floods an updated BEACON, so the loop
+// collapses within ~N/2 hops — fast enough for human-perception responsive
 // loop-break feedback.
 inline void cableYankConvergesRingToLinear(ChainMultiDeviceFixture* suite,
                                            size_t ringSize) {
@@ -1498,10 +1498,9 @@ inline void cableYankConvergesRingToLinear(ChainMultiDeviceFixture* suite,
     suite->breakSerialLink(snapIdx, SerialIdentifier::OUTPUT_JACK,
                            snapIdx - 1, SerialIdentifier::INPUT_JACK);
 
-    // Tick fast — adaptive PROBE fires every 100ms while propagation is
-    // active. Budget = (N/2 hops × 100ms) + one full 1s settle cycle on
-    // each side to drain residual fast-cadence frames and re-establish
-    // stability. With slack, we use 2N ticks of 100ms each (= 0.2N seconds).
+    // One BEACON hop propagates per sync, so tick at 100ms and pump packets
+    // each tick. Budget = N/2 hops + the 1Hz backstop settle cycle; 2N ticks of
+    // 100ms (= 0.2N seconds) gives comfortable slack.
     const int ticks = static_cast<int>(ringSize * 2) + 20;
     for (int t = 0; t < ticks; ++t) {
         suite->advanceClock(100);
@@ -1524,11 +1523,10 @@ inline void cdmCableYankFiftyRingConverges(ChainMultiDeviceFixture* suite) {
     cableYankConvergesRingToLinear(suite, 50);
 }
 
-// Adaptive PROBE must collapse back to 1Hz steady state once no roster
-// mutations have happened for two cycles. The fast-mode counter is a
-// per-jack 2-cycle countdown set by armFastProbeAfterMutation. With no
-// mutation source for ≥10 seconds of idle, framesTx must rise at the slow
-// 1Hz cadence, never faster. Catches oscillation in the fast/slow toggle.
+// With no topology change, BEACON traffic is just the 1Hz backstop
+// (kBeaconBackstopMs); the event-driven edge-change floods stay silent. Over
+// ≥10 seconds of idle, framesTx must rise at ~1Hz, never faster — catches any
+// spurious re-emission.
 inline void cdmIdleCadenceSettlesToOneHz(ChainMultiDeviceFixture* suite) {
     suite->spawnDevices(2);
     suite->setAllHunters();
@@ -1539,9 +1537,9 @@ inline void cdmIdleCadenceSettlesToOneHz(ChainMultiDeviceFixture* suite) {
     suite->primeRosterStableAll();
 
     // After convergence, capture the per-jack framesTx baseline and tick
-    // forward 10 seconds with no roster mutations. At 1Hz steady state we
-    // expect ~10 emits per connected jack; fast-mode oscillation would
-    // produce dramatically more.
+    // forward 10 seconds with no topology change. At the 1Hz backstop we
+    // expect ~10 emits per connected jack; spurious re-emission would produce
+    // dramatically more.
     const auto baseOut = suite->node(0).rdc->getRosterStats(
         SerialIdentifier::OUTPUT_JACK).framesTx;
     const auto baseIn = suite->node(1).rdc->getRosterStats(
@@ -1560,12 +1558,12 @@ inline void cdmIdleCadenceSettlesToOneHz(ChainMultiDeviceFixture* suite) {
     const auto endIn = suite->node(1).rdc->getRosterStats(
         SerialIdentifier::INPUT_JACK).framesTx;
 
-    // 1Hz cadence over 10s = 10 PROBEs. 20 is the conservative ceiling that
-    // would catch any sustained fast-mode toggling (which would emit ≥50).
+    // 1Hz backstop over 10s = ~10 BEACONs. 20 is the conservative ceiling that
+    // would catch any sustained spurious re-emission (which would emit ≥50).
     EXPECT_LE(endOut - baseOut, 20u)
-        << "idle node 0 OUTPUT did not settle to 1Hz PROBE cadence";
+        << "idle node 0 OUTPUT did not settle to 1Hz BEACON cadence";
     EXPECT_LE(endIn - baseIn, 20u)
-        << "idle node 1 INPUT did not settle to 1Hz PROBE cadence";
+        << "idle node 1 INPUT did not settle to 1Hz BEACON cadence";
 }
 
 // ============================================================================

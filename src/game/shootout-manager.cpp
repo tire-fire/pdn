@@ -2,6 +2,7 @@
 #include "game/match-manager.hpp"
 #include "device/drivers/logger.hpp"
 #include "device/device-constants.hpp"
+#include "device/mac-types.hpp"
 #include "utils/simple-timer.hpp"
 #include "wireless/mac-functions.hpp"
 #include "id-generator.hpp"
@@ -451,9 +452,9 @@ bool ShootoutManager::isCoordinator() const {
     // tournament; the coordinator stays put until ABORT/END.
     const uint8_t* selfMac = wirelessManager_ ? wirelessManager_->getMacAddress() : nullptr;
     if (selfMac == nullptr) return false;
-    bool coordSet = false;
-    for (uint8_t b : coordinatorMac_) { if (b != 0) { coordSet = true; break; } }
-    if (coordSet) return memcmp(coordinatorMac_.data(), selfMac, 6) == 0;
+    if (!net::isAllZeroMac(coordinatorMac_)) {
+        return memcmp(coordinatorMac_.data(), selfMac, 6) == 0;
+    }
     return cdm_ != nullptr && cdm_->isCoordinator();
 }
 
