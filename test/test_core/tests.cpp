@@ -634,6 +634,9 @@ TEST_F(MatchManagerTestSuite, boostSubtractedFromHunterReactionTime) {
 TEST_F(MatchManagerTestSuite, shootoutMatchExcludedFromReactionStats) {
     matchManagerShootoutMatchExcludedFromReactionStats(this);
 }
+TEST_F(MatchManagerTestSuite, shootoutMatchRoleDecoupledFromAllegiance) {
+    matchManagerShootoutMatchRoleDecoupledFromAllegiance(this);
+}
 
 TEST_F(MatchManagerTestSuite, clearCurrentMatchResetsBoost) {
     matchManagerClearCurrentMatchResetsBoost(matchManager, player);
@@ -1454,7 +1457,7 @@ TEST_F(ShootoutManagerTests, tournamentEndRetriesUntilAcked) { tournamentEndRetr
 TEST_F(ShootoutManagerTests, matchResultRetriesUntilAcked) { matchResultRetriesUntilAcked(this); }
 TEST_F(ShootoutManagerTests, duplicateMatchResultDoesNotDoubleAdvance) { duplicateMatchResultDoesNotDoubleAdvance(this); }
 TEST_F(ShootoutManagerTests, confirmRecordsPeerName) { confirmRecordsPeerName(this); }
-TEST_F(ShootoutManagerTests, isHunterRestoredAfterTournament) { isHunterRestoredAfterTournament(this); }
+TEST_F(ShootoutManagerTests, shootoutDoesNotMutateAllegiance) { shootoutDoesNotMutateAllegiance(this); }
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }

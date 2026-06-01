@@ -42,6 +42,12 @@ struct ActiveDuelState {
     int buttonMasherCount = 0;
     std::optional<Match> match;
     std::array<uint8_t, 6> opponentMac = {};
+    // This device's draw-slot for THIS match (which of hunter_draw_time /
+    // bounty_draw_time it writes), captured at match init. For a normal duel it
+    // equals the player's allegiance; for a same-role shootout duel it is
+    // MAC-ordered so two hunters still slot into distinct draw times. Kept off
+    // Player::isHunter() so the shootout never mutates global allegiance.
+    bool localIsHunter = false;
 
     unsigned long calculateButtonMasherPenalty() {
         return BUTTON_MASHER_PENALTY_MS * buttonMasherCount;
@@ -69,9 +75,18 @@ public:
 
     // Shootout mode: prime a match without the SEND_MATCH_ID handshake.
     // Both duelists call this independently on MATCH_START with the same
-    // derived match ID. Assumes hunter-vs-bounty pairing (same-role
-    // Shootout matches are out of MVP scope).
-    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac);
+    // derived match ID. localIsHunter is the MAC-ordered per-match draw-slot
+    // (both sides compute the same ordering), so same-role ring devices still
+    // form a valid hunter-vs-bounty pairing without touching global allegiance.
+    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac,
+                                 bool localIsHunter);
+
+    // This device's draw-slot for the active match (see ActiveDuelState).
+    // Falls back to global allegiance when no match is active.
+    bool localIsHunterForMatch() const {
+        return activeDuelState.match.has_value() ? activeDuelState.localIsHunter
+                                                 : player->isHunter();
+    }
 
     bool isMatchReady();
 
@@ -217,7 +232,7 @@ private:
 
     // Emplace match with given id/opponent. Common path for both the
     // cable-handshake init and the Shootout MATCH_START init.
-    void primeMatch(const char* matchId, const uint8_t* opponentMac);
+    void primeMatch(const char* matchId, const uint8_t* opponentMac, bool localIsHunter);
 };
 
 

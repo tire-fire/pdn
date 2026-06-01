@@ -66,9 +66,9 @@ bool DuelReceivedResult::disconnectedBackToIdle() {
 }
 
 bool DuelReceivedResult::isPrimaryRequired() {
-    return player->isHunter();
+    return matchManager->localIsHunterForMatch();
 }
 
 bool DuelReceivedResult::isAuxRequired() {
-    return !player->isHunter();
+    return !matchManager->localIsHunterForMatch();
 }

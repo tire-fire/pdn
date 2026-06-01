@@ -102,7 +102,7 @@ inline void matchManagerShootoutMatchExcludedFromReactionStats(MatchManagerTestS
     player->setIsHunter(true);
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
 
-    mm->initializeShootoutMatch("SHT-00000000000000000000000000000001", dummyMac);
+    mm->initializeShootoutMatch("SHT-00000000000000000000000000000001", dummyMac, true);
     EXPECT_TRUE(mm->currentMatchIsShootout());
 
     suite->fakeClock->setTime(10000);
@@ -122,6 +122,33 @@ inline void matchManagerShootoutMatchExcludedFromReactionStats(MatchManagerTestS
     mm->getDuelButtonPush()(mm);
 
     EXPECT_EQ(player->getLastReactionTime(), 150u);  // normal match still counts
+}
+
+// Root-cause guard for the shootout role coupling: the per-match draw-slot is
+// carried by the match (localIsHunterForMatch), independent of global
+// allegiance. A hunter assigned the bounty slot for one shootout match writes
+// the bounty draw time and never has player->isHunter() mutated.
+inline void matchManagerShootoutMatchRoleDecoupledFromAllegiance(MatchManagerTestSuite* suite) {
+    auto* mm = suite->matchManager;
+    auto* player = suite->player;
+    player->setIsHunter(true);  // global allegiance: hunter
+    uint8_t opp[6] = {0x02, 0x02, 0x02, 0x02, 0x02, 0x02};
+
+    // MAC-ordered slot for this match is BOUNTY, despite the hunter allegiance.
+    mm->initializeShootoutMatch("SHT-00000000000000000000000000000002", opp, false);
+
+    EXPECT_FALSE(mm->localIsHunterForMatch());  // per-match slot = bounty
+    EXPECT_TRUE(player->isHunter());            // allegiance untouched
+
+    suite->fakeClock->setTime(10000);
+    mm->setDuelLocalStartTime(10000);
+    suite->fakeClock->setTime(10150);  // 150ms reaction
+    mm->getDuelButtonPush()(mm);
+
+    // The press lands in the bounty slot, driven by the match role, not allegiance.
+    EXPECT_EQ(mm->getCurrentMatch()->getBountyDrawTime(), 150u);
+    EXPECT_EQ(mm->getCurrentMatch()->getHunterDrawTime(), 0u);
+    EXPECT_TRUE(player->isHunter());  // still untouched after the press
 }
 
 

@@ -116,9 +116,9 @@ bool DuelCountdown::disconnectedBackToIdle() {
 }
 
 bool DuelCountdown::isPrimaryRequired() {
-    return player->isHunter();
+    return matchManager->localIsHunterForMatch();
 }
 
 bool DuelCountdown::isAuxRequired() {
-    return !player->isHunter();
+    return !matchManager->localIsHunterForMatch();
 }

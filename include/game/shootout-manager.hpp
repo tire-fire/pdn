@@ -238,10 +238,6 @@ private:
     std::array<uint8_t, 6> tournamentWinner_{};
     uint8_t lastTournamentEndSeqId_ = 0;
 
-    // Snapshot of player_->isHunter() at tournament entry: primeMatchManagerForMatch
-    // overrides isHunter by MAC ordering, and without restore the override leaks
-    // into the post-tournament duel.
-    std::optional<bool> originalIsHunter_;
     void sendTournamentEndToPeers(const uint8_t* winner);
     std::array<uint8_t, 6> findLastRemaining() const;
 };

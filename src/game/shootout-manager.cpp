@@ -304,18 +304,11 @@ void ShootoutManager::resetToIdle() {
     memset(currentDuelistA_.data(), 0, 6);
     memset(currentDuelistB_.data(), 0, 6);
     memset(coordinatorMac_.data(), 0, 6);
-    if (originalIsHunter_ && player_) {
-        player_->setIsHunter(*originalIsHunter_);
-    }
-    originalIsHunter_.reset();
 }
 
 void ShootoutManager::startProposal() {
     LOG_W(TAG, "startProposal");
     resetToIdle();
-    if (player_) {
-        originalIsHunter_ = player_->isHunter();
-    }
     phase_ = Phase::PROPOSAL;
 }
 
@@ -499,13 +492,13 @@ void ShootoutManager::primeMatchManagerForMatch() {
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
     bool localIsHunterForMatch = selfMac != nullptr &&
         memcmp(selfMac, opponentMac_.data(), 6) < 0;
-    if (player_) player_->setIsHunter(localIsHunterForMatch);
 
     char matchId[IdGenerator::UUID_BUFFER_SIZE];
     deriveShootoutMatchId(currentMatchIndex_, matchId, sizeof(matchId));
     LOG_W(TAG, "primeMatchManagerForMatch matchIndex=%d localHunter=%d",
           currentMatchIndex_, localIsHunterForMatch);
-    matchManager_->initializeShootoutMatch(matchId, opponentMac_.data());
+    // Pass the MAC-ordered slot to the match; do NOT touch global allegiance.
+    matchManager_->initializeShootoutMatch(matchId, opponentMac_.data(), localIsHunterForMatch);
 }
 
 void ShootoutManager::advanceToBracketReveal() {
@@ -843,12 +836,6 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
         std::array<uint8_t, 6> mac;
         memcpy(mac.data(), loser, 6);
         eliminated_.push_back(mac);
-    }
-    // Restore pre-tournament role at each match boundary. primeMatchManagerForMatch
-    // re-applies the per-match override on the next match start if this device is a
-    // duelist again. Prevents role from staying flipped when the tournament ends.
-    if (originalIsHunter_ && player_) {
-        player_->setIsHunter(*originalIsHunter_);
     }
     phase_ = Phase::BETWEEN_MATCHES;
 }

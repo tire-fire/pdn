@@ -50,11 +50,11 @@ void DuelPushed::onStateDismounted(Device *PDN) {
 }
 
 bool DuelPushed::isPrimaryRequired() {
-    return player->isHunter();
+    return matchManager->localIsHunterForMatch();
 }
 
 bool DuelPushed::isAuxRequired() {
-    return !player->isHunter();
+    return !matchManager->localIsHunterForMatch();
 }
 
 bool DuelPushed::disconnectedBackToIdle() {

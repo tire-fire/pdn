@@ -78,8 +78,9 @@ void Duel::onStateLoop(Device *PDN) {
         return;
     }
 
-    // Shootout timeout: hunter forfeits, bounty wins.
-    if (player->isHunter()) {
+    // Shootout timeout: hunter forfeits, bounty wins. Uses the per-match draw
+    // slot, not allegiance — in a same-role ring both duelists are hunters.
+    if (matchManager->localIsHunterForMatch()) {
         transitionToShootoutEliminatedState = true;
         return;
     }
@@ -138,9 +139,9 @@ void Duel::onStateDismounted(Device *PDN) {
 }
 
 bool Duel::isPrimaryRequired() {
-    return player->isHunter();
+    return matchManager->localIsHunterForMatch();
 }
 
 bool Duel::isAuxRequired() {
-    return !player->isHunter();
+    return !matchManager->localIsHunterForMatch();
 }

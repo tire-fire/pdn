@@ -770,46 +770,62 @@ inline void matchResultRetriesUntilAcked(ShootoutManagerTests* suite) {
     EXPECT_EQ(suite->shootout->getMatchResultPendingAckCount(), 0u);
 }
 
-inline void isHunterRestoredAfterTournament(ShootoutManagerTests* suite) {
-    // primeMatchManagerForMatch overrides player_->isHunter() based on MAC
-    // ordering during Shootout. resetToIdle must restore the pre-tournament
-    // snapshot captured in startProposal — both as a direct call (clean exit)
-    // and via the abort path (ShootoutAborted::onStateDismounted → resetToIdle).
+// The shootout assigns per-match draw-slots through the match (MAC-ordered, see
+// matchManagerShootoutMatchRoleDecoupledFromAllegiance), never by mutating the
+// shared Player's allegiance. Driving a real match-start through a wired
+// MatchManager must set the per-match slot on the MATCH while leaving
+// player.isHunter() untouched, so the chain layer that reads allegiance is never
+// churned and emits no RoleAnnounce. Root-cause guard for the former
+// role-flip → chain-cascade coupling.
+inline void shootoutDoesNotMutateAllegiance(ShootoutManagerTests* suite) {
+    suite->cdm->initialize(suite->transport);  // production wiring: chain role-changed callback live
+
+    // Wire a real MatchManager so primeMatchManagerForMatch actually runs (the
+    // bare fixture leaves it null, early-returning before any role logic).
+    MockStorage storage;
+    FakeQuickdrawWirelessManager qwm;
+    MatchManager mm;
+    mm.initialize(&suite->player, &storage, &qwm);
+    mm.setRemoteDeviceCoordinator(&suite->rdc);
+    suite->shootout->setMatchManager(&mm);
+
     uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> me    = {0x05, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};  // < self → forces flip
-    std::array<uint8_t, 6> third = {0x07, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};  // < self → MAC-ordered bounty slot
     ON_CALL(*suite->device.mockPeerComms, getMacAddress())
         .WillByDefault(testing::Return(selfMac));
-    ON_CALL(*suite->device.mockPeerComms,
-        sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
 
-    bool originalIsHunter = suite->player.isHunter();
+    int roleAnnounces = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, testing::_, testing::_, testing::_))
+        .Times(testing::AnyNumber())
+        .WillRepeatedly(testing::Return(1));
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kRoleAnnounce, testing::_, testing::_))
+        .WillRepeatedly([&](const uint8_t*, PktType, const uint8_t*, size_t) {
+            roleAnnounces++;
+            return 1;
+        });
 
-    // Path 1: direct resetToIdle. The unit-test fixture doesn't wire a
-    // MatchManager (primeMatchManagerForMatch's nullptr early-return skips
-    // setIsHunter), so we mutate directly to exercise the restore.
+    const bool original = suite->player.isHunter();
+
     suite->shootout->setLoopMembersForTest({me, opMac});
-    suite->shootout->startProposal();
-    suite->player.setIsHunter(!originalIsHunter);
-    suite->shootout->resetToIdle();
-    EXPECT_EQ(suite->player.isHunter(), originalIsHunter);
-
-    // Path 2: via abort (coord lost during a match). ShootoutAborted's
-    // onStateDismounted calls resetToIdle on real hardware.
-    suite->shootout->setLoopMembersForTest({me, opMac, third});
     suite->shootout->startProposal();
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
-    suite->shootout->onConfirmReceived(third.data());
-    suite->shootout->onBracketReceived({me, opMac, third}, 1);
+    suite->shootout->onBracketReceived({me, opMac}, 1);
     suite->shootout->onMatchStartReceived(me.data(), opMac.data(), 0, 2);
-    suite->player.setIsHunter(!originalIsHunter);
-    suite->shootout->onPeerLostReceived(opMac.data());
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
-    suite->shootout->resetToIdle();
-    EXPECT_EQ(suite->player.isHunter(), originalIsHunter);
+
+    // primeMatchManagerForMatch ran: the per-match slot lives on the MATCH
+    // (MAC-ordered: self 0x05 > opp 0x02 → bounty), allegiance is untouched, and
+    // the chain role cascade never fired.
+    ASSERT_TRUE(mm.getCurrentMatch().has_value());
+    EXPECT_FALSE(mm.localIsHunterForMatch());       // MAC-ordered bounty slot
+    EXPECT_EQ(suite->player.isHunter(), original);  // global allegiance untouched
+    EXPECT_EQ(roleAnnounces, 0)
+        << "shootout never mutates allegiance, so the chain role cascade never fires";
+
+    suite->shootout->setMatchManager(nullptr);  // detach local mm before teardown
 }
 
 // onLocalRDCDisconnect is idempotent: when the same MAC is reported lost twice
