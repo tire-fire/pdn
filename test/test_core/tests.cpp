@@ -1135,6 +1135,9 @@ TEST_F(StateFlowIntegrationTests, dutPressesFirstWins) {
 TEST_F(StateFlowIntegrationTests, dutReceivesFirstLoses) {
     stateFlowDutReceivesFirstLoses(this);
 }
+TEST_F(StateFlowIntegrationTests, pressAtGraceExpiryStillCounts) {
+    stateFlowPressAtGraceExpiryStillCounts(this);
+}
 
 TEST_F(StateFlowIntegrationTests, dutNeverPressesLoses) {
     stateFlowDutNeverPressesLoses(this);

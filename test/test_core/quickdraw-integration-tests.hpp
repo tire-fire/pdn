@@ -645,6 +645,48 @@ inline void stateFlowDutReceivesFirstLoses(StateFlowIntegrationTests* suite) {
     EXPECT_FALSE(suite->matchManager->didWin());
 }
 
+// Regression: a press landing the same iteration the button-push grace expires
+// must count, not be reported as NEVER_PRESSED. execDrivers() runs the button
+// handler before onStateLoop, so both hasPressedButton and the timer expiry are
+// true at one onStateLoop visit. Sending NEVER_PRESSED there sets
+// gracePeriodExpiredNoResult and loses a duel the player actually won.
+inline void stateFlowPressAtGraceExpiryStillCounts(StateFlowIntegrationTests* suite) {
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(2);
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(2);
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
+    duelState.onStateMounted(&suite->device);
+
+    suite->wirelessManager->setPacketReceivedCallback(
+        std::bind(&MatchManager::listenForMatchEvents, suite->matchManager, std::placeholders::_1)
+    );
+
+    // Opponent (bounty) drew very slowly, so a press of any in-window time wins.
+    TestQuickdrawPacket packet = suite->createPacket(QDCommand::DRAW_RESULT, 0, 9000);
+    suite->processPacket(packet);
+
+    duelState.onStateLoop(&suite->device);
+    ASSERT_TRUE(duelState.transitionToDuelReceivedResult());
+
+    DuelReceivedResult receivedState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator);
+    receivedState.onStateMounted(&suite->device);
+
+    // Advance past the grace window, then press, then run the loop — all without
+    // a transition check between, exactly the same-iteration firmware ordering.
+    suite->fakeClock->advance(800);  // past the 750ms button-push grace window
+    suite->matchManager->getDuelButtonPush()(suite->matchManager);
+    receivedState.onStateLoop(&suite->device);
+
+    // The press must win, and no NEVER_PRESSED may have been broadcast.
+    EXPECT_TRUE(suite->matchManager->matchResultsAreIn());
+    EXPECT_TRUE(suite->matchManager->didWin());
+    for (const auto& cmd : suite->wirelessManager->sentCommands) {
+        EXPECT_NE(cmd.command, QDCommand::NEVER_PRESSED)
+            << "NEVER_PRESSED broadcast despite a registered press";
+    }
+}
+
 inline void stateFlowDutNeverPressesLoses(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
