@@ -92,7 +92,11 @@ void Idle::onStateLoop(Device *PDN) {
         transitionToSymbolState = true;
     }
 
-    if(matchInitializationTimer.expired()) {
+    // execDrivers() applies an inbound MATCH_ID_ACK (matchIsReady) before this
+    // loop runs, and this loop runs before the DuelCountdown transition check.
+    // Without the isMatchReady guard, an ack arriving in the same iteration the
+    // timer expires would clear the ready match before the transition can fire.
+    if(matchInitializationTimer.expired() && !matchManager->isMatchReady()) {
         matchInitialized = false;
         matchManager->clearCurrentMatch();
     }

@@ -174,6 +174,44 @@ inline void idleTransitionsToDuelCountdownWhenMatchIsReady(IdleStateTests* suite
     EXPECT_TRUE(suite->idleState->transitionToDuelCountdown());
 }
 
+// Regression: a MATCH_ID_ACK that lands in the same Device::loop iteration the
+// match-init timer expires must not tear down the now-ready match. execDrivers()
+// applies the ack (matchIsReady) before Idle::onStateLoop, and onStateLoop runs
+// before the DuelCountdown transition check, so an unguarded timer-expiry clear
+// would drop a ready match and the duel would never start.
+inline void idleDoesNotClearReadyMatchOnTimerExpiry(IdleStateTests* suite) {
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(testing::AnyNumber());
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(testing::AnyNumber());
+
+    // Connected hunter with a PDN bounty on the opponent (OUTPUT) jack, so
+    // Idle::onStateLoop arms the match-init timer and initializes a match.
+    uint8_t bountyMac[6] = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+    suite->device.fakeRemoteDeviceCoordinator.setPortStatus(SerialIdentifier::OUTPUT_JACK, PortStatus::CONNECTED);
+    suite->device.fakeRemoteDeviceCoordinator.setPeerDeviceType(SerialIdentifier::OUTPUT_JACK, DeviceType::PDN);
+    suite->device.fakeRemoteDeviceCoordinator.setPeerMac(SerialIdentifier::OUTPUT_JACK, bountyMac);
+    suite->chainManager->setPeerRole(SerialIdentifier::OUTPUT_JACK, false); // opponent is a bounty
+
+    suite->idleState->onStateMounted(&suite->device);
+    suite->idleState->onStateLoop(&suite->device);
+    ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value())
+        << "Idle did not initialize a match; connectivity/canInitiateMatch setup is off";
+
+    // Ack arrives. In firmware execDrivers() applies this before onStateLoop, so
+    // matchIsReady is already true when the timer-expiry branch runs.
+    const char* matchId = suite->matchManager->getCurrentMatch()->getMatchId();
+    QuickdrawCommand ack(bountyMac, QDCommand::MATCH_ID_ACK, matchId, "boun", 0, false);
+    suite->matchManager->listenForMatchEvents(ack);
+    ASSERT_TRUE(suite->matchManager->isMatchReady());
+
+    // The match-init timer (1000ms) expires in this same iteration.
+    suite->fakeClock->advance(1001);
+    suite->idleState->onStateLoop(&suite->device);
+
+    EXPECT_TRUE(suite->matchManager->getCurrentMatch().has_value())
+        << "ready match was cleared by timer expiry";
+    EXPECT_TRUE(suite->idleState->transitionToDuelCountdown());
+}
+
 // ============================================
 // Countdown State Tests
 // ============================================

@@ -789,6 +789,9 @@ TEST_F(IdleStateTests, doesNotTransitionWithMatchButNotReady) {
 TEST_F(IdleStateTests, transitionsToDuelCountdownWhenMatchIsReady) {
     idleTransitionsToDuelCountdownWhenMatchIsReady(this);
 }
+TEST_F(IdleStateTests, doesNotClearReadyMatchOnTimerExpiry) {
+    idleDoesNotClearReadyMatchOnTimerExpiry(this);
+}
 
 // ============================================
 // QUICKDRAW STATE TESTS - HANDSHAKE
