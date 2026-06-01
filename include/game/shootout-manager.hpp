@@ -227,10 +227,6 @@ private:
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin_ = false;
     uint8_t lastMatchResultSeqId_ = 0;
-    // Per-command last-observed seqId for ESP-NOW link-layer dedup.
-    uint8_t lastObservedBracketSeqId_ = 0;
-    uint8_t lastObservedMatchStartSeqId_ = 0;
-    uint8_t lastObservedTournamentEndSeqId_ = 0;
     void sendMatchResultToPeers(const uint8_t* winner, const uint8_t* loser,
                               uint8_t matchIndex);
     void applyMatchResult(const uint8_t* winner, const uint8_t* loser);

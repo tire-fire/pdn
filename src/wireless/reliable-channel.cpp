@@ -5,6 +5,12 @@
 
 namespace {
 constexpr const char* WTX_TAG = "WTX";
+// Caps the per-channel RX dedup cursor table. The live peer set is bounded by
+// the ESP-NOW peer cap, but senders come and go across a session and this table
+// never otherwise shrinks; evicting the oldest cursor when full keeps it
+// bounded. A wrongly-evicted still-active sender just re-seeds on its next
+// packet, costing at most one re-dispatch that downstream domain dedup absorbs.
+constexpr size_t kMaxRxSenders = 32;
 }
 
 ReliableChannelBase::ReliableChannelBase(WirelessTransport* transport,
@@ -62,6 +68,9 @@ bool ReliableChannelBase::isDuplicateReliableRx(const uint8_t* fromMac, uint8_t 
     RxSeqRecord rec;
     std::memcpy(rec.mac.data(), fromMac, 6);
     rec.lastSeqId = seqId;
+    if (rxSeq_.size() >= kMaxRxSenders) {
+        rxSeq_.erase(rxSeq_.begin());
+    }
     rxSeq_.push_back(rec);
     return false;
 }

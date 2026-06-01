@@ -134,6 +134,17 @@ void ShootoutManager::onBracketEntryReceived(const uint8_t* fromMac,
             bracket_.clear();
             currentRound_.clear();
             pendingBracket_.active = false;
+            // If our own tournament was already underway (a ring merging in
+            // after we started), drop the stale match progress too, so the
+            // adopted lower-MAC bracket begins clean instead of carrying our
+            // defunct match/elimination state forward.
+            currentMatchIndex_ = -1;
+            memset(currentDuelistA_.data(), 0, 6);
+            memset(currentDuelistB_.data(), 0, 6);
+            memset(opponentMac_.data(), 0, 6);
+            memset(tournamentWinner_.data(), 0, 6);
+            eliminated_.clear();
+            reportedLocalWin_ = false;
         }
     }
     if (isCoordinator()) return;
@@ -177,7 +188,6 @@ void ShootoutManager::onBracketEntryReceived(const uint8_t* fromMac,
     } else {
         coordinatorMac_ = lowestMacIn(bracket_);
     }
-    lastObservedBracketSeqId_ = pend.seqId;
     pend.active = false;
     phase_ = Phase::BRACKET_REVEAL;
     bracketRevealTimer_.setTimer(kBracketRevealMs);
@@ -304,9 +314,6 @@ void ShootoutManager::resetToIdle() {
     eliminated_.clear();
     reportedLocalWin_ = false;
     names_.clear();
-    lastObservedBracketSeqId_ = 0;
-    lastObservedMatchStartSeqId_ = 0;
-    lastObservedTournamentEndSeqId_ = 0;
     currentMatchIndex_ = -1;
     memset(tournamentWinner_.data(), 0, 6);
     memset(opponentMac_.data(), 0, 6);
@@ -803,8 +810,7 @@ void ShootoutManager::onBracketReceived(
     // ReliableChannel::deliver on the wire path; this synthesized path skips
     // them since callers are bypassing the channel for state injection.
     if (isCoordinator()) return;
-    if (seqId != 0 && seqId == lastObservedBracketSeqId_) return;
-    lastObservedBracketSeqId_ = seqId;
+    (void)seqId;  // immediate-duplicate dedup is the channel's job on the wire path
     bracket_ = bracket;
     currentRound_ = bracket;
     coordinatorMac_ = lowestMacIn(bracket_);
@@ -817,9 +823,8 @@ void ShootoutManager::onMatchStartReceived(
     uint8_t matchIndex, uint8_t seqId) {
     // Test-only entry point: production receive routes through matchStartChannel_.
     if (isCoordinator()) return;
-    if (seqId != 0 && seqId == lastObservedMatchStartSeqId_) return;
+    (void)seqId;  // immediate-duplicate dedup is the channel's job; dedup by match below
     bool sameMatch = isSameMatch(matchIndex, duelistA, duelistB);
-    lastObservedMatchStartSeqId_ = seqId;
     if (sameMatch) return;
     currentMatchIndex_ = matchIndex;
     memcpy(currentDuelistA_.data(), duelistA, 6);
@@ -958,8 +963,7 @@ void ShootoutManager::onTournamentEndAckReceived(const uint8_t* fromMac, uint8_t
 }
 
 void ShootoutManager::onTournamentEndReceived(const uint8_t* winner, uint8_t seqId) {
-    if (seqId != 0 && seqId == lastObservedTournamentEndSeqId_) return;
-    lastObservedTournamentEndSeqId_ = seqId;
+    (void)seqId;  // immediate-duplicate dedup is the channel's job; re-run is idempotent
     memcpy(tournamentWinner_.data(), winner, 6);
     phase_ = Phase::ENDED;
     // Drop any in-flight MATCH_RESULT pending so a straggling abandon does
