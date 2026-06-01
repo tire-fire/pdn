@@ -216,24 +216,17 @@ void ChainManager::onConfirmReceived(
 }
 
 void ChainManager::onChainStateChanged() {
-    // Boost-clear gate: drain confirmedSupporters_ when the supporter-jack
-    // direct peer drops. Without daisy state, that direct-peer disappearance
-    // is the only locally-observable signal that the chain has shrunk.
-    size_t count = 0;
+    // Boost-clear invariant: a confirmed supporter only counts while we still
+    // hold the supporter-jack direct peer it confirmed through. That peer's
+    // disappearance is the only locally-observable signal the chain shrank, so
+    // drain when it's gone. Level-triggered (the clear is idempotent), so no
+    // prior-count state is needed to detect the transition.
     const bool supporterPeerPresent = (rdc_ != nullptr && rdc_->getPeerMac(supporterJack()) != nullptr);
-    if (supporterPeerPresent) {
-        count = 1 + confirmedSupporters_.size();
-    }
-    const bool willDrain = (lastSupporterChainCount_ > 0 && count == 0);
-    if (count != lastSupporterChainCount_ || willDrain) {
-        LOG_W(TAG, "onChainStateChanged supJackPeer=%d count=%u lastCount=%u confSup=%u willDrain=%d",
-              (int)supporterPeerPresent, (unsigned)count, (unsigned)lastSupporterChainCount_,
-              (unsigned)confirmedSupporters_.size(), (int)willDrain);
-    }
-    if (willDrain) {
+    if (!supporterPeerPresent && !confirmedSupporters_.empty()) {
+        LOG_W(TAG, "supporter-jack peer gone, draining %u confirmed supporters",
+              (unsigned)confirmedSupporters_.size());
         clearSupporterConfirms();
     }
-    lastSupporterChainCount_ = count;
 
     // Drop cached peer roles for any port that no longer has a direct peer.
     // Immediate clearing is safe because the cross-jack re-broadcast in

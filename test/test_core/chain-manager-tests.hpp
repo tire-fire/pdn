@@ -248,7 +248,7 @@ inline void cdmOnChainStateChangedClearsOnDrain(ChainManagerTests* suite) {
     cdm.onConfirmReceived(suite->supporterMac, suite->supporterMac, 1);
     ASSERT_EQ(cdm.getBoostMs(), 15u);
 
-    // First call: chain has peers (lastSupporterChainCount_ goes from 0 to N)
+    // Supporter-jack peer still present: the confirmed supporter is retained.
     cdm.onChainStateChanged();
     EXPECT_EQ(cdm.getBoostMs(), 15u);
 

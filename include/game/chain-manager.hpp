@@ -162,7 +162,6 @@ private:
     std::optional<bool> peerIsHunter(SerialIdentifier port) const;
 
     std::vector<std::array<uint8_t, 6>> confirmedSupporters_;
-    size_t lastSupporterChainCount_ = 0;
 
     bool isCoordinator_ = false;
 
