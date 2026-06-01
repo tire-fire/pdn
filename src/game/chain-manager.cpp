@@ -142,6 +142,10 @@ void ChainManager::sendConfirm() {
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
     if (selfMac == nullptr) return;
 
+    // The champion's own championMac_ is self; confirming would unicast to self
+    // and inflate its supporter count. Only supporters confirm upstream.
+    if (memcmp(championMac_->data(), selfMac, 6) == 0) return;
+
     LOG_W(TAG, "sendConfirm -> %02X:%02X:%02X:%02X:%02X:%02X",
           (*championMac_)[0], (*championMac_)[1], (*championMac_)[2],
           (*championMac_)[3], (*championMac_)[4], (*championMac_)[5]);
@@ -505,6 +509,16 @@ void ChainManager::sync() {
     if (now >= nextRoleBackstopMs_) {
         nextRoleBackstopMs_ = now + kRoleBackstopMs;
         reannounceRoleToPeers();
+        // Self-healing confirm backstop, mirroring the role re-announce above.
+        // The auto-confirm fired when championMac_ first resolved may have been
+        // dropped by the champion's topology-stability gate and then abandoned
+        // by the resender, all before the graph settled — and championMac_ never
+        // changes again, so without this periodic re-send a supporter would
+        // silently contribute zero boost. The champion dedups by originator MAC
+        // and rejects non-members, so a steady repeat carries no storm.
+        if (isSupporter() && championMac_.has_value()) {
+            sendConfirm();
+        }
     }
 }
 

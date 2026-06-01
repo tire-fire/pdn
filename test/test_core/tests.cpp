@@ -1393,6 +1393,10 @@ TEST_F(ChainMultiDeviceFixture, confirmDeliveredToChampion) {
     cdmMultiDeviceConfirmDeliveredToChampion(this);
 }
 
+TEST_F(ChainMultiDeviceFixture, autoConfirmReachesChampion) {
+    cdmMultiDeviceAutoConfirmReachesChampion(this);
+}
+
 // Ring/loop detection flows through RDC::isInLoop() + isTopologyStable(), so
 // these tests advance the clock via primeRosterStableAll() rather than driving
 // connect-edge events.

@@ -640,6 +640,50 @@ inline void cdmMultiDeviceConfirmDeliveredToChampion(ChainMultiDeviceFixture* su
     EXPECT_EQ(d0.cdm->getBoostMs(), 2 * ChainManager::BOOST_PER_SUPPORTER_MS);
 }
 
+// Production auto-confirm path: a supporter fires ChainConfirm automatically
+// when its championMac_ resolves during the role-announce cascade — no explicit
+// user press / sendConfirm(). With roster stability primed first, those
+// auto-fired confirms must reach the champion and populate confirmedSupporters_.
+// (The sibling test above primes AFTER the cascade and re-confirms explicitly;
+// this one proves the cascade-driven confirm lands on its own.)
+inline void cdmMultiDeviceAutoConfirmReachesChampion(ChainMultiDeviceFixture* suite) {
+    suite->spawnDevices(3);
+    suite->setAllHunters();
+    suite->connectLinearHunterChain();
+    suite->deliverAllPackets();
+    suite->syncAll();
+    suite->deliverAllPackets();
+
+    MultiDeviceNode& d0 = suite->node(0);
+    MultiDeviceNode& d1 = suite->node(1);
+    MultiDeviceNode& d2 = suite->node(2);
+
+    // Prime stability BEFORE the cascade so the champion's confirm gate is open
+    // when the auto-fired confirms arrive.
+    suite->primeRosterStableAll();
+
+    // championMac_ resolving on d1/d2 triggers sendConfirm() internally — we
+    // never call sendConfirm() ourselves.
+    d0.cdm->onChainStateChanged();
+    d1.cdm->onChainStateChanged();
+    d2.cdm->onChainStateChanged();
+    suite->deliverAllPackets();
+    // Re-prime + deliver so any confirm dropped during the cascade window is
+    // retransmitted by the resender (driven by shootout->sync in syncAll) and
+    // lands now that topology is settled.
+    suite->primeRosterStableAll();
+    suite->deliverAllPackets();
+
+    ASSERT_TRUE(d0.cdm->isChampion());
+    ASSERT_NE(d2.cdm->getChampionMac(), nullptr);
+    ASSERT_EQ(memcmp(d2.cdm->getChampionMac(), d0.mac, 6), 0);
+
+    // No explicit sendConfirm() was ever called; both supporters' auto-confirms
+    // must have reached the champion.
+    EXPECT_EQ(d0.cdm->getConfirmedSupporterCount(), 2u);
+    EXPECT_EQ(d0.cdm->getBoostMs(), 2 * ChainManager::BOOST_PER_SUPPORTER_MS);
+}
+
 // End-to-end Shootout consensus: 4 devices form a ring, each confirms,
 // every device reaches BRACKET_REVEAL phase, coordinator broadcasts
 // MATCH_START and both duelists transition into MATCH_IN_PROGRESS.
