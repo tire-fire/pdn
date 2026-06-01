@@ -23,14 +23,7 @@ void Resender::send(const uint8_t* target, PktType type, uint8_t subType,
         // State channel: a newer send obsoletes any prior unacked one to this
         // peer, so drop every prior entry regardless of seqId. Keeping a stale
         // one armed risks an old retransmit landing after the new state.
-        for (auto it = pending_.begin(); it != pending_.end();) {
-            if (it->type == type && it->subType == subType &&
-                memcmp(it->target.data(), target, 6) == 0) {
-                it = pending_.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        eraseAllToTarget(type, subType, target);
     } else {
         // Stream channel: distinct seqIds to the same peer coexist, so a batch
         // of reliable sends (e.g. one BRACKET_ENTRY per bracket slot) each keep
@@ -85,6 +78,11 @@ void Resender::cancel(PktType type, uint8_t subType, const uint8_t* target) {
     if (target == nullptr) return;
     // Peer is done or known-unreachable: drop EVERY pending entry to it on this
     // channel, across all seqIds. Silent — no abandon callback.
+    eraseAllToTarget(type, subType, target);
+}
+
+void Resender::eraseAllToTarget(PktType type, uint8_t subType,
+                                const uint8_t* target) {
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (it->type == type && it->subType == subType &&
             memcmp(it->target.data(), target, 6) == 0) {

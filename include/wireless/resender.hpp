@@ -116,7 +116,7 @@ public:
     void sync();
 
     Stats getStats(PktType type, uint8_t subType = 0) const {
-        auto it = perChannelStats_.find(makeKey(type, subType));
+        auto it = perChannelStats_.find(channelKey(type, subType));
         if (it == perChannelStats_.end()) return Stats{};
         return it->second;
     }
@@ -148,13 +148,6 @@ public:
     }
 
 private:
-    using Key = uint32_t;  // (subType << 16) | static_cast<uint8_t>(type)
-
-    static Key makeKey(PktType type, uint8_t subType) {
-        return (static_cast<Key>(subType) << 16) |
-               static_cast<Key>(static_cast<uint8_t>(type));
-    }
-
     struct Pending {
         PktType type;
         uint8_t subType;
@@ -176,16 +169,19 @@ private:
     }
 
     Stats& statsFor(PktType type, uint8_t subType) {
-        return perChannelStats_[makeKey(type, subType)];
+        return perChannelStats_[channelKey(type, subType)];
     }
 
     std::vector<Pending>::iterator findPending(
         PktType type, uint8_t subType, uint8_t seqId, const uint8_t* target);
 
+    // Drop every pending entry to `target` on (type, subType), across all seqIds.
+    void eraseAllToTarget(PktType type, uint8_t subType, const uint8_t* target);
+
     void transmit(const Pending& p);
 
     WirelessManager* wm_;
     std::vector<Pending> pending_;
-    std::map<Key, Stats> perChannelStats_;
+    std::map<ChannelKey, Stats> perChannelStats_;
     AbandonCallback abandonCallback_;
 };

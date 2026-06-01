@@ -25,7 +25,7 @@ void WirelessTransport::onAckPacket(const uint8_t* from,
     AckPayload ack;
     std::memcpy(&ack, data, sizeof(ack));
     PktType origType = static_cast<PktType>(ack.originalType);
-    Key k = makeKey(origType, ack.subType);
+    ChannelKey k = channelKey(origType, ack.subType);
     auto it = registry_.find(k);
     if (it == registry_.end()) return;
     it->second->onAck(ack.seqId, from);
@@ -34,7 +34,7 @@ void WirelessTransport::onAckPacket(const uint8_t* from,
 bool WirelessTransport::deliverIncoming(PktType type, uint8_t subType,
                                         const uint8_t* fromMac,
                                         const uint8_t* data, size_t len) {
-    Key k = makeKey(type, subType);
+    ChannelKey k = channelKey(type, subType);
     auto it = registry_.find(k);
     if (it == registry_.end()) return false;
     return it->second->deliverBytes(fromMac, data, len);
@@ -47,7 +47,7 @@ void WirelessTransport::sync() {
 void WirelessTransport::onResenderAbandon(PktType type, uint8_t subType,
                                           uint8_t seqId,
                                           const uint8_t* targetMac) {
-    Key k = makeKey(type, subType);
+    ChannelKey k = channelKey(type, subType);
     auto it = registry_.find(k);
     if (it == registry_.end()) return;
     it->second->onResenderAbandon(seqId, targetMac);

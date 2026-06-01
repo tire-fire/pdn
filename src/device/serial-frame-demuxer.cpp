@@ -102,13 +102,13 @@ void SerialFrameDemuxer::feed(const uint8_t* data, size_t len) {
                 if (parser_.crcBytesRead == 2) {
                     const uint16_t got = (static_cast<uint16_t>(parser_.crcBytes[0]) << 8)
                                        | static_cast<uint16_t>(parser_.crcBytes[1]);
-                    std::vector<uint8_t> crcInput;
-                    crcInput.reserve(1 + parser_.payloadBuf.size());
-                    crcInput.push_back(parser_.opcode);
-                    crcInput.insert(crcInput.end(),
-                                    parser_.payloadBuf.begin(),
-                                    parser_.payloadBuf.end());
-                    const uint16_t expected = crc16(crcInput.data(), crcInput.size());
+                    // CRC covers opcode + payload. Accumulate across the two
+                    // already-contiguous spans rather than copying them into a
+                    // combined buffer on every frame (this runs per frame —
+                    // HELLO and BEACON — on the UART event task).
+                    uint16_t expected = crc16(&parser_.opcode, 1);
+                    expected = crc16Update(expected, parser_.payloadBuf.data(),
+                                           parser_.payloadBuf.size());
                     if (got == expected) {
                         if (binaryFrameHandler_) {
                             Frame f{parser_.opcode, parser_.payloadBuf};

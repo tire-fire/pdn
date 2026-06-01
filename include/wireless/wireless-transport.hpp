@@ -60,13 +60,11 @@ public:
     WirelessManager* getWirelessManager() { return wm_; }
 
 private:
-    using Key = uint32_t; // (subType << 16) | type
-
     template <class P, class Sub>
     ReliableChannel<P, Sub>* channelImpl(PktType type, uint8_t subType,
                                          ReliableChannelBase::OnAbandon onAbandon,
                                          Resender::SendMode sendMode) {
-        Key k = makeKey(type, subType);
+        ChannelKey k = channelKey(type, subType);
         auto channel = std::make_unique<ReliableChannel<P, Sub>>(
             this, &resender_, type, subType, std::move(onAbandon), sendMode);
         auto* raw = channel.get();
@@ -77,11 +75,6 @@ private:
         return raw;
     }
 
-    static Key makeKey(PktType type, uint8_t subType) {
-        return (static_cast<Key>(subType) << 16) |
-               static_cast<Key>(static_cast<uint8_t>(type));
-    }
-
     [[noreturn]] static void abortWithMessage(const char* msg);
 
     void onResenderAbandon(PktType type, uint8_t subType,
@@ -89,5 +82,5 @@ private:
 
     WirelessManager* wm_;
     Resender resender_;
-    std::map<Key, std::unique_ptr<ReliableChannelBase>> registry_;
+    std::map<ChannelKey, std::unique_ptr<ReliableChannelBase>> registry_;
 };
