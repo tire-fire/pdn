@@ -207,8 +207,8 @@ private:
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.
-// Call deliverLastTo() to route the most-recently-captured packet to another manager's
-// processQuickdrawCommand(), exercising the real serialization/deserialization path.
+// Call deliverLastTo() to route the most-recently-captured packet into another manager's
+// transport (deliverIncoming), exercising the real serialization/deserialization path.
 class FakeQuickdrawWirelessManager : public QuickdrawWirelessManager {
 public:
     FakeQuickdrawWirelessManager() : QuickdrawWirelessManager() {}
@@ -220,6 +220,9 @@ public:
 
     int broadcastReliable(const uint8_t* /*macAddress*/, QuickdrawCommand& command) override {
         // Funnels into sentCommands like broadcastPacket so test assertions are uniform.
+        // This skips the channel, so command.seqId stays 0 and deliverLastTo injects
+        // a fire-and-forget packet (no ack/dedup). Channel-owned reliable dedup is
+        // covered directly by PacketParsingTests.dedupsResentReliablePacket.
         sentCommands.push_back(command);
         return 0;
     }
@@ -237,8 +240,10 @@ public:
         pkt.command        = cmd.command;
         pkt.seqId          = cmd.seqId;
 
-        recipient->processQuickdrawCommand(
-            senderMac,
+        // Inject at the same boundary the radio uses: the recipient's transport
+        // acks, dedups, and dispatches via the channel's onReceive.
+        recipient->getTransport()->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, senderMac,
             reinterpret_cast<const uint8_t*>(&pkt),
             sizeof(pkt));
     }

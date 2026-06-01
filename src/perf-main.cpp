@@ -140,8 +140,8 @@ static QuickdrawPacket makeDrawResultPacket(const std::optional<Match>& match,
 static void deliver(QuickdrawWirelessManager* target,
                     const uint8_t mac[6],
                     QuickdrawPacket& pkt) {
-    target->processQuickdrawCommand(
-        mac,
+    target->getTransport()->deliverIncoming(
+        PktType::kQuickdrawCommand, 0, mac,
         reinterpret_cast<const uint8_t*>(&pkt),
         sizeof(pkt));
 }
@@ -156,6 +156,7 @@ struct DeviceCtx {
     StubHttpClient   httpClient;
     StubRDC          rdc;
     WirelessManager* wirelessMgr   = nullptr;
+    WirelessTransport* transport   = nullptr;
     QuickdrawWirelessManager* qdWireless = nullptr;
     MatchManager*    matchMgr       = nullptr;
     Player           player;
@@ -167,10 +168,11 @@ struct DeviceCtx {
         player.setIsHunter(isHunter);
 
         wirelessMgr = new WirelessManager(&peerComms, &httpClient);
+        transport   = new WirelessTransport(wirelessMgr);
         qdWireless  = new QuickdrawWirelessManager();
         matchMgr    = new MatchManager();
 
-        qdWireless->initialize(&player, wirelessMgr, /*broadcastCooldown=*/0);
+        qdWireless->initialize(&player, wirelessMgr, transport, /*broadcastCooldown=*/0);
         matchMgr->initialize(&player, &storage, qdWireless);
         matchMgr->setRemoteDeviceCoordinator(&rdc);
     }
@@ -184,6 +186,7 @@ struct DeviceCtx {
     void destroy() {
         delete matchMgr;
         delete qdWireless;
+        delete transport;
         delete wirelessMgr;
     }
 };
@@ -264,7 +267,8 @@ int main(int argc, char** argv) {
         clock.set(duelStart + bountyPress);
         bounty.matchMgr->getDuelButtonPush()(bounty.matchMgr);
 
-        // Exchange draw results via wire-format packets through processQuickdrawCommand.
+        // Exchange draw results via wire-format packets through the transport's
+        // reliable channel (deliverIncoming -> ack/dedup -> onReceive).
         QuickdrawPacket hunterPkt = makeDrawResultPacket(
             hunter.matchMgr->getCurrentMatch(), true, "hunt");
         QuickdrawPacket bountyPkt = makeDrawResultPacket(

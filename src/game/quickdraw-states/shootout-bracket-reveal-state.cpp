@@ -26,12 +26,9 @@ void ShootoutBracketReveal::onStateLoop(Device *PDN) {
         }
     }
     if (p == ShootoutManager::Phase::ABORTED) shouldGoToAborted_ = true;
-    // Abort only once the roster has SETTLED into a non-loop (see
-    // ShootoutProposal for why the isTopologyStable term is required, not just
-    // !isInStableLoop). Routes through ShootoutAborted via phase=ABORTED.
-    bool ringSettledOpen = chainManager_ &&
-                           chainManager_->isTopologyStable() &&
-                           !chainManager_->isInStableLoop();
+    // Abort only once the roster has settled into a non-loop. Routes through
+    // ShootoutAborted via phase=ABORTED.
+    bool ringSettledOpen = chainManager_ && chainManager_->isRingSettledOpen();
     if (loopBreakDebounce_.heldFor(ringSettledOpen, kLoopBreakDebounceMs)) {
         shootout_->abortTournament();
     }

@@ -26,16 +26,10 @@ void ShootoutProposal::onStateLoop(Device *PDN) {
     if (p == ShootoutManager::Phase::BRACKET_REVEAL) shouldGoToReveal_ = true;
     if (p == ShootoutManager::Phase::ABORTED) shouldGoToAborted_ = true;
     if (p == ShootoutManager::Phase::IDLE) shouldGoToIdle_ = true;
-    // Abort once the roster has SETTLED into a non-loop. The stability term is
-    // what makes us hold during convergence: !isInStableLoop() alone is also
-    // true mid-churn (unstable), which would abort on a transient blip. Gating
-    // on isTopologyStable() means we only act on a settled topology, so a quick
-    // unplug→replug that never settles as a chain keeps us in the proposal.
-    // abortTournament sets phase=ABORTED; the phase check above then routes
-    // every member through the Aborted screen back to idle.
-    bool ringSettledOpen = chainManager_ &&
-                           chainManager_->isTopologyStable() &&
-                           !chainManager_->isInStableLoop();
+    // Abort once the roster has settled into a non-loop. abortTournament sets
+    // phase=ABORTED; the phase check above then routes every member through the
+    // Aborted screen back to idle.
+    bool ringSettledOpen = chainManager_ && chainManager_->isRingSettledOpen();
     if (loopBreakDebounce_.heldFor(ringSettledOpen, kLoopBreakDebounceMs)) {
         shootout_->abortTournament();
     }

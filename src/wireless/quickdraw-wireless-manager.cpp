@@ -4,6 +4,20 @@
 #include "wireless/quickdraw-wireless-manager.hpp"
 #include "device/drivers/peer-comms-interface.hpp"
 
+namespace {
+// Common QuickdrawCommand -> QuickdrawPacket field copy. seqId is left for the
+// caller: the fire-and-forget path carries the command's own seqId, the
+// reliable path has it assigned by the channel on send.
+QuickdrawPacket encodeCommand(const QuickdrawCommand& command) {
+    QuickdrawPacket p = QuickdrawPacket();
+    p.command = command.command;
+    p.playerDrawTime = command.playerDrawTime;
+    p.isHunter = command.isHunter;
+    memcpy(p.matchId, command.matchId, IdGenerator::UUID_BUFFER_SIZE);
+    memcpy(p.playerId, command.playerId, 5);
+    return p;
+}
+}
 
 QuickdrawWirelessManager::QuickdrawWirelessManager() : broadcastTimer() {}
 
@@ -35,9 +49,14 @@ void QuickdrawWirelessManager::initialize(Player *player, WirelessManager* wirel
                 (unsigned)seqId);
             if (abandonCallback_) abandonCallback_();
         });
-    // No channel onReceive: production ingress for kQuickdrawCommand is the
-    // inline processQuickdrawCommand path (see main.cpp), which acks and
-    // dedups itself. The channel here is used only for reliable sends.
+    // Inbound kQuickdrawCommand bytes are routed (by main.cpp / cli-device /
+    // tests) through transport->deliverIncoming, which acks, drops the lost-ack
+    // duplicate, then fires this onReceive. One ack+dedup path, shared with
+    // every other reliable channel.
+    channel_->onReceive(
+        [this](const uint8_t* fromMac, const QuickdrawPacket& packet) {
+            deliverDecoded(fromMac, packet);
+        });
 }
 
 void QuickdrawWirelessManager::clearCallbacks() {
@@ -62,15 +81,8 @@ void QuickdrawWirelessManager::sync() {
 
 int QuickdrawWirelessManager::broadcastPacket(const uint8_t macAddress[6],
                                              QuickdrawCommand& command) {
-    QuickdrawPacket qdPacket = QuickdrawPacket();
-
-    qdPacket.command = command.command;
-    qdPacket.playerDrawTime = command.playerDrawTime;
-    qdPacket.isHunter = command.isHunter;
+    QuickdrawPacket qdPacket = encodeCommand(command);
     qdPacket.seqId = command.seqId;
-
-    memcpy(qdPacket.matchId, command.matchId, IdGenerator::UUID_BUFFER_SIZE);
-    memcpy(qdPacket.playerId, command.playerId, 5);
 
     LOG_I("QWM", "Sending command %i to %s", command.command, MacToString(macAddress));
     LOG_I("QWM", "Match ID: %s", qdPacket.matchId);
@@ -87,12 +99,7 @@ int QuickdrawWirelessManager::broadcastReliable(const uint8_t macAddress[6],
                                                 QuickdrawCommand& command) {
     if (channel_ == nullptr) return -1;
 
-    QuickdrawPacket qdPacket = QuickdrawPacket();
-    qdPacket.command = command.command;
-    qdPacket.playerDrawTime = command.playerDrawTime;
-    qdPacket.isHunter = command.isHunter;
-    memcpy(qdPacket.matchId, command.matchId, IdGenerator::UUID_BUFFER_SIZE);
-    memcpy(qdPacket.playerId, command.playerId, 5);
+    QuickdrawPacket qdPacket = encodeCommand(command);
 
     uint8_t seqId = channel_->sendReliable(macAddress, qdPacket);
     command.seqId = seqId;
@@ -102,60 +109,11 @@ int QuickdrawWirelessManager::broadcastReliable(const uint8_t macAddress[6],
     return 0;
 }
 
-bool QuickdrawWirelessManager::isDuplicate(const uint8_t* mac, uint8_t command, uint8_t seqId) {
-    for (auto& e : observed_) {
-        if (e.command == command && memcmp(e.mac.data(), mac, 6) == 0) {
-            if (e.lastSeqId == seqId) return true;
-            e.lastSeqId = seqId;
-            return false;
-        }
-    }
-    ObservedKey k;
-    memcpy(k.mac.data(), mac, 6);
-    k.command = command;
-    k.lastSeqId = seqId;
-    observed_.push_back(k);
-    return false;
-}
-
-void QuickdrawWirelessManager::sendAck(const uint8_t* toMac, uint8_t command, uint8_t seqId) {
-    Resender::sendAck(wirelessManager, toMac, PktType::kQuickdrawCommand, command, seqId);
-}
-
 void QuickdrawWirelessManager::deliverDecoded(const uint8_t* fromMac,
                                               const QuickdrawPacket& packet) {
-    if (packet.seqId != 0 &&
-        isDuplicate(fromMac, static_cast<uint8_t>(packet.command), packet.seqId)) {
-        return;
-    }
     QuickdrawCommand command(fromMac, packet.command,
                              packet.matchId, packet.playerId,
                              packet.playerDrawTime, packet.isHunter,
                              packet.seqId);
     if (packetReceivedCallback) packetReceivedCallback(command);
-}
-
-int QuickdrawWirelessManager::processQuickdrawCommand(const uint8_t *macAddress, const uint8_t *data,
-    const size_t dataLen) {
-
-    if(dataLen != sizeof(QuickdrawPacket)) {
-        LOG_E("QWM", "QuickdrawPacket size mismatch: got %lu, expected %lu (possible firmware mismatch)",
-                      dataLen, sizeof(QuickdrawPacket));
-        return -1;
-    }
-
-    const QuickdrawPacket* packet = reinterpret_cast<const QuickdrawPacket*>(data);
-
-    // Legacy ingress path: ack inline so the sender stops retrying. The
-    // channel-driven ingress path (transport->deliverIncoming -> channel
-    // ->deliver) sends its own ack before calling deliverDecoded, so we
-    // must NOT double-ack from this path when callers have already wired
-    // packets through the transport. Tests and untransport'd devices use
-    // this path exclusively.
-    if (packet->seqId != 0) {
-        sendAck(macAddress, static_cast<uint8_t>(packet->command), packet->seqId);
-    }
-
-    deliverDecoded(macAddress, *packet);
-    return 1;
 }

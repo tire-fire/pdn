@@ -81,13 +81,16 @@ void setupEspNow(
     RemoteDebugManager* remoteDebugManager,
     SymbolWirelessManager* symbolWirelessManager,
     PeerCommsInterface* peerCommsDriver) {
-    // Register packet handlers
+    // Register packet handlers. Inbound kQuickdrawCommand routes through the
+    // transport's reliable channel, which acks, dedups, and dispatches to the
+    // QWM onReceive callback — same path every other reliable channel uses.
     peerCommsDriver->setPacketHandler(
         PktType::kQuickdrawCommand,
-        [](const uint8_t* src, const uint8_t* data, const size_t len, void* userArg) {
-            ((QuickdrawWirelessManager*)userArg)->processQuickdrawCommand(src, data, len);
+        [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+            static_cast<WirelessTransport*>(ctx)->deliverIncoming(
+                PktType::kQuickdrawCommand, 0, src, data, len);
         },
-        quickdrawWirelessManager
+        gWirelessTransport
     );
 
     // Unified ack: WirelessTransport dispatches acks to the channel that owns the seqId.

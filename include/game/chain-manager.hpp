@@ -49,6 +49,14 @@ public:
     virtual bool isTopologyStable() const {
         return rdc_ != nullptr && rdc_->isTopologyStable();
     }
+    // The roster has SETTLED into a non-loop. The stability term is essential:
+    // !isInStableLoop() alone is also true mid-churn, so gating on it without
+    // isTopologyStable() would abort a live tournament on a transient blip. A
+    // quick unplug->replug that never settles as a chain stays held. Composes
+    // the two virtuals above so test stubs of either drive this correctly.
+    bool isRingSettledOpen() const {
+        return isTopologyStable() && !isInStableLoop();
+    }
     bool canInitiateMatch() const;
     std::vector<std::array<uint8_t, 6>> getSupporterChainPeers() const;
 

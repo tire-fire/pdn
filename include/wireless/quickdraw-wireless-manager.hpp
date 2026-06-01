@@ -74,9 +74,9 @@ public:
     virtual ~QuickdrawWirelessManager();
 
     // Vends a ReliableChannel<QuickdrawPacket> on (kQuickdrawCommand, 0) from
-    // the supplied transport. broadcastReliable routes via the channel; the
-    // processQuickdrawCommand entry point stays available for tests and
-    // direct call sites.
+    // the supplied transport and binds its onReceive. Sends route via the
+    // channel; inbound bytes arrive through transport->deliverIncoming, which
+    // acks and dedups before dispatching to the packet callback.
     void initialize(Player* player, WirelessManager* wirelessManager,
                     WirelessTransport* transport, long broadcastCooldown);
     // Transport-free overload — passing nullptr transport keeps the manager usable
@@ -86,9 +86,13 @@ public:
         initialize(player, wirelessManager, nullptr, broadcastCooldown);
     }
 
-    int processQuickdrawCommand(const uint8_t* macAddress, const uint8_t* data, const size_t dataLen);
-
     void setPacketReceivedCallback(const std::function<void(const QuickdrawCommand&)>& callback);
+
+    // The transport whose kQuickdrawCommand channel acks, dedups, and dispatches
+    // inbound packets. Callers route received bytes through
+    // transport->deliverIncoming(kQuickdrawCommand, 0, ...); exposed so test
+    // harnesses can inject inbound frames at the same boundary.
+    WirelessTransport* getTransport() const { return transport_; }
 
     // Fire-and-forget send for commands with their own recovery
     // (matchInitializationTimer in Idle handles SEND_MATCH_ID etc.).
@@ -137,22 +141,8 @@ private:
     WirelessTransport* transport_ = nullptr;
     ReliableChannel<QuickdrawPacket>* channel_ = nullptr;
 
-    // Last-seen seqId per (sender mac, command) so retries of the same logical
-    // packet are recognised and acked but not re-applied. Grows by one entry
-    // per unique (mac, command) ever observed; bounded in practice by the
-    // ESP-NOW peer table cap (20) × reliable QDCommand count (2) ≈ 40, so no
-    // pruning is needed.
-    struct ObservedKey {
-        std::array<uint8_t, 6> mac;
-        uint8_t command;
-        uint8_t lastSeqId;
-    };
-    std::vector<ObservedKey> observed_;
-    bool isDuplicate(const uint8_t* mac, uint8_t command, uint8_t seqId);
-    void sendAck(const uint8_t* toMac, uint8_t command, uint8_t seqId);
-
-    // Shared decode + dedupe + dispatch. Called by both the channel's
-    // onReceive callback (which has already acked) and the legacy
-    // processQuickdrawCommand path (which still needs to ack inline).
+    // Decode a received packet into a QuickdrawCommand and hand it to the
+    // packet callback. Bound as the channel's onReceive, which has already
+    // acked and dropped the lost-ack duplicate before calling this.
     void deliverDecoded(const uint8_t* fromMac, const QuickdrawPacket& packet);
 };

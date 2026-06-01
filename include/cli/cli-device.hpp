@@ -210,10 +210,11 @@ public:
         // This is required for devices to actually receive and process ESP-NOW packets
         instance.pdn->getWirelessManager()->setEspNowPacketHandler(
             PktType::kQuickdrawCommand,
-            [](const uint8_t* src, const uint8_t* data, const size_t len, void* userArg) {
-                ((QuickdrawWirelessManager*)userArg)->processQuickdrawCommand(src, data, len);
+            [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+                static_cast<WirelessTransport*>(ctx)->deliverIncoming(
+                    PktType::kQuickdrawCommand, 0, src, data, len);
             },
-            instance.quickdrawWirelessManager
+            instance.wirelessTransport
         );
 
         instance.pdn->getWirelessManager()->setEspNowPacketHandler(

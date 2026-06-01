@@ -1101,6 +1101,10 @@ TEST_F(PacketParsingTests, rejectsMalformedPacket) {
     packetParsingRejectsMalformedPacket(this);
 }
 
+TEST_F(PacketParsingTests, dedupsResentReliablePacket) {
+    packetParsingDedupsResentReliablePacket(this);
+}
+
 TEST_F(PacketParsingTests, listenForMatchResultsSetsOpponentTimeHunter) {
     listenForMatchResultsSetsOpponentTimeHunter(this);
 }

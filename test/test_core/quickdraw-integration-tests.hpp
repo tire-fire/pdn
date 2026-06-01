@@ -34,7 +34,9 @@ inline TestQuickdrawPacket createTestPacket(
     long playerDrawTime = 0,
     bool isHunter = true
 ) {
-    TestQuickdrawPacket packet;
+    // Zero-init so seqId is 0 (fire-and-forget): these helpers model unreliable
+    // sends, and the channel dedups reliable (nonzero-seqId) packets per sender.
+    TestQuickdrawPacket packet{};
     strncpy(packet.matchId, matchId.c_str(), 36);
     packet.matchId[36] = '\0';
     strncpy(packet.playerId, playerId.c_str(), 4);
@@ -101,12 +103,12 @@ public:
         }
     }
 
-    void processPacket(const TestQuickdrawPacket& packet, 
+    void processPacket(const TestQuickdrawPacket& packet,
                       const uint8_t macAddr[6] = nullptr) {
         uint8_t defaultMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
         const uint8_t* mac = macAddr ? macAddr : defaultMac;
-        wirelessManager->processQuickdrawCommand(
-            mac,
+        transport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, mac,
             reinterpret_cast<const uint8_t*>(&packet),
             sizeof(packet)
         );
@@ -120,6 +122,7 @@ public:
     MatchManager* matchManager = nullptr;
     FakeQuickdrawWirelessManager* wirelessManager = nullptr;
     WirelessManager* deviceWirelessManager = nullptr;
+    WirelessTransport* transport = nullptr;
     FakeRemoteDeviceCoordinator fakeRdc;
     FakePlatformClock* fakeClock = nullptr;
 
@@ -139,9 +142,10 @@ private:
 
     void setupManagers() {
         deviceWirelessManager = new WirelessManager(&peerComms, &httpClient);
+        transport = new WirelessTransport(deviceWirelessManager);
         matchManager = new MatchManager();
         wirelessManager = new FakeQuickdrawWirelessManager();
-        wirelessManager->initialize(player, deviceWirelessManager, 100);
+        wirelessManager->initialize(player, deviceWirelessManager, transport, 100);
         matchManager->initialize(player, &storage, wirelessManager);
         // Stub the RDC with the opponent MAC this fixture uses so the
         // SEND_MATCH_ID gate in listenForMatchEvents passes for delivered packets.
@@ -166,6 +170,7 @@ private:
         matchManager->clearCurrentMatch();
         delete matchManager;
         delete wirelessManager;
+        delete transport;
         delete deviceWirelessManager;
     }
 
@@ -215,8 +220,9 @@ public:
         TestQuickdrawPacket packet = createTestPacketFromMatch(
             hunterMatchManager->getCurrentMatch(), command, true);
         uint8_t macAddr[6] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
-        bountyWirelessManager->processQuickdrawCommand(
-            macAddr, reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
+        bountyTransport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
         );
     }
 
@@ -224,8 +230,9 @@ public:
         TestQuickdrawPacket packet = createTestPacketFromMatch(
             bountyMatchManager->getCurrentMatch(), command, false);
         uint8_t macAddr[6] = {0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB};
-        hunterWirelessManager->processQuickdrawCommand(
-            macAddr, reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
+        hunterTransport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
         );
     }
 
@@ -238,6 +245,8 @@ public:
     FakeQuickdrawWirelessManager* bountyWirelessManager = nullptr;
     WirelessManager* hunterDeviceWirelessManager = nullptr;
     WirelessManager* bountyDeviceWirelessManager = nullptr;
+    WirelessTransport* hunterTransport = nullptr;
+    WirelessTransport* bountyTransport = nullptr;
     MockPeerComms hunterPeerComms;
     MockPeerComms bountyPeerComms;
     MockHttpClient hunterHttpClient;
@@ -262,9 +271,10 @@ private:
         hunter->setIsHunter(true);
 
         hunterDeviceWirelessManager = new WirelessManager(&hunterPeerComms, &hunterHttpClient);
+        hunterTransport = new WirelessTransport(hunterDeviceWirelessManager);
         hunterMatchManager = new MatchManager();
         hunterWirelessManager = new FakeQuickdrawWirelessManager();
-        hunterWirelessManager->initialize(hunter, hunterDeviceWirelessManager, 100);
+        hunterWirelessManager->initialize(hunter, hunterDeviceWirelessManager, hunterTransport, 100);
         hunterMatchManager->initialize(hunter, &hunterStorage, hunterWirelessManager);
         hunterMatchManager->setRemoteDeviceCoordinator(&hunterFakeRdc);
     }
@@ -276,9 +286,10 @@ private:
         bounty->setIsHunter(false);
 
         bountyDeviceWirelessManager = new WirelessManager(&bountyPeerComms, &bountyHttpClient);
+        bountyTransport = new WirelessTransport(bountyDeviceWirelessManager);
         bountyMatchManager = new MatchManager();
         bountyWirelessManager = new FakeQuickdrawWirelessManager();
-        bountyWirelessManager->initialize(bounty, bountyDeviceWirelessManager, 100);
+        bountyWirelessManager->initialize(bounty, bountyDeviceWirelessManager, bountyTransport, 100);
         bountyMatchManager->initialize(bounty, &bountyStorage, bountyWirelessManager);
         bountyMatchManager->setRemoteDeviceCoordinator(&bountyFakeRdc);
     }
@@ -319,6 +330,7 @@ private:
     void cleanupHunter() {
         delete hunterMatchManager;
         delete hunterWirelessManager;
+        delete hunterTransport;
         delete hunterDeviceWirelessManager;
         delete hunter;
     }
@@ -326,6 +338,7 @@ private:
     void cleanupBounty() {
         delete bountyMatchManager;
         delete bountyWirelessManager;
+        delete bountyTransport;
         delete bountyDeviceWirelessManager;
         delete bounty;
     }
@@ -387,11 +400,41 @@ inline void packetParsingRejectsMalformedPacket(PacketParsingTests* suite) {
     // Send a packet that's too small
     uint8_t smallPacket[10] = {0};
     uint8_t macAddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    
-    suite->wirelessManager->processQuickdrawCommand(macAddr, smallPacket, sizeof(smallPacket));
-    
+
+    // The channel's deliver() drops a length-mismatched frame without acking
+    // or dispatching, so the callback must not fire.
+    suite->transport->deliverIncoming(
+        PktType::kQuickdrawCommand, 0, macAddr, smallPacket, sizeof(smallPacket));
+
     // Should not invoke callback for malformed packet
     EXPECT_FALSE(callbackInvoked);
+}
+
+// A reliable packet (nonzero seqId) resent after a lost ack must be dispatched
+// exactly once: the channel dedups per sender. A later packet with a fresh
+// seqId is a new command and must dispatch again.
+inline void packetParsingDedupsResentReliablePacket(PacketParsingTests* suite) {
+    int dispatches = 0;
+    suite->wirelessManager->setPacketReceivedCallback(
+        [&](const QuickdrawCommand&) { ++dispatches; });
+
+    uint8_t macAddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    TestQuickdrawPacket packet = suite->createPacket(QDCommand::DRAW_RESULT, 0, 250);
+    packet.seqId = 7;
+
+    auto deliver = [&](const TestQuickdrawPacket& p) {
+        suite->transport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<const uint8_t*>(&p), sizeof(p));
+    };
+
+    deliver(packet);            // first arrival
+    deliver(packet);            // lost-ack retransmit, same seqId
+    EXPECT_EQ(dispatches, 1);
+
+    packet.seqId = 8;           // next command from same sender
+    deliver(packet);
+    EXPECT_EQ(dispatches, 2);
 }
 
 inline void listenForMatchResultsSetsOpponentTimeHunter(PacketParsingTests* suite) {

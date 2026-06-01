@@ -37,16 +37,18 @@ public:
         bounty->setUserID(bountyId);
         bounty->setIsHunter(false);
 
+        hunterTransport = new WirelessTransport(nullptr);
         hunterWirelessManager = new FakeQuickdrawWirelessManager();
-        hunterWirelessManager->initialize(hunter, nullptr, 0);
+        hunterWirelessManager->initialize(hunter, nullptr, hunterTransport, 0);
         hunterMatchManager = new MatchManager();
         hunterMatchManager->initialize(hunter, &hunterStorage, hunterWirelessManager);
         hunterMatchManager->setRemoteDeviceCoordinator(&hunterFakeRdc);
         hunterWirelessManager->setPacketReceivedCallback(
             std::bind(&MatchManager::listenForMatchEvents, hunterMatchManager, std::placeholders::_1));
 
+        bountyTransport = new WirelessTransport(nullptr);
         bountyWirelessManager = new FakeQuickdrawWirelessManager();
-        bountyWirelessManager->initialize(bounty, nullptr, 0);
+        bountyWirelessManager->initialize(bounty, nullptr, bountyTransport, 0);
         bountyMatchManager = new MatchManager();
         bountyMatchManager->initialize(bounty, &bountyStorage, bountyWirelessManager);
         bountyMatchManager->setRemoteDeviceCoordinator(&bountyFakeRdc);
@@ -61,6 +63,8 @@ public:
         delete bountyMatchManager;
         delete hunterWirelessManager;
         delete bountyWirelessManager;
+        delete hunterTransport;
+        delete bountyTransport;
         delete hunter;
         delete bounty;
         SimpleTimer::setPlatformClock(nullptr);
@@ -86,6 +90,8 @@ public:
     MatchManager* bountyMatchManager = nullptr;
     FakeQuickdrawWirelessManager* hunterWirelessManager = nullptr;
     FakeQuickdrawWirelessManager* bountyWirelessManager = nullptr;
+    WirelessTransport* hunterTransport = nullptr;
+    WirelessTransport* bountyTransport = nullptr;
     NiceMock<MockStorage> hunterStorage;
     NiceMock<MockStorage> bountyStorage;
     FakeRemoteDeviceCoordinator hunterFakeRdc;
