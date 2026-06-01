@@ -90,6 +90,18 @@ inline void peerGraphTopologyStableAfterDebounceWindow(PeerGraphTests* suite) {
     EXPECT_TRUE(g.isTopologyStable(550));
 }
 
+// A backwards/zero clock must report unstable, not underflow unsigned
+// subtraction into a near-UINT32_MAX gap that reads as falsely stable.
+inline void peerGraphBackwardsClockNotStable(PeerGraphTests* suite) {
+    PeerGraph g;
+    g.setSelfMac(suite->mac(0x01));
+    g.acceptBeacon({suite->mac(0x02), {}, suite->mac(0x01)}, 500);  // last change at 500
+    EXPECT_FALSE(g.isTopologyStable(0));
+    EXPECT_FALSE(g.isTopologyStable(499));
+    // Forward progress past the window still reads stable.
+    EXPECT_TRUE(g.isTopologyStable(800));
+}
+
 inline void peerGraphUnchangedBeaconDoesNotResetStability(PeerGraphTests* suite) {
     PeerGraph g;
     g.setSelfMac(suite->mac(0x01));

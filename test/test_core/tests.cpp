@@ -824,6 +824,9 @@ TEST_F(PeerGraphTests, selfIslandNotInLoop) {
 TEST_F(PeerGraphTests, topologyStableAfterDebounceWindow) {
     peerGraphTopologyStableAfterDebounceWindow(this);
 }
+TEST_F(PeerGraphTests, backwardsClockNotStable) {
+    peerGraphBackwardsClockNotStable(this);
+}
 
 TEST_F(PeerGraphTests, unchangedBeaconDoesNotResetStability) {
     peerGraphUnchangedBeaconDoesNotResetStability(this);

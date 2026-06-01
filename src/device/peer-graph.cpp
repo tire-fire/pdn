@@ -112,6 +112,11 @@ bool PeerGraph::isInLoop() const {
 }
 
 bool PeerGraph::isTopologyStable(unsigned long nowMs) const {
-    return nowMs - lastGraphChangeMs_ >= kTopologyStabilityMs;
+    // Clamp the gap to 0 on a backwards/zero clock so unsigned subtraction can't
+    // underflow to ~UINT32_MAX and falsely report stability (which would let a
+    // premature coordinator claim through). Mirrors the silent-link gap guard in
+    // RemoteDeviceCoordinator.
+    const unsigned long gap = nowMs >= lastGraphChangeMs_ ? nowMs - lastGraphChangeMs_ : 0;
+    return gap >= kTopologyStabilityMs;
 }
 
