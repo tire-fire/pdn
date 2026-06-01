@@ -74,13 +74,12 @@ public:
     std::vector<std::array<uint8_t, 6>> getBracket() const;
     bool hasBye() const;
 
-    void onBracketAckReceived(const uint8_t* fromMac, uint8_t seqId);
-    uint8_t getLastBracketSeqId() const;
+    void onBracketAckReceived(const uint8_t* fromMac);
     size_t getBracketPendingAckCount() const;
 
     int getCurrentMatchIndex() const;
     std::pair<std::array<uint8_t,6>, std::array<uint8_t,6>> getCurrentMatchPair() const;
-    void onMatchStartAckReceived(const uint8_t* fromMac, uint8_t seqId);
+    void onMatchStartAckReceived(const uint8_t* fromMac);
 
     void onBracketReceived(const std::vector<std::array<uint8_t, 6>>& bracket, uint8_t seqId);
     void onMatchStartReceived(const uint8_t* duelistA, const uint8_t* duelistB,
@@ -92,9 +91,8 @@ public:
     void onMatchResultReceived(const uint8_t* winner, const uint8_t* loser,
                                uint8_t matchIndex, uint8_t seqId,
                                const uint8_t* fromMac);
-    void onMatchResultAckReceived(const uint8_t* fromMac, uint8_t seqId);
+    void onMatchResultAckReceived(const uint8_t* fromMac);
     size_t getMatchResultPendingAckCount() const;
-    uint8_t getLastMatchResultSeqId() const { return lastMatchResultSeqId_; }
     bool isEliminated(const uint8_t* mac) const;
 
     void onLocalRDCDisconnect(const uint8_t* lostMac);
@@ -106,12 +104,9 @@ public:
     void onDirectPeerChange(SerialIdentifier port,
                             std::optional<RemoteDeviceCoordinator::Peer> previous,
                             std::optional<RemoteDeviceCoordinator::Peer> current);
-    uint8_t getLastMatchStartSeqId() const;
-
     void onTournamentEndReceived(const uint8_t* winner, uint8_t seqId);
-    void onTournamentEndAckReceived(const uint8_t* fromMac, uint8_t seqId);
+    void onTournamentEndAckReceived(const uint8_t* fromMac);
     size_t getTournamentEndPendingAckCount() const;
-    uint8_t getLastTournamentEndSeqId() const { return lastTournamentEndSeqId_; }
     void onAbortReceived();
     std::array<uint8_t, 6> getTournamentWinner() const;
 
@@ -198,8 +193,6 @@ private:
 
     SimpleTimer confirmRebroadcastTimer_;
 
-    uint8_t lastBracketSeqId_ = 0;
-
     void sendBracketToPeers();
 
     static std::array<uint8_t, 6> lowestMacIn(
@@ -216,7 +209,6 @@ private:
     // duelist pair separately to stay valid on non-coordinators too.
     std::array<uint8_t, 6> currentDuelistA_{};
     std::array<uint8_t, 6> currentDuelistB_{};
-    uint8_t lastMatchStartSeqId_ = 0;
     SimpleTimer bracketRevealTimer_;
     void maybeStartNextMatch();
     bool inMaybeStartNextMatch_ = false;
@@ -226,13 +218,11 @@ private:
     bool isActiveDuelist(const uint8_t* mac) const;
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin_ = false;
-    uint8_t lastMatchResultSeqId_ = 0;
     void sendMatchResultToPeers(const uint8_t* winner, const uint8_t* loser,
                               uint8_t matchIndex);
     void applyMatchResult(const uint8_t* winner, const uint8_t* loser);
 
     std::array<uint8_t, 6> tournamentWinner_{};
-    uint8_t lastTournamentEndSeqId_ = 0;
 
     void sendTournamentEndToPeers(const uint8_t* winner);
     std::array<uint8_t, 6> findLastRemaining() const;

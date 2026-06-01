@@ -213,9 +213,6 @@ bool ShootoutManager::hasBye() const {
     return bracket_.size() % 2 == 1;
 }
 
-uint8_t ShootoutManager::getLastBracketSeqId() const {
-    return lastBracketSeqId_;
-}
 
 size_t ShootoutManager::getBracketPendingAckCount() const {
     // Bracket sends are per-slot BRACKET_ENTRY through the transport.
@@ -248,9 +245,6 @@ std::array<uint8_t, 6> ShootoutManager::getOpponentMac() const {
     return opponentMac_;
 }
 
-uint8_t ShootoutManager::getLastMatchStartSeqId() const {
-    return lastMatchStartSeqId_;
-}
 
 size_t ShootoutManager::getTournamentEndPendingAckCount() const {
     if (tournamentEndChannel_ == nullptr) return 0;
@@ -540,10 +534,6 @@ void ShootoutManager::sendBracketToPeers() {
     uint8_t total = static_cast<uint8_t>(bracket_.size());
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
 
-    // lastBracketSeqId_ tracks the seqId of the FIRST slot sent, read by
-    // onBracketAckReceived. Correct because sendReliable assigns seqIds
-    // monotonically and the first call wins the cache.
-    bool firstSent = false;
     for (const auto& target : bracket_) {
         if (selfMac && std::memcmp(target.data(), selfMac, 6) == 0) continue;
         for (uint8_t i = 0; i < total; ++i) {
@@ -553,22 +543,16 @@ void ShootoutManager::sendBracketToPeers() {
             p.slot = i;
             p.totalSlots = total;
             std::memcpy(p.mac, bracket_[i].data(), 6);
-            uint8_t seq = bracketEntryChannel_->sendReliable(target.data(), p);
-            if (!firstSent) {
-                lastBracketSeqId_ = seq;
-                firstSent = true;
-            }
+            bracketEntryChannel_->sendReliable(target.data(), p);
         }
     }
 }
 
-void ShootoutManager::onBracketAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    // Channel-based BRACKET_ENTRY sends auto-ack via transport->onAckPacket on
-    // the receiving side, but unit tests call this method directly without
-    // driving the wireless path. Translate the legacy ack into a cancel of
-    // every pending BRACKET_ENTRY entry to `fromMac` so the test fixture sees
-    // pendingCount drop to zero.
-    (void)seqId;
+void ShootoutManager::onBracketAckReceived(const uint8_t* fromMac) {
+    // Test seam: simulate `fromMac` acking its BRACKET_ENTRY sends by cancelling
+    // every pending entry to it (production acks arrive via the channel's
+    // deliver path). Cancelling by MAC clears all of a peer's slots at once,
+    // matching "this peer is caught up".
     if (bracketEntryChannel_ != nullptr) {
         bracketEntryChannel_->cancel(fromMac);
     }
@@ -680,19 +664,13 @@ void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
     std::memcpy(p.duelistB, b.data(), 6);
     p.matchIndex = static_cast<uint8_t>(matchIndex);
 
-    bool firstSent = false;
     for (const auto& target : bracket_) {
         if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
-        uint8_t seq = matchStartChannel_->sendReliable(target.data(), p);
-        if (!firstSent) {
-            lastMatchStartSeqId_ = seq;
-            firstSent = true;
-        }
+        matchStartChannel_->sendReliable(target.data(), p);
     }
 }
 
-void ShootoutManager::onMatchStartAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    (void)seqId;
+void ShootoutManager::onMatchStartAckReceived(const uint8_t* fromMac) {
     if (matchStartChannel_ != nullptr) matchStartChannel_->cancel(fromMac);
 }
 
@@ -865,14 +843,9 @@ void ShootoutManager::sendMatchResultToPeers(
     p.matchIndex = matchIndex;
 
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
-    bool firstSent = false;
     for (const auto& target : confirmedSet_) {
         if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
-        uint8_t seq = matchResultChannel_->sendReliable(target.data(), p);
-        if (!firstSent) {
-            lastMatchResultSeqId_ = seq;
-            firstSent = true;
-        }
+        matchResultChannel_->sendReliable(target.data(), p);
     }
 }
 
@@ -904,8 +877,7 @@ void ShootoutManager::onMatchResultReceived(
     if (isCoordinator()) maybeStartNextMatch();
 }
 
-void ShootoutManager::onMatchResultAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    (void)seqId;
+void ShootoutManager::onMatchResultAckReceived(const uint8_t* fromMac) {
     if (matchResultChannel_ != nullptr) matchResultChannel_->cancel(fromMac);
 }
 
@@ -932,16 +904,11 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
         p.cmd = static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END);
         std::memcpy(p.winner, winner, 6);
         const uint8_t* selfMac = wirelessManager_->getMacAddress();
-        bool firstSent = false;
         // Targets confirmedSet_ rather than bracket_: eliminated players need the
         // tournament-end transition or they stall in BETWEEN_MATCHES.
         for (const auto& target : confirmedSet_) {
             if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
-            uint8_t seq = tournamentEndChannel_->sendReliable(target.data(), p);
-            if (!firstSent) {
-                lastTournamentEndSeqId_ = seq;
-                firstSent = true;
-            }
+            tournamentEndChannel_->sendReliable(target.data(), p);
         }
     }
     memcpy(tournamentWinner_.data(), winner, 6);
@@ -957,8 +924,7 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     }
 }
 
-void ShootoutManager::onTournamentEndAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    (void)seqId;
+void ShootoutManager::onTournamentEndAckReceived(const uint8_t* fromMac) {
     if (tournamentEndChannel_ != nullptr) tournamentEndChannel_->cancel(fromMac);
 }
 

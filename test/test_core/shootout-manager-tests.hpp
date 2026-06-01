@@ -168,11 +168,10 @@ inline void bracketAckClearsPendingForThatPeer(ShootoutManagerTests* suite) {
     suite->shootout->startProposal();
     for (auto& m : members) suite->shootout->onConfirmReceived(m.data());
     suite->shootout->confirmLocal();
-    uint8_t seqId = suite->shootout->getLastBracketSeqId();
     EXPECT_EQ(suite->shootout->getBracketPendingAckCount(), 2u);
-    suite->shootout->onBracketAckReceived(members[1].data(), seqId);
+    suite->shootout->onBracketAckReceived(members[1].data());
     EXPECT_EQ(suite->shootout->getBracketPendingAckCount(), 1u);
-    suite->shootout->onBracketAckReceived(members[2].data(), seqId);
+    suite->shootout->onBracketAckReceived(members[2].data());
     EXPECT_EQ(suite->shootout->getBracketPendingAckCount(), 0u);
 }
 
@@ -212,8 +211,7 @@ inline void matchStartAbandonAbortsTournament(ShootoutManagerTests* suite) {
     suite->shootout->startProposal();
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
-    suite->shootout->onBracketAckReceived(opMac.data(),
-                                          suite->shootout->getLastBracketSeqId());
+    suite->shootout->onBracketAckReceived(opMac.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
@@ -270,12 +268,11 @@ inline void matchStartGatedOnAllBracketAcks(ShootoutManagerTests* suite) {
     suite->shootout->confirmLocal();
 
     auto bracket = suite->shootout->getBracket();
-    uint8_t bracketSeq = suite->shootout->getLastBracketSeqId();
 
     // Ack from only one peer. Reveal window expires; MATCH_START must NOT fire.
     for (const auto& m : bracket) {
         if (memcmp(m.data(), selfMac, 6) != 0) {
-            suite->shootout->onBracketAckReceived(m.data(), bracketSeq);
+            suite->shootout->onBracketAckReceived(m.data());
             break;
         }
     }
@@ -286,7 +283,7 @@ inline void matchStartGatedOnAllBracketAcks(ShootoutManagerTests* suite) {
     // Ack the remaining peers. Now MATCH_START fires on next sync.
     for (const auto& m : bracket) {
         if (memcmp(m.data(), selfMac, 6) == 0) continue;
-        suite->shootout->onBracketAckReceived(m.data(), bracketSeq);
+        suite->shootout->onBracketAckReceived(m.data());
     }
     suite->shootout->sync();
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
@@ -520,10 +517,9 @@ inline void peerLostSpectatorAborts(ShootoutManagerTests* suite) {
     // known bracket by asking getBracket(). Since suite->shootout has generated
     // it during the confirm flow (self is coord), use it.
     // Drive coordinator through reveal → MATCH_START
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
     for (const auto& m : suite->shootout->getBracket()) {
         if (memcmp(m.data(), me.data(), 6) != 0) {
-            suite->shootout->onBracketAckReceived(m.data(), bSeq);
+            suite->shootout->onBracketAckReceived(m.data());
         }
     }
     suite->fakeClock->advance(6000);
@@ -558,12 +554,10 @@ inline void finalMatchResultTriggersTournamentEnd(ShootoutManagerTests* suite) {
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
     // Self is coord; bracket is already set. Ack bracket from peer.
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
-    suite->shootout->onBracketAckReceived(opMac.data(), bSeq);
+    suite->shootout->onBracketAckReceived(opMac.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();  // fires MATCH_START 0
-    uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
-    suite->shootout->onMatchStartAckReceived(opMac.data(), msSeq);
+    suite->shootout->onMatchStartAckReceived(opMac.data());
     // Self wins.
     suite->shootout->reportLocalWin();
     // reportLocalWin → applyMatchResult → BETWEEN_MATCHES.
@@ -589,12 +583,10 @@ inline void startProposalClearsAllPriorTournamentState(ShootoutManagerTests* sui
     suite->shootout->startProposal();
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
-    suite->shootout->onBracketAckReceived(opMac.data(), bSeq);
+    suite->shootout->onBracketAckReceived(opMac.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
-    uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
-    suite->shootout->onMatchStartAckReceived(opMac.data(), msSeq);
+    suite->shootout->onMatchStartAckReceived(opMac.data());
     suite->shootout->reportLocalWin();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     ASSERT_FALSE(suite->shootout->getBracket().empty());
@@ -648,8 +640,7 @@ inline void duplicateMatchResultDoesNotDoubleAdvance(ShootoutManagerTests* suite
     suite->shootout->setLoopMembersForTest({me, b, c, d});
     suite->shootout->startProposal();
     for (auto& m : {me, b, c, d}) suite->shootout->onConfirmReceived(m.data());
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
-    for (auto& m : {b, c, d}) suite->shootout->onBracketAckReceived(m.data(), bSeq);
+    for (auto& m : {b, c, d}) suite->shootout->onBracketAckReceived(m.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
@@ -730,12 +721,10 @@ inline void matchResultAbandonAfterTournamentEndStaysEnded(ShootoutManagerTests*
     suite->shootout->startProposal();
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
-    suite->shootout->onBracketAckReceived(opMac.data(),
-                                          suite->shootout->getLastBracketSeqId());
+    suite->shootout->onBracketAckReceived(opMac.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
-    suite->shootout->onMatchStartAckReceived(opMac.data(),
-                                             suite->shootout->getLastMatchStartSeqId());
+    suite->shootout->onMatchStartAckReceived(opMac.data());
 
     suite->shootout->reportLocalWin();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
@@ -775,12 +764,10 @@ inline void tournamentEndRetriesUntilAcked(ShootoutManagerTests* suite) {
     suite->shootout->startProposal();
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
-    suite->shootout->onBracketAckReceived(opMac.data(), bSeq);
+    suite->shootout->onBracketAckReceived(opMac.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
-    uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
-    suite->shootout->onMatchStartAckReceived(opMac.data(), msSeq);
+    suite->shootout->onMatchStartAckReceived(opMac.data());
     suite->shootout->reportLocalWin();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     ASSERT_EQ(suite->shootout->getTournamentEndPendingAckCount(), 1u);
@@ -797,8 +784,7 @@ inline void tournamentEndRetriesUntilAcked(ShootoutManagerTests* suite) {
     EXPECT_EQ(suite->shootout->getTournamentEndPendingAckCount(), 1u);
 
     // Correct ack clears the pending entry.
-    uint8_t teSeq = suite->shootout->getLastTournamentEndSeqId();
-    suite->shootout->onTournamentEndAckReceived(opMac.data(), teSeq);
+    suite->shootout->onTournamentEndAckReceived(opMac.data());
     EXPECT_EQ(suite->shootout->getTournamentEndPendingAckCount(), 0u);
 }
 
@@ -828,14 +814,12 @@ inline void matchResultRetriesUntilAcked(ShootoutManagerTests* suite) {
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
     suite->shootout->onConfirmReceived(spec.data());
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
-    suite->shootout->onBracketAckReceived(opMac.data(), bSeq);
-    suite->shootout->onBracketAckReceived(spec.data(), bSeq);
+    suite->shootout->onBracketAckReceived(opMac.data());
+    suite->shootout->onBracketAckReceived(spec.data());
     suite->fakeClock->advance(6000);
     suite->shootout->sync();
-    uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
-    suite->shootout->onMatchStartAckReceived(opMac.data(), msSeq);
-    suite->shootout->onMatchStartAckReceived(spec.data(), msSeq);
+    suite->shootout->onMatchStartAckReceived(opMac.data());
+    suite->shootout->onMatchStartAckReceived(spec.data());
 
     // Self wins match 0 → broadcasts MATCH_RESULT to opMac and spec.
     suite->shootout->reportLocalWin();
@@ -850,9 +834,9 @@ inline void matchResultRetriesUntilAcked(ShootoutManagerTests* suite) {
     EXPECT_EQ(suite->shootout->getMatchResultPendingAckCount(), 2u);
 
     // Acks clear pending.
-    suite->shootout->onMatchResultAckReceived(opMac.data(), suite->shootout->getLastMatchResultSeqId());
+    suite->shootout->onMatchResultAckReceived(opMac.data());
     EXPECT_EQ(suite->shootout->getMatchResultPendingAckCount(), 1u);
-    suite->shootout->onMatchResultAckReceived(spec.data(), suite->shootout->getLastMatchResultSeqId());
+    suite->shootout->onMatchResultAckReceived(spec.data());
     EXPECT_EQ(suite->shootout->getMatchResultPendingAckCount(), 0u);
 }
 
@@ -931,10 +915,9 @@ inline void localRDCDisconnectIsIdempotent(ShootoutManagerTests* suite) {
     for (auto& m : std::vector<std::array<uint8_t,6>>{me, a, b, c}) {
         suite->shootout->onConfirmReceived(m.data());
     }
-    uint8_t bSeq = suite->shootout->getLastBracketSeqId();
     for (const auto& m : suite->shootout->getBracket()) {
         if (memcmp(m.data(), me.data(), 6) != 0) {
-            suite->shootout->onBracketAckReceived(m.data(), bSeq);
+            suite->shootout->onBracketAckReceived(m.data());
         }
     }
     suite->fakeClock->advance(6000);
