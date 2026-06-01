@@ -119,12 +119,8 @@ void RemoteDeviceCoordinator::ingestSerial(SerialIdentifier jack,
         std::copy_n(frame.payload.begin(), 6, beacon.source.begin());
         std::copy_n(frame.payload.begin() + 6, 6, beacon.inPeer.begin());
         std::copy_n(frame.payload.begin() + 12, 6, beacon.outPeer.begin());
-        // Mirror the HELLO path's source validation. An all-zero/broadcast
-        // source would be cached as a graph node, and because an open jack is
-        // represented by an all-zero peer MAC, hasMutualEdge(real, {0}) holds
-        // for any node with an open jack, fabricating a false loop and
-        // inflating the chain count.
-        if (!isValidPeerMac(beacon.source)) return;
+        // Source poisoning (all-zero/broadcast) is rejected by acceptBeacon, the
+        // layer that owns the graph cache; exec() forwards only what it accepts.
         // Our own beacon came back around the ring: drop without forwarding.
         if (beacon.source == peerGraph_.getSelfMac()) return;
         DeferredPacket ev;

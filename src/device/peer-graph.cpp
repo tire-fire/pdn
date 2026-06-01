@@ -7,6 +7,12 @@ void PeerGraph::setSelfMac(const net::Mac& mac) {
 }
 
 bool PeerGraph::acceptBeacon(const BeaconRecord& beacon, unsigned long nowMs) {
+    // Reject poison at the layer that owns the cache. An all-zero/broadcast
+    // source cached as a node corrupts loop detection: an open jack is itself an
+    // all-zero peer, so hasMutualEdge(real, {0}) holds for any node with a free
+    // jack, fabricating a false loop and inflating the chain count. inPeer/outPeer
+    // may legitimately be all-zero (an open jack), so only source is validated.
+    if (!net::isValidPeerMac(beacon.source)) return false;
     auto it = beaconsBySource_.find(beacon.source);
     if (it != beaconsBySource_.end() && it->second == beacon) {
         return false;
