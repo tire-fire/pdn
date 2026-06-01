@@ -118,14 +118,22 @@ bool ShootoutManager::batchIsNewer(uint8_t a, uint8_t b) {
 
 void ShootoutManager::onBracketEntryReceived(const uint8_t* fromMac,
                                              const ShootoutBracketEntryPayload& p) {
-    // Competing-coordinator tiebreaker.
-    // If two cables close two rings simultaneously, both devices may have
-    // called claimCoordinator(). The first BRACKET_ENTRY to arrive from a
-    // peer with a lower mac wins; we demote so they own the tournament.
-    if (cdm_ != nullptr && cdm_->isCoordinator() && fromMac != nullptr) {
+    // Competing-coordinator tiebreaker. Two rings that close independently and
+    // then merge can each carry a self-elected coordinator that already built
+    // and broadcast a bracket. The lower-MAC coordinator wins; a higher-MAC
+    // coordinator that receives the lower one's BRACKET_ENTRY must stand down
+    // AND adopt it. Demoting CDM alone is not enough once we have anchored
+    // coordinatorMac_ to self (post-bracket): isCoordinator() then reads the
+    // anchor and ignores CDM, so we must also drop the anchor and our bracket
+    // so the adoption path below treats us as fromMac's follower.
+    if (fromMac != nullptr && isCoordinator()) {
         const uint8_t* self = wirelessManager_ ? wirelessManager_->getMacAddress() : nullptr;
         if (self != nullptr && memcmp(fromMac, self, 6) < 0) {
-            cdm_->demoteCoordinator();
+            if (cdm_ != nullptr) cdm_->demoteCoordinator();
+            memset(coordinatorMac_.data(), 0, 6);
+            bracket_.clear();
+            currentRound_.clear();
+            pendingBracket_.active = false;
         }
     }
     if (isCoordinator()) return;
@@ -349,10 +357,11 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
     if (phase_ != Phase::PROPOSAL) return;
     const bool firstSeen = !hasConfirmed(fromMac);
 
-    // Coordinator gates first-time CONFIRMs by loop-membership: it has the
-    // authoritative member list (self + confirmedSupporters_ + OUTPUT_JACK
-    // peer). Non-coordinators don't yet know who's in the loop (they'll
-    // learn via BRACKET_ENTRY) and accept every CONFIRM until then.
+    // Coordinator gates first-time CONFIRMs by loop-membership: getLoopMembers()
+    // is the authoritative set, derived from the settled peer-graph topology
+    // (rdc_->getChainMembers()), not from who has confirmed so far. Non-
+    // coordinators don't yet have a stable view (they learn the roster via
+    // BRACKET_ENTRY) and accept every CONFIRM until then.
     if (firstSeen && isCoordinator()) {
         auto members = getLoopMembers();
         bool inLoop = false;

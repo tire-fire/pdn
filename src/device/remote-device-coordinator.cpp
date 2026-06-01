@@ -41,6 +41,12 @@ void RemoteDeviceCoordinator::initialize(WirelessManager* wirelessManager, Seria
             net::Mac selfMac;
             std::copy_n(mac, 6, selfMac.begin());
             peerGraph_.setSelfMac(selfMac);
+        } else {
+            // A zero self-MAC makes every all-zero (open-jack) peer compare equal
+            // to self, which corrupts edge/loop derivation. The radio must be up
+            // before RDC initializes; surface the misordering loudly rather than
+            // silently flooding source={0} beacons.
+            LOG_E(TAG, "initialize: getMacAddress() null; peer-graph self-MAC unset");
         }
     }
 
@@ -113,6 +119,12 @@ void RemoteDeviceCoordinator::ingestSerial(SerialIdentifier jack,
         std::copy_n(frame.payload.begin(), 6, beacon.source.begin());
         std::copy_n(frame.payload.begin() + 6, 6, beacon.inPeer.begin());
         std::copy_n(frame.payload.begin() + 12, 6, beacon.outPeer.begin());
+        // Mirror the HELLO path's source validation. An all-zero/broadcast
+        // source would be cached as a graph node, and because an open jack is
+        // represented by an all-zero peer MAC, hasMutualEdge(real, {0}) holds
+        // for any node with an open jack, fabricating a false loop and
+        // inflating the chain count.
+        if (!isValidPeerMac(beacon.source)) return;
         // Our own beacon came back around the ring: drop without forwarding.
         if (beacon.source == peerGraph_.getSelfMac()) return;
         DeferredPacket ev;
@@ -175,6 +187,10 @@ void RemoteDeviceCoordinator::emitFrame(SerialIdentifier jack,
 }
 
 unsigned long RemoteDeviceCoordinator::nowMs() const {
+    // No clock -> 0 (treat as "just started", never fire the silent-link
+    // watchdog). This differs deliberately from SerialFrameDemuxer::nowMs,
+    // which returns max() to force a timeout and surface a clock misconfig;
+    // here a false silent-death would tear down live links, so 0 is safer.
     auto* clk = SimpleTimer::getPlatformClock();
     return clk ? clk->milliseconds() : 0;
 }
@@ -205,7 +221,10 @@ void RemoteDeviceCoordinator::serviceConnectivity(unsigned long now) {
         // from another task and may land between the `now` capture at the top of
         // serviceConnectivity and this read. A HELLO that recent means the link
         // is alive, so clamp to gap 0 instead of letting unsigned subtraction
-        // underflow to ~UINT32_MAX and fire a false silent-death.
+        // underflow to ~UINT32_MAX and fire a false silent-death. This form
+        // trades exactness across the 32-bit millis wrap (~49.7 days) for
+        // race-safety; device uptime at an event is hours, so the wrap boundary
+        // is unreachable.
         const unsigned long gap = baseline >= now ? 0 : now - baseline;
         const bool silentLinkExpired =
             baseline != 0 && gap > helloSilentLinkMs_;
@@ -285,6 +304,9 @@ void RemoteDeviceCoordinator::reconcileSelfPeers() {
         outPeer = p->macAddr;
     }
     if (inPeer == lastEmittedInPeer_ && outPeer == lastEmittedOutPeer_) return;
+    // Logs only the low 3 MAC bytes; two peers sharing those bytes would print
+    // identically. Adequate for the 6th-byte-unique test scheme; widen if a
+    // real collision ever needs disambiguation on hardware.
     LOG_D(TAG, "SELFPEERS in=%02X%02X%02X out=%02X%02X%02X",
           inPeer[3], inPeer[4], inPeer[5], outPeer[3], outPeer[4], outPeer[5]);
     lastEmittedInPeer_ = inPeer;

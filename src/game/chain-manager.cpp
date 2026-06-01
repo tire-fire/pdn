@@ -534,16 +534,23 @@ void ChainManager::deriveCoordinator() {
     const auto members = rdc_->getChainMembers();
     const bool inLoop = rdc_->isInLoop();
     {
-        char mbuf[256] = {0};
-        size_t mp = 0;
-        for (const auto& m : members) {
-            if (mp < sizeof(mbuf) - 14)
-                mp += snprintf(mbuf + mp, sizeof(mbuf) - mp,
-                               "%02X%02X%02X%02X%02X%02X ",
-                               m[0], m[1], m[2], m[3], m[4], m[5]);
+        const uint32_t logKey = (static_cast<uint32_t>(members.size()) << 3)
+                                | (stable ? 0x4u : 0u)
+                                | (inLoop ? 0x2u : 0u)
+                                | (isCoordinator_ ? 0x1u : 0u);
+        if (logKey != lastCoordLogKey_) {
+            lastCoordLogKey_ = logKey;
+            char mbuf[256] = {0};
+            size_t mp = 0;
+            for (const auto& m : members) {
+                if (mp < sizeof(mbuf) - 14)
+                    mp += snprintf(mbuf + mp, sizeof(mbuf) - mp,
+                                   "%02X%02X%02X%02X%02X%02X ",
+                                   m[0], m[1], m[2], m[3], m[4], m[5]);
+            }
+            LOG_W(TAG, "deriveCoordinator stable=%d inLoop=%d members=%u coord=%d [%s]",
+                  (int)stable, (int)inLoop, (unsigned)members.size(), (int)isCoordinator_, mbuf);
         }
-        LOG_W(TAG, "deriveCoordinator tick stable=%d inLoop=%d members=%u coord=%d [%s]",
-              (int)stable, (int)inLoop, (unsigned)members.size(), (int)isCoordinator_, mbuf);
     }
     if (!stable) return;
 

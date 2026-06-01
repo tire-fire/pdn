@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <vector>
 
 #include "wireless/peer-comms-types.hpp"
 #include "wireless/resender.hpp"
@@ -45,6 +47,13 @@ protected:
     // Defined in the .cpp so the logger stays out of this template header.
     static void logLengthMismatch(PktType type, uint8_t subType,
                                   size_t got, size_t want);
+    // Suppress re-dispatch of a duplicate reliable delivery from the same
+    // sender, the expected consequence of a lost ack on a resent packet.
+    // seqId==0 is the unsequenced/sendOnce sentinel (see nextSeqId) and is
+    // never deduped here; those payloads dedup by domain identity at the
+    // caller. Returns true if (fromMac,seqId) was already delivered. Call only
+    // AFTER acking, so a duplicate still silences the sender's resends.
+    bool isDuplicateReliableRx(const uint8_t* fromMac, uint8_t seqId);
 
     Resender* resender_;
     PktType type_;
@@ -53,8 +62,15 @@ protected:
     Resender::SendMode sendMode_;
 
 private:
+    struct RxSeqRecord {
+        std::array<uint8_t, 6> mac;
+        uint8_t lastSeqId;
+    };
     OnAbandon onAbandon_;
     uint8_t lastSeqId_ = 0;
+    // Last nonzero seqId delivered per sender. Bounded by the physical peer
+    // count present in a session.
+    std::vector<RxSeqRecord> rxSeq_;
 };
 
 template <class P, class Sub = void>
@@ -94,6 +110,7 @@ public:
         P p;
         std::memcpy(&p, data, sizeof(P));
         Resender::sendAck(getWirelessManager(), fromMac, type_, subType_, p.seqId);
+        if (isDuplicateReliableRx(fromMac, p.seqId)) return true;
         if (onReceive_) onReceive_(fromMac, p);
         return true;
     }

@@ -63,6 +63,9 @@ bool Resender::onAck(PktType type, uint8_t subType, uint8_t seqId,
         if (memcmp(it->target.data(), fromMac, 6) != 0) continue;
         if (it->seqId != seqId) continue;
 
+        // Elapsed since the last (re)transmit, not since the first send: the
+        // timer is rearmed on every retransmit in sync(). This is a resend-loop
+        // health stat, not a true end-to-end round-trip.
         unsigned long latency = it->timer.getElapsedTime();
         Stats& s = statsFor(it->type, it->subType);
         s.ackLatencyMsSum += latency;

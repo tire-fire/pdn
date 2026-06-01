@@ -3,7 +3,8 @@
 #include <cstddef>
 
 // CRC-16/CCITT XMODEM: poly 0x1021, init 0x0000, no reflection, no xorout.
-// Validates binary frames over the serial UART link.
+// Generic byte-span checksum; today its only caller is serial UART framing
+// (the ESP-NOW path relies on the radio's hardware FCS instead).
 
 // Fold one more span into a running CRC. Lets a caller checksum several
 // non-contiguous spans (e.g. opcode then payload) without concatenating them.

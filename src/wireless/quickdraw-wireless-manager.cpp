@@ -36,9 +36,12 @@ void QuickdrawWirelessManager::initialize(Player *player, WirelessManager* wirel
             if (abandonCallback_) abandonCallback_();
         });
     channel_->onReceive([this](const uint8_t* fromMac, const QuickdrawPacket& packet) {
-        // Channel has already acked the inbound packet; we just dedupe and
-        // dispatch (deliverDecoded skips the redundant ack when the entry
-        // point is the channel).
+        // Transport-driven ingress: reached only if kQuickdrawCommand is routed
+        // through transport->deliverIncoming. Production routes it to the inline
+        // processQuickdrawCommand path instead (see main.cpp), so this callback
+        // is currently dormant; kept wired for the channel-driven path. The
+        // channel has already acked here, so deliverDecoded skips the redundant
+        // ack when the entry point is the channel.
         deliverDecoded(fromMac, packet);
     });
 }

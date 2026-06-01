@@ -50,6 +50,22 @@ WirelessManager* ReliableChannelBase::getWirelessManager() const {
     return transport_ ? transport_->getWirelessManager() : nullptr;
 }
 
+bool ReliableChannelBase::isDuplicateReliableRx(const uint8_t* fromMac, uint8_t seqId) {
+    if (seqId == 0 || fromMac == nullptr) return false;
+    for (auto& r : rxSeq_) {
+        if (std::memcmp(r.mac.data(), fromMac, 6) == 0) {
+            if (r.lastSeqId == seqId) return true;
+            r.lastSeqId = seqId;
+            return false;
+        }
+    }
+    RxSeqRecord rec;
+    std::memcpy(rec.mac.data(), fromMac, 6);
+    rec.lastSeqId = seqId;
+    rxSeq_.push_back(rec);
+    return false;
+}
+
 void ReliableChannelBase::logLengthMismatch(PktType type, uint8_t subType,
                                             size_t got, size_t want) {
     LOG_W(WTX_TAG, "reliable rx len mismatch type=%u sub=%u got=%zu want=%zu",

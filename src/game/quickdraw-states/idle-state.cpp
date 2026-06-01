@@ -141,6 +141,10 @@ void Idle::renderStats(Device *PDN) {
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)->drawText("Average",70, 20)->drawText("Reaction", 70, 35);
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_LARGE)->drawText(std::to_string(player->getAverageReactionTime()).c_str(), 80, 55);
     } else if (statsIndex == 6) {
+        // Live topology depth (peer-graph countChainBehind), deliberately not
+        // the confirmedSupporters_ count that drives duel boost: this shows who
+        // is physically behind you now, boost counts who actually confirmed for
+        // a duel. The two can legitimately differ; do not reconcile them.
         size_t sc = chainManager->getChainLength();
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)->drawText("Posse",70, 20);
         PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_LARGE)->drawText(std::to_string(sc).c_str(), 88, 40);

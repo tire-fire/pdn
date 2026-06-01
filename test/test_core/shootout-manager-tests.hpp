@@ -330,6 +330,92 @@ inline void nonCoordinatorReceivingMatchStartIdentifiesRole(ShootoutManagerTests
     EXPECT_FALSE(suite->shootout->isLocalDuelist());
 }
 
+inline void lowerMacBracketEntryStandsDownAndAdoptsPostBracket(ShootoutManagerTests* suite) {
+    // Two rings closed independently and merged: self already self-elected,
+    // generated, and anchored its own bracket (coordinatorMac_ == self). A
+    // BRACKET_ENTRY then arrives from a strictly-lower-MAC coordinator. Self
+    // must stand down (drop its coordinator anchor and bracket) and adopt the
+    // lower-MAC bracket, not keep running its own (the split-brain the dead
+    // demote branch used to allow).
+    uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    std::array<uint8_t, 6> me = {0x05, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> p6 = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> p7 = {0x07, 0, 0, 0, 0, 0};
+    suite->shootout->setLoopMembersForTest({me, p6, p7});  // self lowest -> coordinator
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onConfirmReceived(p6.data());
+    suite->shootout->onConfirmReceived(p7.data());
+
+    // Self built and anchored its own bracket.
+    ASSERT_TRUE(suite->shootout->isCoordinator());
+    ASSERT_EQ(memcmp(suite->shootout->getCoordinatorMac().data(), me.data(), 6), 0);
+
+    // A lower-MAC coordinator's single-slot bracket arrives over the real
+    // channel path (deliverIncoming -> channel.deliver -> onBracketEntryReceived).
+    std::array<uint8_t, 6> lowerCoord = {0x02, 0, 0, 0, 0, 0};
+    ShootoutBracketEntryPayload entry{};
+    entry.cmd = static_cast<uint8_t>(ShootoutCmd::BRACKET_ENTRY);
+    entry.seqId = 1;
+    entry.batchId = 1;
+    entry.slot = 0;
+    entry.totalSlots = 1;
+    memcpy(entry.mac, lowerCoord.data(), 6);
+    suite->transport->deliverIncoming(
+        PktType::kShootoutCommand,
+        static_cast<uint8_t>(ShootoutCmd::BRACKET_ENTRY),
+        lowerCoord.data(),
+        reinterpret_cast<const uint8_t*>(&entry), sizeof(entry));
+
+    EXPECT_FALSE(suite->shootout->isCoordinator());
+    EXPECT_EQ(memcmp(suite->shootout->getCoordinatorMac().data(), lowerCoord.data(), 6), 0);
+    auto adopted = suite->shootout->getBracket();
+    ASSERT_EQ(adopted.size(), 1u);
+    EXPECT_EQ(memcmp(adopted[0].data(), lowerCoord.data(), 6), 0);
+}
+
+inline void higherMacBracketEntryDoesNotUnseatCoordinator(ShootoutManagerTests* suite) {
+    // Mirror image: a BRACKET_ENTRY from a HIGHER MAC must not unseat the
+    // rightful lower-MAC coordinator (the higher peer should adopt ours).
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> p3 = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> p4 = {0x04, 0, 0, 0, 0, 0};
+    suite->shootout->setLoopMembersForTest({me, p3, p4});  // self lowest -> coordinator
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onConfirmReceived(p3.data());
+    suite->shootout->onConfirmReceived(p4.data());
+    ASSERT_TRUE(suite->shootout->isCoordinator());
+
+    std::array<uint8_t, 6> higher = {0x09, 0, 0, 0, 0, 0};
+    ShootoutBracketEntryPayload entry{};
+    entry.cmd = static_cast<uint8_t>(ShootoutCmd::BRACKET_ENTRY);
+    entry.seqId = 1;
+    entry.batchId = 1;
+    entry.slot = 0;
+    entry.totalSlots = 1;
+    memcpy(entry.mac, higher.data(), 6);
+    suite->transport->deliverIncoming(
+        PktType::kShootoutCommand,
+        static_cast<uint8_t>(ShootoutCmd::BRACKET_ENTRY),
+        higher.data(),
+        reinterpret_cast<const uint8_t*>(&entry), sizeof(entry));
+
+    EXPECT_TRUE(suite->shootout->isCoordinator());
+    EXPECT_EQ(memcmp(suite->shootout->getCoordinatorMac().data(), me.data(), 6), 0);
+}
+
 inline void winnerBroadcastsMatchResultAndAdvancesLocally(ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> opMac = {0x03, 0, 0, 0, 0, 0};

@@ -80,8 +80,18 @@ void DuelResult::onStateDismounted(Device *PDN) {
 }
 
 bool DuelResult::transitionToIdleOnVoid() {
-    if (shootoutManager && shootoutManager->active()) return false;
-    return voided;
+    if (!voided) return false;
+    // A void while the tournament is still in flight is handled by
+    // transitionToShootoutAbortOnVoid (it aborts, then everyone routes out).
+    // Everything else falls to Idle: no shootout, or a terminal ENDED/ABORTED
+    // tournament. Routing this device to Idle touches no shared state, so it
+    // does not clobber the standings other devices are viewing.
+    if (shootoutManager && shootoutManager->active()) {
+        auto phase = shootoutManager->getPhase();
+        if (phase != ShootoutManager::Phase::ENDED
+            && phase != ShootoutManager::Phase::ABORTED) return false;
+    }
+    return true;
 }
 
 bool DuelResult::transitionToShootoutAbortOnVoid() {
@@ -114,6 +124,7 @@ bool DuelResult::transitionToLose() {
 }
 
 bool DuelResult::transitionToShootoutSpectator() {
+    if (voided) return false;
     if (!shootoutManager || !shootoutManager->active()) return false;
     if (!wonBattle) return false;
     shootoutManager->reportLocalWin();
@@ -121,6 +132,10 @@ bool DuelResult::transitionToShootoutSpectator() {
 }
 
 bool DuelResult::transitionToShootoutEliminated() {
+    // A voided match has no winner or loser; it must never read as an
+    // elimination (voided leaves wonBattle=false, which would otherwise fall
+    // through to the Eliminated screen even in a terminal ENDED/ABORTED phase).
+    if (voided) return false;
     if (!shootoutManager || !shootoutManager->active()) return false;
     return !wonBattle;
 }

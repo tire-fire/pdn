@@ -204,12 +204,10 @@ void Quickdraw::populateStateMap() {
     // (tournament) would be silently demoted to a 1v1 duel.
     {
         ChainManager* cdm = chainManager;
-        ShootoutManager* shMgr = shootoutManager_;
         // Every loop participant self-promotes into ShootoutProposal the
         // moment its roster is stable + closed. Checked before the duel and
         // supporter transitions below, so first-match-wins makes the ring take
         // precedence over a 1v1 without any predicate needing to say so.
-        (void)shMgr;
         idle->addTransition(
             new StateTransition(
                 [cdm]() { return cdm && cdm->isInStableLoop(); },

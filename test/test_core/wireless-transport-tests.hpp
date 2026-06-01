@@ -298,6 +298,75 @@ TEST(WirelessTransportTest, droppedNonFinalSlotStillRetransmits) {
     EXPECT_FALSE(ch->isPending(target));
 }
 
+TEST(WirelessTransportTest, duplicateReliableDeliveryDispatchesOnce) {
+    // A lost ack makes the sender resend, so the receiver sees the same
+    // (sender, seqId) twice. The reliable layer must ack both (to silence the
+    // sender) yet dispatch onReceive only once.
+    ::testing::NiceMock<MockPeerComms> mockComms;
+    WirelessManager wm(&mockComms, nullptr);
+    WirelessTransport transport(&wm);
+
+    int deliveries = 0;
+    auto* ch = transport.channel<TransportTestPayload>(
+        PktType::kChainGameEvent,
+        [](uint8_t, const uint8_t*){});
+    ch->onReceive([&](const uint8_t*, const TransportTestPayload&){ deliveries++; });
+
+    using ::testing::_;
+    using ::testing::Return;
+    EXPECT_CALL(mockComms, sendData(_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(Return(1));
+
+    uint8_t from[6] = {1,2,3,4,5,6};
+    TransportTestPayload p{};
+    p.seqId = 7;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&p);
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
+    EXPECT_EQ(deliveries, 1);
+
+    // A new seqId from the same sender is a fresh message and dispatches.
+    p.seqId = 8;
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
+    EXPECT_EQ(deliveries, 2);
+
+    // A different sender with a colliding seqId must not be suppressed.
+    uint8_t from2[6] = {9,9,9,9,9,9};
+    p.seqId = 7;
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from2, bytes, sizeof(p));
+    EXPECT_EQ(deliveries, 3);
+}
+
+TEST(WirelessTransportTest, unsequencedDeliveryNeverDeduped) {
+    // seqId==0 is the sendOnce/unsequenced sentinel: those payloads dedup by
+    // domain identity at the caller (e.g. forwarded CONFIRMs all carry 0), so
+    // the base must dispatch every one.
+    ::testing::NiceMock<MockPeerComms> mockComms;
+    WirelessManager wm(&mockComms, nullptr);
+    WirelessTransport transport(&wm);
+
+    int deliveries = 0;
+    auto* ch = transport.channel<TransportTestPayload>(
+        PktType::kChainGameEvent,
+        [](uint8_t, const uint8_t*){});
+    ch->onReceive([&](const uint8_t*, const TransportTestPayload&){ deliveries++; });
+
+    using ::testing::_;
+    using ::testing::Return;
+    EXPECT_CALL(mockComms, sendData(_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(Return(1));
+
+    uint8_t from[6] = {1,2,3,4,5,6};
+    TransportTestPayload p{};
+    p.seqId = 0;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&p);
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
+    transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
+    EXPECT_EQ(deliveries, 2);
+}
+
 TEST(WireFormatTest, shootoutConfirmPayloadSize) {
     static_assert(sizeof(ShootoutConfirmPayload) == 2 + 6 + kNameLength,
                   "ShootoutConfirmPayload layout drift");

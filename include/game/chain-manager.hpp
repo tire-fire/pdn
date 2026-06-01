@@ -179,6 +179,10 @@ private:
     // 1-cycle stability window before claiming coordinator.
     std::optional<std::array<uint8_t, 6>> lastStableMin_;
     int stableMinCycles_ = 0;
+    // Dedup key for the deriveCoordinator diagnostic so the per-tick log (and
+    // its MAC-string build) only fires when the decision inputs change, not at
+    // the 1Hz backstop cadence.
+    uint32_t lastCoordLogKey_ = 0xFFFFFFFFu;
     unsigned long nextMinStabilityCheckMs_ = 0;
     static constexpr unsigned long kCoordStabilityCycleMs = 1000;
 

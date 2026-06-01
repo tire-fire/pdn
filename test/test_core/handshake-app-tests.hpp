@@ -151,3 +151,47 @@ inline void handshakeAppMidFrameTimeoutResets(HandshakeAppDemuxerTests* s) {
     s->feed(valid);
     EXPECT_EQ(frameCount, 1);
 }
+
+inline void handshakeAppGarbageThenValidFrameResyncs(HandshakeAppDemuxerTests* s) {
+    int frameCount = 0;
+    Frame got;
+    s->app->setBinaryFrameHandler([&](const Frame& f) { got = f; ++frameCount; });
+
+    // Leading line noise with no preamble must be discarded, and the parser must
+    // resync on the next 0xAA 0x55 rather than swallowing the following frame.
+    s->feed({0x12, 0x34, 0xFF, 0x00, 0x55});
+    auto valid = s->buildFrame(0x00, std::vector<uint8_t>{0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x01});
+    s->feed(valid);
+
+    ASSERT_EQ(frameCount, 1);
+    EXPECT_EQ(got.opcode, 0x00);
+    EXPECT_EQ(got.payload[0], 0xA1);
+}
+
+inline void handshakeAppDoubleAAResyncsToPreamble(HandshakeAppDemuxerTests* s) {
+    int frameCount = 0;
+    s->app->setBinaryFrameHandler([&](const Frame&) { ++frameCount; });
+
+    // A stray extra 0xAA before the real preamble: GotAA on another 0xAA must
+    // stay in GotAA so 0xAA 0xAA 0x55 still opens a frame rather than aborting.
+    auto valid = s->buildFrame(0x00, std::vector<uint8_t>{1,2,3,4,5,6,1});
+    std::vector<uint8_t> withExtraAA;
+    withExtraAA.push_back(0xAA);
+    withExtraAA.insert(withExtraAA.end(), valid.begin(), valid.end());
+    s->feed(withExtraAA);
+
+    EXPECT_EQ(frameCount, 1);
+}
+
+inline void handshakeAppSplitPreambleAcrossFeeds(HandshakeAppDemuxerTests* s) {
+    int frameCount = 0;
+    s->app->setBinaryFrameHandler([&](const Frame&) { ++frameCount; });
+
+    // The 0xAA and 0x55 of the preamble arrive in separate feed() calls; the
+    // GotAA state must survive across reads.
+    auto valid = s->buildFrame(0x00, std::vector<uint8_t>{1,2,3,4,5,6,1});
+    s->feed({valid[0]});                                       // 0xAA
+    s->feed(std::vector<uint8_t>(valid.begin() + 1, valid.end())); // 0x55 + body
+
+    EXPECT_EQ(frameCount, 1);
+}

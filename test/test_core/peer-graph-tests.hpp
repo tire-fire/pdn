@@ -150,6 +150,30 @@ inline void peerGraphCountReachableZeroForAbsentPeer(PeerGraphTests* suite) {
     EXPECT_EQ(g.countReachableExcludingSelf(suite->mac(0x01)), 0u);  // self
 }
 
+inline void peerGraphTwoDeviceBothJacksNotLoopButRetainsPeer(PeerGraphTests* suite) {
+    // Two devices wired with BOTH cables: self has the same peer on IN and OUT.
+    // Only two distinct nodes exist, so this is not a >=3-node cycle (isInLoop
+    // stays false), but the peer is a member and stays one when a single jack is
+    // yanked, because the other jack still claims it. declareJackDead relies on
+    // exactly this to keep the ESP-NOW peer slot while either cable is live.
+    PeerGraph g;
+    g.setSelfMac(suite->mac(0x01));
+    g.setSelfPeers(suite->mac(0x02), suite->mac(0x02), 0);  // same peer both jacks
+    g.acceptBeacon({suite->mac(0x02), suite->mac(0x01), suite->mac(0x01)}, 0);
+    EXPECT_FALSE(g.isInLoop());
+    EXPECT_EQ(g.getChainMembers().size(), 2u);
+    EXPECT_EQ(g.countReachableExcludingSelf(suite->mac(0x02)), 1u);
+
+    // Yank the OUT jack: self still claims 0x02 on IN, edge stays mutual.
+    g.setSelfPeers(suite->mac(0x02), {}, 100);
+    EXPECT_EQ(g.getChainMembers().size(), 2u);
+
+    // Yank the IN jack too: no claim remains, peer drops out.
+    g.setSelfPeers({}, {}, 200);
+    EXPECT_EQ(g.getChainMembers().size(), 1u);
+    EXPECT_FALSE(g.isInLoop());
+}
+
 inline void peerGraphPeerDropsOutWhenSelfStopsClaiming(PeerGraphTests* suite) {
     // A device leaves the ring: self's macPeer clears, self stops claiming it,
     // so the edge is no longer mutual and the peer leaves the membership set.

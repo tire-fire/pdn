@@ -854,6 +854,10 @@ TEST_F(PeerGraphTests, peerDropsOutWhenSelfStopsClaiming) {
     peerGraphPeerDropsOutWhenSelfStopsClaiming(this);
 }
 
+TEST_F(PeerGraphTests, twoDeviceBothJacksNotLoopButRetainsPeer) {
+    peerGraphTwoDeviceBothJacksNotLoopButRetainsPeer(this);
+}
+
 TEST_F(PeerGraphTests, countReachableSplitsChainAtSelf) {
     peerGraphCountReachableSplitsChainAtSelf(this);
 }
@@ -1213,6 +1217,18 @@ TEST_F(HandshakeAppDemuxerTests, midFrameTimeoutResets) {
     handshakeAppMidFrameTimeoutResets(this);
 }
 
+TEST_F(HandshakeAppDemuxerTests, garbageThenValidFrameResyncs) {
+    handshakeAppGarbageThenValidFrameResyncs(this);
+}
+
+TEST_F(HandshakeAppDemuxerTests, doubleAAResyncsToPreamble) {
+    handshakeAppDoubleAAResyncsToPreamble(this);
+}
+
+TEST_F(HandshakeAppDemuxerTests, splitPreambleAcrossFeeds) {
+    handshakeAppSplitPreambleAcrossFeeds(this);
+}
+
 // ============================================
 // REMOTE DEVICE COORDINATOR TESTS
 // ============================================
@@ -1446,6 +1462,8 @@ TEST_F(ShootoutManagerTests, matchResultAbandonAfterTournamentEndStaysEnded) { m
 TEST_F(ShootoutManagerTests, abortReceivedAfterTournamentEndStaysEnded) { abortReceivedAfterTournamentEndStaysEnded(this); }
 TEST_F(ShootoutManagerTests, matchStartGatedOnAllBracketAcks) { matchStartGatedOnAllBracketAcks(this); }
 TEST_F(ShootoutManagerTests, nonCoordinatorReceivingMatchStartIdentifiesRole) { nonCoordinatorReceivingMatchStartIdentifiesRole(this); }
+TEST_F(ShootoutManagerTests, lowerMacBracketEntryStandsDownAndAdoptsPostBracket) { lowerMacBracketEntryStandsDownAndAdoptsPostBracket(this); }
+TEST_F(ShootoutManagerTests, higherMacBracketEntryDoesNotUnseatCoordinator) { higherMacBracketEntryDoesNotUnseatCoordinator(this); }
 TEST_F(ShootoutManagerTests, winnerBroadcastsMatchResultAndAdvancesLocally) { winnerBroadcastsMatchResultAndAdvancesLocally(this); }
 TEST_F(ShootoutManagerTests, matchResultReceivedAdvancesLocalBracket) { matchResultReceivedAdvancesLocalBracket(this); }
 TEST_F(ShootoutManagerTests, peerLostCoordinatorAborts) { peerLostCoordinatorAborts(this); }
