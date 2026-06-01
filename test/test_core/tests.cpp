@@ -1420,6 +1420,7 @@ TEST_F(ChainMultiDeviceFixture, ThreeDeviceChainNoLoop) { rdcThreeDeviceChainNoL
 TEST_F(ChainMultiDeviceFixture, ThreeDeviceRingReportsLoop) { rdcThreeDeviceRingReportsLoop(this); }
 TEST_F(ChainMultiDeviceFixture, MixedRoleRingReportsLoop) { rdcMixedRoleRingReportsLoop(this); }
 TEST_F(ChainMultiDeviceFixture, HunterRingClaimsExactlyOneCoordinator) { cdmHunterRingClaimsExactlyOneCoordinator(this); }
+TEST_F(ChainMultiDeviceFixture, CoordinatorIsNeverSupporter) { cdmCoordinatorIsNeverSupporter(this); }
 TEST_F(ChainMultiDeviceFixture, MixedRoleRingClaimsCoordinator) { cdmMixedRoleRingClaimsCoordinator(this); }
 TEST_F(ChainMultiDeviceFixture, DeviceTypePropagatesViaHello) { cdmDeviceTypePropagatesViaHello(this); }
 TEST_F(ChainMultiDeviceFixture, FdnPeerReportsFdnDeviceType) { cdmFdnPeerReportsFdnDeviceType(this); }

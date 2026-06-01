@@ -34,10 +34,13 @@ void ChainManager::demoteCoordinator() {
 }
 
 bool ChainManager::isSupporter() const {
-    // A supporter has a same-role peer on its opponent jack. The loop case
-    // does not need excluding here: the Idle state machine checks the
-    // shootout transition (isInStableLoop) before the supporter transition,
-    // so first-match-wins keeps a ring member out of the supporter path.
+    // A coordinator is never a supporter (CoordinatorIsExclusive). This
+    // predicate is read directly by the 1Hz confirm backstop in sync(), not
+    // only through the Idle state machine, so it must self-gate: without this
+    // a coordinator holding a same-role opponent-jack peer would emit
+    // ChainConfirms and inflate another node's supporter count.
+    if (isCoordinator_) return false;
+    // A supporter has a same-role peer on its opponent jack.
     auto opponentRole = peerIsHunter(opponentJack());
     if (!opponentRole.has_value()) return false;
     return *opponentRole == player_->isHunter();

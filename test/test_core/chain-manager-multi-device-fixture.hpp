@@ -1008,6 +1008,53 @@ inline void cdmHunterRingClaimsExactlyOneCoordinator(ChainMultiDeviceFixture* su
         << "Expected exactly one coordinator in 3-hunter ring (got " << coordCount << ")";
 }
 
+// CoordinatorIsExclusive (rdc-chain.allium): a coordinator is never a
+// supporter, even though in an all-hunter ring it sits on a same-role
+// opponent jack -- the exact condition that makes every non-coordinator
+// member a supporter. Without the !isCoordinator_ guard in isSupporter(),
+// the coordinator's 1Hz confirm backstop would emit ChainConfirms and
+// inflate a peer's supporter count. The non-coordinator supporters in the
+// same ring prove the exclusion is load-bearing, not vacuous.
+inline void cdmCoordinatorIsNeverSupporter(ChainMultiDeviceFixture* suite) {
+    suite->spawnDevices(3);
+    suite->setAllHunters();
+    suite->connectLinearHunterChain();
+    suite->deliverAllPackets();
+    suite->syncAll();
+    suite->deliverAllPackets();
+    suite->closeRing();
+    suite->primeRosterStableAll();
+    // Drive the role-announce cascade so the coordinator actually learns the
+    // role of its opponent-jack peer. primeRosterStableAll alone settles the
+    // peer graph but does not exchange roles; without this the coordinator's
+    // opponent-jack role stays empty and isSupporter() is trivially false,
+    // making the assertion below vacuous (it would pass even without the guard).
+    for (int pass = 0; pass < 3; ++pass) {
+        for (size_t i = 0; i < suite->nodeCount(); ++i) {
+            suite->node(i).cdm->onChainStateChanged();
+        }
+        suite->deliverAllPackets();
+    }
+    suite->primeRosterStableAll();
+
+    int coordIdx = -1;
+    int supporterCount = 0;
+    for (size_t i = 0; i < suite->nodeCount(); ++i) {
+        if (suite->node(i).cdm->isCoordinator()) {
+            coordIdx = (int)i;
+            EXPECT_FALSE(suite->node(i).cdm->isSupporter())
+                << "coordinator node " << i << " must not be a supporter";
+            EXPECT_FALSE(suite->node(i).cdm->isChampion())
+                << "coordinator node " << i << " must not be champion";
+        } else if (suite->node(i).cdm->isSupporter()) {
+            supporterCount++;
+        }
+    }
+    ASSERT_GE(coordIdx, 0) << "no coordinator derived in 3-hunter ring";
+    EXPECT_GT(supporterCount, 0)
+        << "expected same-role supporters in an all-hunter ring";
+}
+
 // Mixed-role ring (H1—H2—B1 closed): the peer-graph is role-agnostic, so
 // after the closing cable plugs in and the graph converges, exactly one
 // ChainManager — the lowest-MAC member of the loop — reports isCoordinator()
