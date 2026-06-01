@@ -52,7 +52,6 @@ bool ChainManager::isChampion() const {
 
 bool ChainManager::canInitiateMatch() const {
     if (!player_->isHunter()) return false;
-    if (rdc_ == nullptr) return false;
     // Act only on a settled topology, and never start a 1v1 inside a ring.
     // !isInLoop() is the one place precedence must be restated: match init is a
     // side-effecting radio send invoked imperatively from Idle, not an orderable
@@ -165,7 +164,7 @@ void ChainManager::onConfirmReceived(
     // hundred ms of the last topology change on both linear chains and rings, so
     // the gate is fast enough to apply uniformly without holding 2-device posse
     // formation. The sender's resender retries until the gate opens.
-    if (rdc_ != nullptr && !rdc_->isTopologyStable()) {
+    if (!rdc_->isTopologyStable()) {
         LOG_W(TAG, "onConfirmReceived dropped (topology unstable)");
         return;
     }
@@ -180,22 +179,20 @@ void ChainManager::onConfirmReceived(
     // ring coordinator still accumulates every member's confirm to detect loop
     // closure. Without this gate a device holding a stale championMac_ (after a
     // topology reshuffle) could unicast a confirm and inflate the boost.
-    if (rdc_ != nullptr) {
-        bool isMember = false;
-        const uint8_t* directSupporter = rdc_->getPeerMac(supporterJack());
-        if (directSupporter != nullptr &&
-            memcmp(directSupporter, originatorMac, 6) == 0) {
-            isMember = true;
+    bool isMember = false;
+    const uint8_t* directSupporter = rdc_->getPeerMac(supporterJack());
+    if (directSupporter != nullptr &&
+        memcmp(directSupporter, originatorMac, 6) == 0) {
+        isMember = true;
+    }
+    if (!isMember) {
+        for (const auto& m : rdc_->getChainMembers()) {
+            if (memcmp(m.data(), originatorMac, 6) == 0) { isMember = true; break; }
         }
-        if (!isMember) {
-            for (const auto& m : rdc_->getChainMembers()) {
-                if (memcmp(m.data(), originatorMac, 6) == 0) { isMember = true; break; }
-            }
-        }
-        if (!isMember) {
-            LOG_W(TAG, "onConfirmReceived dropped (originator not in topology)");
-            return;
-        }
+    }
+    if (!isMember) {
+        LOG_W(TAG, "onConfirmReceived dropped (originator not in topology)");
+        return;
     }
 
     // Dedup on originator MAC.
@@ -221,7 +218,7 @@ void ChainManager::onChainStateChanged() {
     // disappearance is the only locally-observable signal the chain shrank, so
     // drain when it's gone. Level-triggered (the clear is idempotent), so no
     // prior-count state is needed to detect the transition.
-    const bool supporterPeerPresent = (rdc_ != nullptr && rdc_->getPeerMac(supporterJack()) != nullptr);
+    const bool supporterPeerPresent = (rdc_->getPeerMac(supporterJack()) != nullptr);
     if (!supporterPeerPresent && !confirmedSupporters_.empty()) {
         LOG_W(TAG, "supporter-jack peer gone, draining %u confirmed supporters",
               (unsigned)confirmedSupporters_.size());
@@ -328,7 +325,7 @@ size_t ChainManager::getChainLength() const {
     // fills as supporters confirm during a duel countdown. The posse belongs
     // to the champion: a mid-chain supporter has its own downstream peers but
     // is not leading them, so it reports zero.
-    if (rdc_ == nullptr || !isChampion()) return 0;
+    if (!isChampion()) return 0;
     return rdc_->countChainBehind(supporterJack());
 }
 
@@ -385,23 +382,21 @@ void ChainManager::onRoleAnnounceReceived(
     // championMac after they're ready to process it. Without this, the race
     // strands the supporter without a champion to confirm against.
     if (!fromOpponentJack) {
-        if (rdc_ != nullptr) {
-            const uint8_t* supporterPeer = rdc_->getPeerMac(supporterJack());
-            // If the announce came from our supporter-jack peer, re-fire our
-            // own announce ONCE to recover from the handshake-race where our
-            // first broadcast arrived before they were ready. Guard on
-            // lastAnnouncedSupporterJackMac_: if we've already announced to
-            // this exact peer, do NOT reset — otherwise every inbound announce
-            // forces an outbound, the peer answers in kind, and the two devices
-            // ping-pong RoleAnnounce at tens-per-second indefinitely.
-            if (supporterPeer != nullptr &&
-                memcmp(supporterPeer, fromMac, 6) == 0) {
-                std::array<uint8_t, 6> cur;
-                memcpy(cur.data(), supporterPeer, 6);
-                if (!lastAnnouncedSupporterJackMac_.has_value() ||
-                    *lastAnnouncedSupporterJackMac_ != cur) {
-                    lastAnnouncedSupporterJackMac_.reset();
-                }
+        const uint8_t* supporterPeer = rdc_->getPeerMac(supporterJack());
+        // If the announce came from our supporter-jack peer, re-fire our
+        // own announce ONCE to recover from the handshake-race where our
+        // first broadcast arrived before they were ready. Guard on
+        // lastAnnouncedSupporterJackMac_: if we've already announced to
+        // this exact peer, do NOT reset — otherwise every inbound announce
+        // forces an outbound, the peer answers in kind, and the two devices
+        // ping-pong RoleAnnounce at tens-per-second indefinitely.
+        if (supporterPeer != nullptr &&
+            memcmp(supporterPeer, fromMac, 6) == 0) {
+            std::array<uint8_t, 6> cur;
+            memcpy(cur.data(), supporterPeer, 6);
+            if (!lastAnnouncedSupporterJackMac_.has_value() ||
+                *lastAnnouncedSupporterJackMac_ != cur) {
+                lastAnnouncedSupporterJackMac_.reset();
             }
         }
         onChainStateChanged();
@@ -433,7 +428,7 @@ void ChainManager::onRoleAnnounceReceived(
             // if the displaced champion isn't a current direct peer, drop
             // its ESP-NOW slot. RoleAnnounce cascades from the new neighbor
             // will re-register it if it still belongs.
-            bool oldStillDirect = (rdc_ && rdc_->isDirectPeer(oldMac.data()));
+            bool oldStillDirect = rdc_->isDirectPeer(oldMac.data());
             if (!oldStillDirect) {
                 rdc_->unregisterPeer(oldMac.data());
             }
@@ -516,7 +511,6 @@ void ChainManager::sync() {
 }
 
 void ChainManager::reannounceRoleToPeers() {
-    if (rdc_ == nullptr) return;
     // Both sends self-guard on peer presence (and championMac_ for the
     // supporter direction), so unconditional calls are safe. Receivers apply
     // setPeerRole idempotently and only cascade champion changes, so a steady
@@ -531,8 +525,6 @@ unsigned long ChainManager::nowMs() const {
 }
 
 void ChainManager::deriveCoordinator() {
-    if (rdc_ == nullptr) return;
-
     // Universal stability gate: any consumer of isInLoop / getChainMembers
     // must guard on isTopologyStable, otherwise mid-convergence views can flip
     // a coord claim or surrender it prematurely. Hold prior state until the

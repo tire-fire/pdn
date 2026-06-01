@@ -382,7 +382,7 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
         // Ring forwarding: non-coordinators relay a first-time CONFIRM out
         // their OTHER direct-peer jack so the message walks around the ring
         // to the coordinator. The coordinator terminates propagation.
-        if (!isCoordinator() && rdc_ != nullptr && confirmChannel_ != nullptr) {
+        if (!isCoordinator() && confirmChannel_ != nullptr) {
             ShootoutConfirmPayload fwd{};
             fwd.cmd = static_cast<uint8_t>(ShootoutCmd::CONFIRM);
             fwd.seqId = 0;
@@ -608,7 +608,7 @@ void ShootoutManager::sendLocalConfirm() {
             if (memcmp(m.data(), selfMac, 6) == 0) continue;
             confirmChannel_->sendOnce(m.data(), p);
         }
-    } else if (rdc_ != nullptr) {
+    } else {
         for (auto jack : {SerialIdentifier::INPUT_JACK, SerialIdentifier::OUTPUT_JACK}) {
             const uint8_t* direct = rdc_->getPeerMac(jack);
             if (direct != nullptr) confirmChannel_->sendOnce(direct, p);
@@ -708,7 +708,7 @@ void ShootoutManager::onLocalRDCDisconnect(const uint8_t* lostMac) {
     // peer (handshake hasn't actually torn down), the loss is informational
     // and PEER_LOST shouldn't fire. Transitive reachability isn't tracked here;
     // bracket-side filtering happens via the coordinator's ABORT-on-demotion path.
-    if (rdc_ && rdc_->isDirectPeer(lostMac)) return;
+    if (rdc_->isDirectPeer(lostMac)) return;
     if (peerLostChannel_ != nullptr) {
         ShootoutPeerLostPayload p{};
         p.cmd = static_cast<uint8_t>(ShootoutCmd::PEER_LOST);
@@ -731,7 +731,7 @@ void ShootoutManager::onPeerLostReceived(const uint8_t* lostMac) {
     // If the "lost" peer is still our direct RDC peer the message is stale
     // for us (we'd observe the loss locally first). Otherwise the tournament
     // participant is gone and we abort.
-    if (rdc_ && rdc_->isDirectPeer(lostMac)) return;
+    if (rdc_->isDirectPeer(lostMac)) return;
     abortTournament();
 }
 
@@ -953,6 +953,6 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const 
     // Building a bracket from mid-convergence partial topology state produces
     // inconsistent members across devices. Wait for the peer-graph topology to
     // settle (isTopologyStable) before opening any derived state from it.
-    if (rdc_ == nullptr || !rdc_->isTopologyStable()) return {};
+    if (!rdc_->isTopologyStable()) return {};
     return rdc_->getChainMembers();
 }
