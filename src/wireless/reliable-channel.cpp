@@ -11,11 +11,13 @@ ReliableChannelBase::ReliableChannelBase(WirelessTransport* transport,
                                          Resender* resender,
                                          PktType type,
                                          uint8_t subType,
-                                         OnAbandon onAbandon)
+                                         OnAbandon onAbandon,
+                                         Resender::SendMode sendMode)
     : resender_(resender),
       type_(type),
       subType_(subType),
       transport_(transport),
+      sendMode_(sendMode),
       onAbandon_(std::move(onAbandon)) {}
 
 void ReliableChannelBase::onAck(uint8_t seqId, const uint8_t* fromMac) {
@@ -46,6 +48,12 @@ uint8_t ReliableChannelBase::nextSeqId() {
 // construct the base without standing up a full transport.
 WirelessManager* ReliableChannelBase::getWirelessManager() const {
     return transport_ ? transport_->getWirelessManager() : nullptr;
+}
+
+void ReliableChannelBase::logLengthMismatch(PktType type, uint8_t subType,
+                                            size_t got, size_t want) {
+    LOG_W(WTX_TAG, "reliable rx len mismatch type=%u sub=%u got=%zu want=%zu",
+          (unsigned)type, (unsigned)subType, got, want);
 }
 
 void ReliableChannelBase::sendOnceBytes(const uint8_t* mac, const uint8_t* data, size_t len) {

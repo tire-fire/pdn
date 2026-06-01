@@ -96,7 +96,7 @@ void Quickdraw::onStateLoop(Device *PDN) {
     if (chainManager) {
         bool coordNow = chainManager->isCoordinator();
         if (coordNow != lastIsCoordinator_) {
-            LOG_W("CDM", "isCoordinator %d -> %d",
+            LOG_W("CHAIN", "isCoordinator %d -> %d",
                   (int)lastIsCoordinator_, (int)coordNow);
             lastIsCoordinator_ = coordNow;
         }
@@ -225,14 +225,14 @@ void Quickdraw::populateStateMap() {
         idle->addTransition(
             new StateTransition(
                 [cdm, idleState]() {
-                    return cdm && cdm->isRosterStable() &&
+                    return cdm && cdm->isTopologyStable() &&
                            idleState->transitionToDuelCountdown();
                 },
                 duelCountdown));
         idle->addTransition(
             new StateTransition(
                 [cdm, idleState]() {
-                    return cdm && cdm->isRosterStable() &&
+                    return cdm && cdm->isTopologyStable() &&
                            idleState->transitionToSupporterReady();
                 },
                 supporterReady));

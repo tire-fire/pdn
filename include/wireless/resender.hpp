@@ -14,10 +14,21 @@
 class WirelessManager;
 
 // Reliable unicast: send a packet to a peer, retransmit on timeout, abandon
-// after maxRetries. One pending entry per (PktType, subType, target). sync()
-// must be called every loop tick to drive retransmits.
+// after maxRetries. Per-target pending granularity depends on SendMode: state
+// channels keep one entry per (PktType, subType, target); stream channels keep
+// one per (PktType, subType, target, seqId) so a batch of distinct packets to
+// the same peer all retain their own retry slots. sync() must be called every
+// loop tick to drive retransmits.
 class Resender {
 public:
+    // How a send relates to other in-flight sends to the same peer on the same
+    // channel. SupersedePerTarget (default): the payload is current state, so a
+    // newer send obsoletes any prior unacked one and only the latest survives
+    // (an older retransmit arriving last would otherwise reinstate stale state).
+    // KeepDistinct: the payload is one item of a stream (e.g. a bracket slot),
+    // so each seqId keeps its own retry slot and a dropped one still retransmits.
+    enum class SendMode { SupersedePerTarget, KeepDistinct };
+
     struct RetryPolicy {
         unsigned long initialTimeoutMs = 100;
         uint8_t maxRetries = 3;
@@ -65,10 +76,13 @@ public:
         return static_cast<uint8_t>(c);
     }
 
-    // send() with the same (type, subType, target) replaces any prior pending.
-    // payload bytes are copied.
+    // Reliable send. SendMode controls how it relates to other pending sends to
+    // the same (type, subType, target): SupersedePerTarget drops any prior one,
+    // KeepDistinct keeps prior sends with a different seqId. payload bytes are
+    // copied.
     void send(const uint8_t* target, PktType type, uint8_t subType,
-              uint8_t seqId, const uint8_t* payload, size_t len);
+              uint8_t seqId, const uint8_t* payload, size_t len,
+              SendMode mode = SendMode::SupersedePerTarget);
     template <class C, class = std::enable_if_t<std::is_enum_v<C>>>
     void send(const uint8_t* target, PktType type, C channel,
               uint8_t seqId, const uint8_t* payload, size_t len) {
@@ -154,7 +168,11 @@ private:
 
     static unsigned long backoffMs(const RetryPolicy& p, uint8_t retryNum) {
         if (!p.exponentialBackoff) return p.initialTimeoutMs;
-        return p.initialTimeoutMs << retryNum;
+        // Clamp the shift: maxRetries is a caller-settable uint8_t and unsigned
+        // long is 32-bit on the ESP32, so an unclamped shift would be UB / wrap
+        // past ~25 doublings. 16 (~65000x base) is far beyond any sane budget.
+        unsigned shift = retryNum > 16 ? 16u : retryNum;
+        return p.initialTimeoutMs << shift;
     }
 
     Stats& statsFor(PktType type, uint8_t subType) {
@@ -162,7 +180,7 @@ private:
     }
 
     std::vector<Pending>::iterator findPending(
-        PktType type, uint8_t subType, const uint8_t* target);
+        PktType type, uint8_t subType, uint8_t seqId, const uint8_t* target);
 
     void transmit(const Pending& p);
 

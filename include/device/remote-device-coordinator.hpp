@@ -177,11 +177,14 @@ private:
     static constexpr unsigned long kHelloSilentLinkMs = 100;
     unsigned long helloSilentLinkMs_ = kHelloSilentLinkMs;
 
-    // GPIO disconnect detection is OFF by default: on this hardware the RX pin
-    // (GPIO 38 = TXr) is shared with the onboard RGB LED, so the line-state
-    // read false-fires and spuriously clears macPeer. The HELLO silent-link
-    // (kHelloSilentLinkMs) is a faster, reliable disconnect path that makes the
-    // GPIO read redundant. Tests opt specific jacks in via setGpioDisconnectDetectionEnabled.
+    // GPIO disconnect detection is OFF by default: on the real PDN PCB the
+    // OUTPUT-jack RX (GPIO 38 = TXr) is wired to the cable TIP conductor, the
+    // least-reliable TRS contact, so on a marginal/flexing connection the line +
+    // the driver's pullup float HIGH and the line-state read false-fires,
+    // spuriously clearing macPeer. (The onboard-RGB-LED-on-38 story is a
+    // dev-board-only fact, not the real-board cause.) The HELLO silent-link
+    // (kHelloSilentLinkMs) is a reliable disconnect path that makes the GPIO read
+    // redundant. Tests opt specific jacks in via setGpioDisconnectDetectionEnabled.
     bool enableGpioDisconnectDetection_ = false;
 
     // Surrender a jack: clear its direct-peer slot, fire the synthetic

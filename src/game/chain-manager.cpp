@@ -2,7 +2,7 @@
 #include "device/drivers/logger.hpp"
 #include "utils/simple-timer.hpp"
 
-#define TAG "CDM"
+#define TAG "CHAIN"
 
 ChainManager::ChainManager(Player* player, WirelessManager* wirelessManager, RemoteDeviceCoordinator* rdc)
     : player_(player),
@@ -156,22 +156,45 @@ void ChainManager::onConfirmReceived(
     uint8_t seqId) {
     (void)fromMac; (void)seqId;
 
-    // Universal roster-stability gate: drop confirms that arrive
-    // mid-convergence. Adaptive PROBE drives isRosterStable to settle within
-    // 200-300ms of the last roster mutation on both linear chains and rings,
-    // so the gate is fast enough to apply uniformly without holding 2-device
-    // posse formation. The sender's resender retries until the gate opens.
+    // Universal topology-stability gate: drop confirms that arrive
+    // mid-convergence. BEACON propagation settles isTopologyStable within a few
+    // hundred ms of the last topology change on both linear chains and rings, so
+    // the gate is fast enough to apply uniformly without holding 2-device posse
+    // formation. The sender's resender retries until the gate opens.
     if (rdc_ != nullptr && !rdc_->isTopologyStable()) {
-        LOG_W(TAG, "onConfirmReceived dropped (roster unstable)");
+        LOG_W(TAG, "onConfirmReceived dropped (topology unstable)");
         return;
     }
 
-    // Accept any inbound ChainConfirm addressed to us. The channel is direct
-    // unicast keyed by our MAC, so reaching this handler means a supporter
-    // resolved us as their championMac. In a hunter ring no device passes
-    // the strict isChampion() check (every member sees a same-role opponent
-    // jack), but the would-be coordinator still needs to accumulate confirms
-    // to detect loop closure. Dedup on originator MAC.
+    // Topology-membership integrity. The channel is direct unicast keyed by our
+    // MAC, so reaching this handler means some device resolved us as its
+    // championMac. Accept only if that originator is one we can actually see in
+    // our topology: either our direct supporter-jack peer (legitimate even
+    // before its BEACON has propagated into our graph) or a member of our
+    // connected component. getChainMembers() is a BFS over mutual BEACON edges,
+    // so it covers multi-hop supporters in both linear chains and rings -- the
+    // ring coordinator still accumulates every member's confirm to detect loop
+    // closure. Without this gate a device holding a stale championMac_ (after a
+    // topology reshuffle) could unicast a confirm and inflate boostMs_.
+    if (rdc_ != nullptr) {
+        bool isMember = false;
+        const uint8_t* directSupporter = rdc_->getPeerMac(supporterJack());
+        if (directSupporter != nullptr &&
+            memcmp(directSupporter, originatorMac, 6) == 0) {
+            isMember = true;
+        }
+        if (!isMember) {
+            for (const auto& m : rdc_->getChainMembers()) {
+                if (memcmp(m.data(), originatorMac, 6) == 0) { isMember = true; break; }
+            }
+        }
+        if (!isMember) {
+            LOG_W(TAG, "onConfirmReceived dropped (originator not in topology)");
+            return;
+        }
+    }
+
+    // Dedup on originator MAC.
     for (const auto& existing : confirmedSupporters_) {
         if (memcmp(existing.data(), originatorMac, 6) == 0) {
             LOG_W(TAG, "onConfirmReceived dedupe (already confirmed)");
@@ -475,7 +498,7 @@ void ChainManager::sendRoleToOpponentJack() {
 }
 
 void ChainManager::sync() {
-    // Coord-eligibility derivation runs at ~1Hz (matches the PROBE cadence).
+    // Coord-eligibility derivation runs at ~1Hz (matches the BEACON cadence).
     unsigned long now = nowMs();
     if (now >= nextMinStabilityCheckMs_) {
         nextMinStabilityCheckMs_ = now + kCoordStabilityCycleMs;

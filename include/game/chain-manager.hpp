@@ -46,7 +46,7 @@ public:
     // Passthrough so state classes holding a ChainManager* can gate on a
     // settled topology without their own rdc reference. Virtual so tests can
     // stub it alongside isInStableLoop().
-    virtual bool isRosterStable() const {
+    virtual bool isTopologyStable() const {
         return rdc_ != nullptr && rdc_->isTopologyStable();
     }
     bool canInitiateMatch() const;
@@ -173,8 +173,8 @@ private:
     std::optional<std::array<uint8_t, 6>> lastAnnouncedSupporterJackMac_;
     std::optional<std::array<uint8_t, 6>> lastAnnouncedOpponentJackMac_;
 
-    // Coord-eligibility derivation state. Updated once per PROBE cycle (~1s)
-    // by sync(). lastStableMin_ holds the previously-observed lowest MAC in
+    // Coord-eligibility derivation state. Updated once per ~1Hz sync() cycle.
+    // lastStableMin_ holds the previously-observed lowest MAC in
     // getChainMembers(); stableMinCycles_ counts consecutive cycles the
     // current min has matched. Claim is gated on stableMinCycles_ >= 1, a
     // 1-cycle stability window before claiming coordinator.

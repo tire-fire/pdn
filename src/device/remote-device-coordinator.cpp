@@ -373,8 +373,18 @@ void RemoteDeviceCoordinator::declareJackDead(SerialIdentifier jack, Device* PDN
     // path. DeviceType is UNKNOWN because RDC doesn't preserve it across drops.
     auto& prev = previousDirectPeer_[idx];
     if (prev.has_value()) {
-        fireDirectPeerChange(jack, Peer{*prev, DeviceType::UNKNOWN}, std::nullopt);
+        std::array<uint8_t, 6> dropped = *prev;
+        fireDirectPeerChange(jack, Peer{dropped, DeviceType::UNKNOWN}, std::nullopt);
         prev = std::nullopt;
+        // Release the ESP-NOW peer slot unless the same device is still our
+        // direct peer on the other jack (a 2-device loop wired into both jacks).
+        // The 20-slot table is finite; without this it leaks one entry per
+        // distinct neighbour that silent-dies over a multi-hour event, eventually
+        // rejecting new peers and silently failing matches. macPeer for this jack
+        // was already cleared above, so isDirectPeer() now only sees the other.
+        if (!isDirectPeer(dropped.data())) {
+            unregisterPeer(dropped.data());
+        }
     }
     stats_[idx].jacksDeclaredDead++;
     // Reset the silent-link baseline so a fresh CONNECTED edge re-seeds it.

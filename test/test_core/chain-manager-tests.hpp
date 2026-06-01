@@ -100,7 +100,7 @@ public:
         cdm.setPeerRole(SerialIdentifier::OUTPUT_JACK, true);   // same-role hunter on opponent jack
     }
 
-    // Drive the real RDC's 1Hz stability counter to >=2 so isRosterStable()
+    // Drive the real RDC's 1Hz stability counter to >=2 so isTopologyStable()
     // returns true. Tests that exercise onConfirmReceived need this: the
     // stability gate drops confirms while the counter is still settling.
     void primeRosterStable() {
@@ -123,7 +123,7 @@ public:
 };
 
 // Stubs the three roster-query methods ChainManager derives game state from
-// (getChainMembers / isInLoop / isRosterStable), so a test can shape topology
+// (getChainMembers / isInLoop / isTopologyStable), so a test can shape topology
 // directly instead of driving the real PROBE/ADD machinery. Used by the
 // coord-election tests and the loop-gated canInitiateMatch test.
 class FakeRosterRDC : public RemoteDeviceCoordinator {
@@ -875,9 +875,11 @@ inline void chainDuelThreeDeviceConfirm(ChainManagerTests* suite) {
     EXPECT_EQ(memcmp(confirmTarget.data(), macA, 6), 0);  // direct to A
     EXPECT_EQ(memcmp(confirmPayload.originatorMac, suite->localMac, 6), 0);
 
-    // Leg 4: Champion A receives and records. Without daisy-membership
-    // gating, the distant supporter's confirm is accepted directly by the
-    // champion (the confirm is unicast over ESP-NOW keyed by championMac).
+    // Leg 4: Champion A enforces topology-membership integrity. A confirm whose
+    // originator is neither A's direct supporter-jack peer nor a member of A's
+    // connected component is dropped, so a device holding a stale championMac_
+    // (after a reshuffle) can't inflate boost. A confirm from A's real direct
+    // supporter peer is accepted.
     uint8_t distantMac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
 
     WirelessTransport aTransport(suite->device.wirelessManager);
@@ -887,7 +889,12 @@ inline void chainDuelThreeDeviceConfirm(ChainManagerTests* suite) {
     a.setPeerRole(SerialIdentifier::INPUT_JACK, true);
     ASSERT_TRUE(a.isChampion());
 
+    // Non-member, non-peer originator: dropped, boost unchanged.
     a.onConfirmReceived(suite->supporterMac, distantMac, confirmPayload.seqId);
+    EXPECT_EQ(a.getBoostMs(), 0u);
+
+    // A's real direct supporter-jack peer (supporterMac on INPUT): accepted.
+    a.onConfirmReceived(suite->supporterMac, suite->supporterMac, confirmPayload.seqId);
     EXPECT_EQ(a.getBoostMs(), 15u);
 }
 
@@ -1319,9 +1326,14 @@ inline void cdmOneSecondMinStabilityGuard(ChainManagerTests* suite) {
 // onConfirmReceived's stability gate only applies in loop topologies, where
 // partial bracket assembly mid-convergence would be unsafe. Linear chains
 // skip the gate so a 2-device same-role pair can form a posse immediately
-// without waiting for the 2-cycle isRosterStable window.
+// without waiting for the 2-cycle isTopologyStable window.
 inline void cdmConfirmDroppedWhenRosterUnstable(ChainManagerTests* suite) {
     FakeRosterRDC fakeRdc;
+    // The confirming device is a member of our ring; topology-membership
+    // integrity (see onConfirmReceived) requires it before the stability gate
+    // is even reached.
+    net::Mac supMember; std::copy_n(suite->supporterMac, 6, supMember.begin());
+    fakeRdc.members.push_back(supMember);
     WirelessTransport transport(suite->device.wirelessManager);
     ChainManager cdm(&suite->player, suite->device.wirelessManager, &fakeRdc);
     cdm.initialize(&transport);

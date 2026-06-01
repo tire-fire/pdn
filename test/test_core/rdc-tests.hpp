@@ -127,6 +127,26 @@ inline void rdcSilentLinkClearsPeerAfterThreshold(RDCTests* suite) {
     EXPECT_EQ(suite->rdc.getPortStatus(SerialIdentifier::OUTPUT_JACK), PortStatus::DISCONNECTED);
 }
 
+// A peer that silent-dies must release its ESP-NOW slot. The 20-slot table is
+// finite; without this every distinct neighbour that drops leaks a slot until
+// new peers are rejected and matches silently fail.
+inline void rdcSilentLinkReleasesEspNowPeerSlot(RDCTests* suite) {
+    suite->rdc.setJackDeadSilentLinkMsForTest(30);
+    uint8_t peer[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    suite->deliverHello(SerialIdentifier::OUTPUT_JACK, peer);
+    suite->rdc.sync(&suite->device);
+    ASSERT_NE(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), nullptr);
+
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                removeEspNowPeer(::testing::Truly([&](const uint8_t* m) {
+                    return m != nullptr && memcmp(m, peer, 6) == 0;
+                }))).Times(1);
+
+    // No further HELLO; silent-link fires declareJackDead on the next sync.
+    suite->fakeClock->advance(40);
+    suite->rdc.sync(&suite->device);
+}
+
 inline void rdcSilentLinkSurvivesRefreshWithinWindow(RDCTests* suite) {
     // 100ms mirrors the production kHelloSilentLinkMs. Each HELLO inside the
     // window resets the liveness baseline, so a peer that keeps emitting never

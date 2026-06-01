@@ -1218,6 +1218,7 @@ TEST_F(RDCTests, defaultStateIsDisconnected) { rdcDefaultStateIsDisconnected(thi
 TEST_F(RDCTests, helloSetsMacPeerAndConnected) { rdcHelloSetsMacPeerAndConnected(this); }
 TEST_F(RDCTests, helloFromSelfRejected) { rdcHelloFromSelfRejected(this); }
 TEST_F(RDCTests, silentLinkClearsPeerAfterThreshold) { rdcSilentLinkClearsPeerAfterThreshold(this); }
+TEST_F(RDCTests, silentLinkReleasesEspNowPeerSlot) { rdcSilentLinkReleasesEspNowPeerSlot(this); }
 TEST_F(RDCTests, silentLinkSurvivesRefreshWithinWindow) { rdcSilentLinkSurvivesRefreshWithinWindow(this); }
 TEST_F(RDCTests, silentLinkFiresDisconnectCallback) { rdcSilentLinkFiresDisconnectCallback(this); }
 TEST_F(RDCTests, connectFiresConnectCallback) { rdcConnectFiresConnectCallback(this); }
@@ -1373,7 +1374,7 @@ TEST_F(ChainMultiDeviceFixture, confirmDeliveredToChampion) {
     cdmMultiDeviceConfirmDeliveredToChampion(this);
 }
 
-// Ring/loop detection flows through RDC::isInLoop() + isRosterStable(), so
+// Ring/loop detection flows through RDC::isInLoop() + isTopologyStable(), so
 // these tests advance the clock via primeRosterStableAll() rather than driving
 // connect-edge events.
 TEST_F(ChainMultiDeviceFixture, shootoutFourDeviceFullTournament) {

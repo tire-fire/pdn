@@ -208,7 +208,7 @@ public:
     // since shootout tests run inside a ring.
     bool isInStableLoop() const override { return inStableLoop_; }
     void setInStableLoop(bool v) { inStableLoop_ = v; }
-    bool isRosterStable() const override { return rosterStable_; }
+    bool isTopologyStable() const override { return rosterStable_; }
     void setRosterStable(bool v) { rosterStable_ = v; }
 private:
     bool isCoordinator_ = true;

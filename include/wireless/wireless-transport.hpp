@@ -24,17 +24,21 @@ public:
     // if another channel has already claimed this (PktType, subType).
     template <class P>
     ReliableChannel<P>* channel(PktType type,
-                                ReliableChannelBase::OnAbandon onAbandon) {
-        return channelImpl<P, void>(type, 0, std::move(onAbandon));
+                                ReliableChannelBase::OnAbandon onAbandon,
+                                Resender::SendMode sendMode =
+                                    Resender::SendMode::SupersedePerTarget) {
+        return channelImpl<P, void>(type, 0, std::move(onAbandon), sendMode);
     }
 
     // Construct a channel for (PktType, subType). Sub may be an enum class
     // (e.g., ShootoutCmd); its underlying uint8_t value is the subType.
     template <class P, class Sub>
     ReliableChannel<P, Sub>* channel(PktType type, Sub subType,
-                                     ReliableChannelBase::OnAbandon onAbandon) {
+                                     ReliableChannelBase::OnAbandon onAbandon,
+                                     Resender::SendMode sendMode =
+                                         Resender::SendMode::SupersedePerTarget) {
         return channelImpl<P, Sub>(type, static_cast<uint8_t>(subType),
-                                   std::move(onAbandon));
+                                   std::move(onAbandon), sendMode);
     }
 
     // Routes the inbound AckPayload to the owning channel, if any.
@@ -60,10 +64,11 @@ private:
 
     template <class P, class Sub>
     ReliableChannel<P, Sub>* channelImpl(PktType type, uint8_t subType,
-                                         ReliableChannelBase::OnAbandon onAbandon) {
+                                         ReliableChannelBase::OnAbandon onAbandon,
+                                         Resender::SendMode sendMode) {
         Key k = makeKey(type, subType);
         auto channel = std::make_unique<ReliableChannel<P, Sub>>(
-            this, &resender_, type, subType, std::move(onAbandon));
+            this, &resender_, type, subType, std::move(onAbandon), sendMode);
         auto* raw = channel.get();
         auto [it, inserted] = registry_.emplace(k, std::move(channel));
         if (!inserted) {

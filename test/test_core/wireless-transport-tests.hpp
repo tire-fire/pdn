@@ -216,6 +216,88 @@ TEST(WirelessTransportTest, ackRoutesByChannelSubType) {
     ASSERT_TRUE(chB->isPending(target));
 }
 
+TEST(ResenderTest, distinctSeqIdsToSameTargetCoexist) {
+    // A batch of distinct reliable packets to one peer on one channel (e.g. one
+    // BRACKET_ENTRY per bracket slot) must each retain an independent retry
+    // slot. The old (type, subType, target) replacement rule kept only the last,
+    // so a dropped non-final slot was never retransmitted.
+    Resender resender(nullptr);  // null wm: transmit() no-ops, retry bookkeeping intact
+    uint8_t target[6] = {1,2,3,4,5,6};
+    uint8_t payload[4] = {0};
+    const auto kStream = Resender::SendMode::KeepDistinct;
+    for (uint8_t seq = 1; seq <= 3; ++seq) {
+        resender.send(target, PktType::kShootoutCommand, uint8_t{0}, seq,
+                      payload, sizeof(payload), kStream);
+    }
+    EXPECT_EQ(resender.pendingCount(PktType::kShootoutCommand, uint8_t{0}), 3u);
+
+    // Acking the middle seqId clears only that slot.
+    EXPECT_TRUE(resender.onAck(PktType::kShootoutCommand, uint8_t{0}, 2, target));
+    EXPECT_EQ(resender.pendingCount(PktType::kShootoutCommand, uint8_t{0}), 2u);
+
+    // A genuine re-send of an existing seqId replaces rather than duplicates.
+    resender.send(target, PktType::kShootoutCommand, uint8_t{0}, 1,
+                  payload, sizeof(payload), kStream);
+    EXPECT_EQ(resender.pendingCount(PktType::kShootoutCommand, uint8_t{0}), 2u);
+
+    // cancel() drops every remaining slot to the target on that channel.
+    resender.cancel(PktType::kShootoutCommand, uint8_t{0}, target);
+    EXPECT_EQ(resender.pendingCount(PktType::kShootoutCommand, uint8_t{0}), 0u);
+}
+
+TEST(WirelessTransportTest, droppedNonFinalSlotStillRetransmits) {
+    // End-to-end: a coordinator sends three distinct reliable packets to one
+    // peer on one channel, the peer acks the later two but the first is lost.
+    // The first must remain armed and ultimately abandon — under the old
+    // one-slot rule the later sends clobbered it, so it silently vanished.
+    ::testing::NiceMock<MockPeerComms> mockComms;
+    WirelessManager wm(&mockComms, nullptr);
+    WirelessTransport transport(&wm);
+
+    int abandonCount = 0;
+    uint8_t abandonedSeqId = 0;
+    auto* ch = transport.channel<TransportTestPayload>(
+        PktType::kShootoutCommand,
+        [&](uint8_t seqId, const uint8_t*){
+            abandonCount++;
+            abandonedSeqId = seqId;
+        },
+        Resender::SendMode::KeepDistinct);  // stream channel, like BRACKET_ENTRY
+
+    using ::testing::_;
+    using ::testing::Return;
+    EXPECT_CALL(mockComms, sendData(_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(Return(1));
+
+    uint8_t target[6] = {1,2,3,4,5,6};
+    TransportTestPayload p{};
+    uint8_t s1 = ch->sendReliable(target, p);  // this one will be "lost"
+    uint8_t s2 = ch->sendReliable(target, p);
+    uint8_t s3 = ch->sendReliable(target, p);
+    ASSERT_NE(s1, s2);
+    ASSERT_NE(s2, s3);
+
+    // Peer acks the two later slots; s1 stays pending.
+    for (uint8_t seq : {s2, s3}) {
+        AckPayload ack{ static_cast<uint8_t>(PktType::kShootoutCommand), 0, seq };
+        transport.onAckPacket(target, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+    }
+    ASSERT_TRUE(ch->isPending(target));  // s1 survived the later sends
+
+    FakePlatformClock clock;
+    SimpleTimer::setPlatformClock(&clock);
+    for (int i = 0; i < 8; ++i) {
+        clock.advance(1000);
+        transport.sync();
+    }
+    SimpleTimer::setPlatformClock(nullptr);
+
+    EXPECT_EQ(abandonCount, 1);
+    EXPECT_EQ(abandonedSeqId, s1);
+    EXPECT_FALSE(ch->isPending(target));
+}
+
 TEST(WireFormatTest, shootoutConfirmPayloadSize) {
     static_assert(sizeof(ShootoutConfirmPayload) == 2 + 6 + kNameLength,
                   "ShootoutConfirmPayload layout drift");

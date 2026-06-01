@@ -33,7 +33,7 @@ class HWSerialWrapper {
     // implementation tracks consecutive-sample state internally; callers can
     // poll once per sync tick without smoothing on their end. Used by RDC as
     // a parallel fast-detection path complementing the protocol-level
-    // silent-link/PROBE-mismatch jack-dead triggers. Native test stubs return
+    // silent-link (HELLO-gap) jack-dead trigger. Native test stubs return
     // false (no physical cable).
     virtual bool isCableDisconnected() = 0;
 };

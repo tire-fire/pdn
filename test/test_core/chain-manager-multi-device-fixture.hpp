@@ -278,7 +278,7 @@ public:
     }
 
     // Drive every node's RDC stability counter to >=2 so consumers gated on
-    // isRosterStable() (the confirm gate, buildLoopMemberSet) accept work.
+    // isTopologyStable() (the confirm gate, buildLoopMemberSet) accept work.
     // Cycles must outlast any pending BULK debounce (300ms after
     // EXCHANGE_ID success): a BULK firing mid-prime mutates the receiver's
     // roster and resets stableCycles_. Eight 1.1s ticks bracket both the BULK
@@ -661,7 +661,7 @@ inline void shootoutFourDeviceConsensusAndMatchStart(ChainMultiDeviceFixture* su
     suite->syncAll();
     suite->deliverAllPackets();
     suite->closeRing();
-    // Let the chain roster converge so isInLoop() + isRosterStable() agree,
+    // Let the chain roster converge so isInLoop() + isTopologyStable() agree,
     // and the 1Hz coord-derivation cycle fires the claim.
     suite->primeRosterStableAll();
 
@@ -947,7 +947,7 @@ inline void cdmHunterRingClaimsExactlyOneCoordinator(ChainMultiDeviceFixture* su
     suite->deliverAllPackets();
     suite->closeRing();
 
-    // Drive roster propagation across all jack pairs and let isRosterStable
+    // Drive roster propagation across all jack pairs and let isTopologyStable
     // converge (>=2 cycles with the same chain-member snapshot). The coord
     // derivation runs at 1Hz; primeRosterStableAll's 8x1.1s ticks cover both
     // BULK debounce (300ms post-connect), the 2-cycle stability window, and
@@ -995,7 +995,7 @@ inline void cdmMixedRoleRingClaimsCoordinator(ChainMultiDeviceFixture* suite) {
 
     suite->closeRing();
 
-    // Drive roster propagation across all jacks and let isRosterStable
+    // Drive roster propagation across all jacks and let isTopologyStable
     // converge. Coord derivation runs at 1Hz once stable.
     suite->primeRosterStableAll();
 

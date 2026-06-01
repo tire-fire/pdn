@@ -15,12 +15,30 @@ void Resender::sendAck(WirelessManager* wm, const uint8_t* toMac,
 }
 
 void Resender::send(const uint8_t* target, PktType type, uint8_t subType,
-                    uint8_t seqId, const uint8_t* payload, size_t len) {
+                    uint8_t seqId, const uint8_t* payload, size_t len,
+                    SendMode mode) {
     if (target == nullptr) return;
 
-    auto it = findPending(type, subType, target);
-    if (it != pending_.end()) {
-        pending_.erase(it);
+    if (mode == SendMode::SupersedePerTarget) {
+        // State channel: a newer send obsoletes any prior unacked one to this
+        // peer, so drop every prior entry regardless of seqId. Keeping a stale
+        // one armed risks an old retransmit landing after the new state.
+        for (auto it = pending_.begin(); it != pending_.end();) {
+            if (it->type == type && it->subType == subType &&
+                memcmp(it->target.data(), target, 6) == 0) {
+                it = pending_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    } else {
+        // Stream channel: distinct seqIds to the same peer coexist, so a batch
+        // of reliable sends (e.g. one BRACKET_ENTRY per bracket slot) each keep
+        // their own retry slot. Only a true resend of the same seqId replaces.
+        auto it = findPending(type, subType, seqId, target);
+        if (it != pending_.end()) {
+            pending_.erase(it);
+        }
     }
 
     Pending p;
@@ -65,8 +83,16 @@ bool Resender::onAck(PktType type, uint8_t subType, uint8_t seqId,
 
 void Resender::cancel(PktType type, uint8_t subType, const uint8_t* target) {
     if (target == nullptr) return;
-    auto it = findPending(type, subType, target);
-    if (it != pending_.end()) pending_.erase(it);
+    // Peer is done or known-unreachable: drop EVERY pending entry to it on this
+    // channel, across all seqIds. Silent — no abandon callback.
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        if (it->type == type && it->subType == subType &&
+            memcmp(it->target.data(), target, 6) == 0) {
+            it = pending_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void Resender::sync() {
@@ -108,10 +134,11 @@ void Resender::sync() {
 }
 
 std::vector<Resender::Pending>::iterator Resender::findPending(
-    PktType type, uint8_t subType, const uint8_t* target) {
+    PktType type, uint8_t subType, uint8_t seqId, const uint8_t* target) {
     for (auto it = pending_.begin(); it != pending_.end(); ++it) {
         if (it->type != type) continue;
         if (it->subType != subType) continue;
+        if (it->seqId != seqId) continue;
         if (memcmp(it->target.data(), target, 6) != 0) continue;
         return it;
     }

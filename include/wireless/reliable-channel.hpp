@@ -18,7 +18,9 @@ public:
                         Resender* resender,
                         PktType type,
                         uint8_t subType,
-                        OnAbandon onAbandon);
+                        OnAbandon onAbandon,
+                        Resender::SendMode sendMode =
+                            Resender::SendMode::SupersedePerTarget);
     virtual ~ReliableChannelBase() = default;
 
     PktType type() const { return type_; }
@@ -40,11 +42,15 @@ protected:
     // WirelessTransport is complete.
     WirelessManager* getWirelessManager() const;
     void sendOnceBytes(const uint8_t* mac, const uint8_t* data, size_t len);
+    // Defined in the .cpp so the logger stays out of this template header.
+    static void logLengthMismatch(PktType type, uint8_t subType,
+                                  size_t got, size_t want);
 
     Resender* resender_;
     PktType type_;
     uint8_t subType_;
     WirelessTransport* transport_;
+    Resender::SendMode sendMode_;
 
 private:
     OnAbandon onAbandon_;
@@ -60,13 +66,16 @@ public:
                     Resender* resender,
                     PktType type,
                     uint8_t subType,
-                    OnAbandon onAbandon)
-        : ReliableChannelBase(transport, resender, type, subType, std::move(onAbandon)) {}
+                    OnAbandon onAbandon,
+                    Resender::SendMode sendMode =
+                        Resender::SendMode::SupersedePerTarget)
+        : ReliableChannelBase(transport, resender, type, subType,
+                              std::move(onAbandon), sendMode) {}
 
     uint8_t sendReliable(const uint8_t* mac, P p) {
         p.seqId = nextSeqId();
         resender_->send(mac, type_, subType_, p.seqId,
-                        reinterpret_cast<const uint8_t*>(&p), sizeof(P));
+                        reinterpret_cast<const uint8_t*>(&p), sizeof(P), sendMode_);
         return p.seqId;
     }
 
@@ -75,7 +84,13 @@ public:
     }
 
     bool deliver(const uint8_t* fromMac, const uint8_t* data, size_t len) {
-        if (len != sizeof(P)) return false;
+        if (len != sizeof(P)) {
+            // Drop without acking: a corrupt/truncated ESP-NOW frame (no CRC on
+            // this path) would otherwise be retransmitted to abandonment with no
+            // trace. Log so it's diagnosable rather than silent.
+            logLengthMismatch(type_, subType_, len, sizeof(P));
+            return false;
+        }
         P p;
         std::memcpy(&p, data, sizeof(P));
         Resender::sendAck(getWirelessManager(), fromMac, type_, subType_, p.seqId);

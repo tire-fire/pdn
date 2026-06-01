@@ -38,8 +38,12 @@ void ShootoutManager::initialize(WirelessTransport* transport) {
     };
     auto abandonNoop = [](uint8_t /*seqId*/, const uint8_t* /*mac*/) {};
 
+    // Stream channel: the bracket roster is split into one reliable packet per
+    // slot, all sent to the same peer. Each slot must keep its own retry entry,
+    // so a dropped non-final slot still retransmits instead of being superseded.
     bracketEntryChannel_ = transport_->channel<ShootoutBracketEntryPayload, ShootoutCmd>(
-        PktType::kShootoutCommand, ShootoutCmd::BRACKET_ENTRY, abandonToAbort);
+        PktType::kShootoutCommand, ShootoutCmd::BRACKET_ENTRY, abandonToAbort,
+        Resender::SendMode::KeepDistinct);
     bracketEntryChannel_->onReceive(
         [this](const uint8_t* fromMac, const ShootoutBracketEntryPayload& p) {
             onBracketEntryReceived(fromMac, p);
@@ -979,9 +983,9 @@ void ShootoutManager::onAbortReceived() {
 }
 
 std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const {
-    // Building a bracket from mid-convergence partial roster state produces
-    // inconsistent members across devices. Wait for two stable PROBE cycles
-    // before opening any derived state from the roster.
+    // Building a bracket from mid-convergence partial topology state produces
+    // inconsistent members across devices. Wait for the peer-graph topology to
+    // settle (isTopologyStable) before opening any derived state from it.
     if (rdc_ == nullptr || !rdc_->isTopologyStable()) return {};
     return rdc_->getChainMembers();
 }
