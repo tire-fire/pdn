@@ -1,13 +1,13 @@
 #include "game/quickdraw-states.hpp"
 #include "game/quickdraw-resources.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include "game/match-manager.hpp"
 #include "device/device.hpp"
 #include <cstdio>
 
-Win::Win(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager) : State(WIN) {
+Win::Win(Player *player, ChainManager* chainManager, MatchManager* matchManager) : State(WIN) {
     this->player = player;
-    this->chainDuelManager = chainDuelManager;
+    this->chainManager = chainManager;
     this->matchManager = matchManager;
 }
 
@@ -18,7 +18,7 @@ Win::~Win() {
 
 void Win::onStateMounted(Device *PDN) {
     // Propagate the outcome to the supporter chain (no-op for non-champion).
-    chainDuelManager->sendGameEventToSupporters(ChainGameEventType::WIN);
+    chainManager->sendGameEventToSupporters(ChainGameEventType::WIN);
 
     PDN->getHaptics()->setIntensity(VIBRATION_OFF);
 
@@ -37,7 +37,7 @@ void Win::onStateMounted(Device *PDN) {
             PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)
                 ->drawText(myLine, 2, 12);
             if (d.boostMs > 0) {
-                unsigned long boosts = d.boostMs / ChainDuelManager::BOOST_PER_SUPPORTER_MS;
+                unsigned long boosts = d.boostMs / ChainManager::BOOST_PER_SUPPORTER_MS;
                 snprintf(boostLine, sizeof(boostLine), "Boost: %lu", boosts);
                 PDN->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)
                     ->drawText(boostLine, 2, 28);

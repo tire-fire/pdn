@@ -25,6 +25,8 @@
 #include "wireless/quickdraw-wireless-manager.hpp"
 #include "wireless/symbol-wireless-manager.hpp"
 #include "wireless/peer-comms-types.hpp"
+#include "wireless/resender.hpp"
+#include "wireless/wireless-transport.hpp"
 #include "apps/player-registration/player-registration.hpp"
 
 // CLI components
@@ -67,6 +69,8 @@ inline const char* getStateName(int stateId) {
         case 25: return "ShootoutEliminated";
         case 26: return "ShootoutFinalStandings";
         case 27: return "ShootoutAborted";
+        case 28: return "Symbol";
+        case 29: return "SymbolMatched";
         default: return "Unknown";
     }
 }
@@ -99,6 +103,7 @@ struct DeviceInstance {
     Quickdraw* game = nullptr;
     QuickdrawWirelessManager* quickdrawWirelessManager = nullptr;
     SymbolWirelessManager* symbolWirelessManager = nullptr;
+    WirelessTransport* wirelessTransport = nullptr;
     
     // State history (circular buffer, most recent at back)
     std::deque<int> stateHistory;
@@ -197,17 +202,27 @@ public:
         instance.player->setAllegiance(Allegiance::RESISTANCE);  // Default allegiance
         
         // Create QuickdrawWirelessManager (required by game states even when mocking)
+        instance.wirelessTransport = new WirelessTransport(instance.pdn->getWirelessManager());
         instance.quickdrawWirelessManager = new QuickdrawWirelessManager();
-        instance.quickdrawWirelessManager->initialize(instance.player, instance.pdn->getWirelessManager(), 1000);
+        instance.quickdrawWirelessManager->initialize(instance.player, instance.pdn->getWirelessManager(), instance.wirelessTransport, 1000);
         
         // Register ESP-NOW packet handlers (similar to setupEspNow in main.cpp)
         // This is required for devices to actually receive and process ESP-NOW packets
         instance.pdn->getWirelessManager()->setEspNowPacketHandler(
             PktType::kQuickdrawCommand,
-            [](const uint8_t* src, const uint8_t* data, const size_t len, void* userArg) {
-                ((QuickdrawWirelessManager*)userArg)->processQuickdrawCommand(src, data, len);
+            [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+                static_cast<WirelessTransport*>(ctx)->deliverIncoming(
+                    PktType::kQuickdrawCommand, 0, src, data, len);
             },
-            instance.quickdrawWirelessManager
+            instance.wirelessTransport
+        );
+
+        instance.pdn->getWirelessManager()->setEspNowPacketHandler(
+            PktType::kAck,
+            [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+                static_cast<WirelessTransport*>(ctx)->onAckPacket(src, data, len);
+            },
+            instance.wirelessTransport
         );
 
         instance.symbolWirelessManager = new SymbolWirelessManager();
@@ -228,7 +243,8 @@ public:
             instance.pdn,
             instance.quickdrawWirelessManager,
             nullptr,
-            instance.symbolWirelessManager);
+            instance.symbolWirelessManager,
+            instance.wirelessTransport);
 
         // Register state machines with the device and launch Quickdraw
         AppConfig apps = {

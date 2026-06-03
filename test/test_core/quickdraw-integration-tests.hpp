@@ -21,17 +21,6 @@ using ::testing::SaveArg;
 using ::testing::NiceMock;
 using ::testing::DoAll;
 
-inline Peer makePeer(const uint8_t* mac, SerialIdentifier sid) {
-    Peer p;
-    std::copy(mac, mac + 6, p.macAddr.begin());
-    p.sid = sid;
-    return p;
-}
-
-// ============================================
-// Packet type alias — QuickdrawPacket is now defined in the header.
-// ============================================
-
 using TestQuickdrawPacket = QuickdrawPacket;
 
 // ============================================
@@ -45,7 +34,9 @@ inline TestQuickdrawPacket createTestPacket(
     long playerDrawTime = 0,
     bool isHunter = true
 ) {
-    TestQuickdrawPacket packet;
+    // Zero-init so seqId is 0 (fire-and-forget): these helpers model unreliable
+    // sends, and the channel dedups reliable (nonzero-seqId) packets per sender.
+    TestQuickdrawPacket packet{};
     strncpy(packet.matchId, matchId.c_str(), 36);
     packet.matchId[36] = '\0';
     strncpy(packet.playerId, playerId.c_str(), 4);
@@ -112,12 +103,12 @@ public:
         }
     }
 
-    void processPacket(const TestQuickdrawPacket& packet, 
+    void processPacket(const TestQuickdrawPacket& packet,
                       const uint8_t macAddr[6] = nullptr) {
         uint8_t defaultMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
         const uint8_t* mac = macAddr ? macAddr : defaultMac;
-        wirelessManager->processQuickdrawCommand(
-            mac,
+        transport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, mac,
             reinterpret_cast<const uint8_t*>(&packet),
             sizeof(packet)
         );
@@ -131,6 +122,7 @@ public:
     MatchManager* matchManager = nullptr;
     FakeQuickdrawWirelessManager* wirelessManager = nullptr;
     WirelessManager* deviceWirelessManager = nullptr;
+    WirelessTransport* transport = nullptr;
     FakeRemoteDeviceCoordinator fakeRdc;
     FakePlatformClock* fakeClock = nullptr;
 
@@ -150,9 +142,10 @@ private:
 
     void setupManagers() {
         deviceWirelessManager = new WirelessManager(&peerComms, &httpClient);
+        transport = new WirelessTransport(deviceWirelessManager);
         matchManager = new MatchManager();
         wirelessManager = new FakeQuickdrawWirelessManager();
-        wirelessManager->initialize(player, deviceWirelessManager, 100);
+        wirelessManager->initialize(player, deviceWirelessManager, transport, 100);
         matchManager->initialize(player, &storage, wirelessManager);
         // Stub the RDC with the opponent MAC this fixture uses so the
         // SEND_MATCH_ID gate in listenForMatchEvents passes for delivered packets.
@@ -177,6 +170,7 @@ private:
         matchManager->clearCurrentMatch();
         delete matchManager;
         delete wirelessManager;
+        delete transport;
         delete deviceWirelessManager;
     }
 
@@ -226,8 +220,9 @@ public:
         TestQuickdrawPacket packet = createTestPacketFromMatch(
             hunterMatchManager->getCurrentMatch(), command, true);
         uint8_t macAddr[6] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
-        bountyWirelessManager->processQuickdrawCommand(
-            macAddr, reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
+        bountyTransport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
         );
     }
 
@@ -235,8 +230,9 @@ public:
         TestQuickdrawPacket packet = createTestPacketFromMatch(
             bountyMatchManager->getCurrentMatch(), command, false);
         uint8_t macAddr[6] = {0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB};
-        hunterWirelessManager->processQuickdrawCommand(
-            macAddr, reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
+        hunterTransport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<uint8_t*>(&packet), sizeof(packet)
         );
     }
 
@@ -249,6 +245,8 @@ public:
     FakeQuickdrawWirelessManager* bountyWirelessManager = nullptr;
     WirelessManager* hunterDeviceWirelessManager = nullptr;
     WirelessManager* bountyDeviceWirelessManager = nullptr;
+    WirelessTransport* hunterTransport = nullptr;
+    WirelessTransport* bountyTransport = nullptr;
     MockPeerComms hunterPeerComms;
     MockPeerComms bountyPeerComms;
     MockHttpClient hunterHttpClient;
@@ -273,9 +271,10 @@ private:
         hunter->setIsHunter(true);
 
         hunterDeviceWirelessManager = new WirelessManager(&hunterPeerComms, &hunterHttpClient);
+        hunterTransport = new WirelessTransport(hunterDeviceWirelessManager);
         hunterMatchManager = new MatchManager();
         hunterWirelessManager = new FakeQuickdrawWirelessManager();
-        hunterWirelessManager->initialize(hunter, hunterDeviceWirelessManager, 100);
+        hunterWirelessManager->initialize(hunter, hunterDeviceWirelessManager, hunterTransport, 100);
         hunterMatchManager->initialize(hunter, &hunterStorage, hunterWirelessManager);
         hunterMatchManager->setRemoteDeviceCoordinator(&hunterFakeRdc);
     }
@@ -287,9 +286,10 @@ private:
         bounty->setIsHunter(false);
 
         bountyDeviceWirelessManager = new WirelessManager(&bountyPeerComms, &bountyHttpClient);
+        bountyTransport = new WirelessTransport(bountyDeviceWirelessManager);
         bountyMatchManager = new MatchManager();
         bountyWirelessManager = new FakeQuickdrawWirelessManager();
-        bountyWirelessManager->initialize(bounty, bountyDeviceWirelessManager, 100);
+        bountyWirelessManager->initialize(bounty, bountyDeviceWirelessManager, bountyTransport, 100);
         bountyMatchManager->initialize(bounty, &bountyStorage, bountyWirelessManager);
         bountyMatchManager->setRemoteDeviceCoordinator(&bountyFakeRdc);
     }
@@ -330,6 +330,7 @@ private:
     void cleanupHunter() {
         delete hunterMatchManager;
         delete hunterWirelessManager;
+        delete hunterTransport;
         delete hunterDeviceWirelessManager;
         delete hunter;
     }
@@ -337,6 +338,7 @@ private:
     void cleanupBounty() {
         delete bountyMatchManager;
         delete bountyWirelessManager;
+        delete bountyTransport;
         delete bountyDeviceWirelessManager;
         delete bounty;
     }
@@ -398,11 +400,41 @@ inline void packetParsingRejectsMalformedPacket(PacketParsingTests* suite) {
     // Send a packet that's too small
     uint8_t smallPacket[10] = {0};
     uint8_t macAddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    
-    suite->wirelessManager->processQuickdrawCommand(macAddr, smallPacket, sizeof(smallPacket));
-    
+
+    // The channel's deliver() drops a length-mismatched frame without acking
+    // or dispatching, so the callback must not fire.
+    suite->transport->deliverIncoming(
+        PktType::kQuickdrawCommand, 0, macAddr, smallPacket, sizeof(smallPacket));
+
     // Should not invoke callback for malformed packet
     EXPECT_FALSE(callbackInvoked);
+}
+
+// A reliable packet (nonzero seqId) resent after a lost ack must be dispatched
+// exactly once: the channel dedups per sender. A later packet with a fresh
+// seqId is a new command and must dispatch again.
+inline void packetParsingDedupsResentReliablePacket(PacketParsingTests* suite) {
+    int dispatches = 0;
+    suite->wirelessManager->setPacketReceivedCallback(
+        [&](const QuickdrawCommand&) { ++dispatches; });
+
+    uint8_t macAddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    TestQuickdrawPacket packet = suite->createPacket(QDCommand::DRAW_RESULT, 0, 250);
+    packet.seqId = 7;
+
+    auto deliver = [&](const TestQuickdrawPacket& p) {
+        suite->transport->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, macAddr,
+            reinterpret_cast<const uint8_t*>(&p), sizeof(p));
+    };
+
+    deliver(packet);            // first arrival
+    deliver(packet);            // lost-ack retransmit, same seqId
+    EXPECT_EQ(dispatches, 1);
+
+    packet.seqId = 8;           // next command from same sender
+    deliver(packet);
+    EXPECT_EQ(dispatches, 2);
 }
 
 inline void listenForMatchResultsSetsOpponentTimeHunter(PacketParsingTests* suite) {
@@ -436,22 +468,40 @@ inline void listenForMatchResultsHandlesNeverPressed(PacketParsingTests* suite) 
     suite->wirelessManager->setPacketReceivedCallback(
         std::bind(&MatchManager::listenForMatchEvents, suite->matchManager, std::placeholders::_1)
     );
-    
+
+    // We pressed, but slower than the opponent's recorded time. The opponent
+    // then reports NEVER_PRESSED. didWin must still be true: a timed-out opponent
+    // loses regardless of times — the pressed=false branch short-circuits the
+    // time comparison. This is what distinguishes NEVER_PRESSED from DRAW_RESULT.
+    suite->matchManager->setHunterDrawTime(50000);
+    suite->matchManager->setReceivedButtonPush();
+
     TestQuickdrawPacket packet = suite->createPacket(QDCommand::NEVER_PRESSED, 0, 9999);
     suite->processPacket(packet);
-    
+
     EXPECT_TRUE(suite->matchManager->getHasReceivedDrawResult());
     EXPECT_EQ(suite->matchManager->getCurrentMatch()->getBountyDrawTime(), 9999);
+    EXPECT_TRUE(suite->matchManager->matchResultsAreIn());
+    EXPECT_TRUE(suite->matchManager->didWin())
+        << "opponent NEVER_PRESSED => win even though our 50000ms > their 9999ms";
 }
 
 inline void listenForMatchResultsIgnoresUnexpectedCommands(PacketParsingTests* suite) {
-    static const char kMatchId[37] = "000000000000000000000000000000000000";
+    // A SEND_MATCH_ID from a MAC that isn't our RDC peer must be ignored: it must
+    // neither register a draw result nor hijack the already-active match.
+    const std::string originalMatchId = suite->matchManager->getCurrentMatch()->getMatchId();
+    static const char kStrangerMatchId[37] = "000000000000000000000000000000000000";
+    ASSERT_NE(originalMatchId, kStrangerMatchId);
+
     uint8_t strangerMac[6] = {0x99, 0x99, 0x99, 0x99, 0x99, 0x99};
-    QuickdrawCommand cmd(strangerMac, QDCommand::SEND_MATCH_ID, kMatchId, "test", 0, true);
-    
+    QuickdrawCommand cmd(strangerMac, QDCommand::SEND_MATCH_ID, kStrangerMatchId, "test", 0, true);
+
     suite->matchManager->listenForMatchEvents(cmd);
-    
+
     EXPECT_FALSE(suite->matchManager->getHasReceivedDrawResult());
+    ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value());
+    EXPECT_EQ(suite->matchManager->getCurrentMatch()->getMatchId(), originalMatchId)
+        << "stranger SEND_MATCH_ID must not replace the active match";
 }
 
 // ============================================
@@ -528,11 +578,11 @@ class StateFlowIntegrationTests : public SingleDeviceTestFixture {
 public:
     void SetUp() override {
         SingleDeviceTestFixture::SetUp();
-        chainDuelManager = new ChainDuelManager(player, deviceWirelessManager, &device.fakeRemoteDeviceCoordinator);
+        chainManager = new ChainManager(player, deviceWirelessManager, &device.fakeRemoteDeviceCoordinator);
     }
 
     void TearDown() override {
-        delete chainDuelManager;
+        delete chainManager;
         SingleDeviceTestFixture::TearDown();
     }
 
@@ -547,7 +597,7 @@ public:
     }
 
     MockDevice device;
-    ChainDuelManager* chainDuelManager = nullptr;
+    ChainManager* chainManager = nullptr;
 };
 
 inline void stateFlowDutPressesFirstWins(StateFlowIntegrationTests* suite) {
@@ -555,7 +605,7 @@ inline void stateFlowDutPressesFirstWins(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     suite->fakeClock->advance(150);
@@ -587,7 +637,7 @@ inline void stateFlowDutReceivesFirstLoses(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(2);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     suite->wirelessManager->setPacketReceivedCallback(
@@ -613,12 +663,54 @@ inline void stateFlowDutReceivesFirstLoses(StateFlowIntegrationTests* suite) {
     EXPECT_FALSE(suite->matchManager->didWin());
 }
 
+// Regression: a press landing the same iteration the button-push grace expires
+// must count, not be reported as NEVER_PRESSED. execDrivers() runs the button
+// handler before onStateLoop, so my side is already resolved (pressed) when the
+// timer expires at one onStateLoop visit. sendNeverPressed must no-op there
+// rather than resolve my side as a timeout and lose a duel the player won.
+inline void stateFlowPressAtGraceExpiryStillCounts(StateFlowIntegrationTests* suite) {
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(2);
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(2);
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
+    duelState.onStateMounted(&suite->device);
+
+    suite->wirelessManager->setPacketReceivedCallback(
+        std::bind(&MatchManager::listenForMatchEvents, suite->matchManager, std::placeholders::_1)
+    );
+
+    // Opponent (bounty) drew very slowly, so a press of any in-window time wins.
+    TestQuickdrawPacket packet = suite->createPacket(QDCommand::DRAW_RESULT, 0, 9000);
+    suite->processPacket(packet);
+
+    duelState.onStateLoop(&suite->device);
+    ASSERT_TRUE(duelState.transitionToDuelReceivedResult());
+
+    DuelReceivedResult receivedState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator);
+    receivedState.onStateMounted(&suite->device);
+
+    // Advance past the grace window, then press, then run the loop — all without
+    // a transition check between, exactly the same-iteration firmware ordering.
+    suite->fakeClock->advance(800);  // past the 750ms button-push grace window
+    suite->matchManager->getDuelButtonPush()(suite->matchManager);
+    receivedState.onStateLoop(&suite->device);
+
+    // The press must win, and no NEVER_PRESSED may have been broadcast.
+    EXPECT_TRUE(suite->matchManager->matchResultsAreIn());
+    EXPECT_TRUE(suite->matchManager->didWin());
+    for (const auto& cmd : suite->wirelessManager->sentCommands) {
+        EXPECT_NE(cmd.command, QDCommand::NEVER_PRESSED)
+            << "NEVER_PRESSED broadcast despite a registered press";
+    }
+}
+
 inline void stateFlowDutNeverPressesLoses(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     suite->wirelessManager->setPacketReceivedCallback(
@@ -642,7 +734,7 @@ inline void stateFlowOpponentNeverRespondsWins(StateFlowIntegrationTests* suite)
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     // DUT presses quickly
@@ -666,7 +758,7 @@ inline void stateFlowThroughDuelResultToWin(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     suite->fakeClock->advance(100);
@@ -697,7 +789,7 @@ inline void stateFlowThroughDuelResultToLose(StateFlowIntegrationTests* suite) {
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
 
-    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainDuelManager, nullptr);
+    Duel duelState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator, suite->chainManager, nullptr);
     duelState.onStateMounted(&suite->device);
     
     suite->fakeClock->advance(300);
@@ -721,14 +813,6 @@ inline void stateFlowThroughDuelResultToLose(StateFlowIntegrationTests* suite) {
     
     EXPECT_FALSE(resultState.transitionToWin());
     EXPECT_TRUE(resultState.transitionToLose());
-}
-
-inline void stateFlowDuelToWin(StateFlowIntegrationTests* suite) {
-    stateFlowThroughDuelResultToWin(suite);
-}
-
-inline void stateFlowDuelToLose(StateFlowIntegrationTests* suite) {
-    stateFlowThroughDuelResultToLose(suite);
 }
 
 // ============================================
@@ -803,199 +887,4 @@ inline void twoDeviceCloseRaceCorrectWinner(TwoDeviceSimulationTests* suite) {
     // Hunter wins by 1ms
     EXPECT_TRUE(suite->hunterMatchManager->didWin());
     EXPECT_FALSE(suite->bountyMatchManager->didWin());
-}
-
-// ============================================
-// Handshake Wireless Manager Integration Tests
-// ============================================
-
-// Fixture: Two HandshakeWirelessManagers backed by the same NativePeerBroker,
-// simulating an output (OUTPUT_JACK) device and an input (INPUT_JACK) device.
-class HandshakeIntegrationTests : public testing::Test {
-public:
-    struct RawHSPacket { int sendingJack; int receivingJack; int command; } __attribute__((packed));
-
-    void SetUp() override {
-        ON_CALL(outputPeerComms, sendData(_, _, _, _))
-            .WillByDefault(Invoke([this](const uint8_t*, PktType, const uint8_t* data, size_t len) {
-                inputHWM.processHandshakeCommand(outputMac, data, len);
-                return 1;
-            }));
-        ON_CALL(inputPeerComms, sendData(_, _, _, _))
-            .WillByDefault(Invoke([this](const uint8_t*, PktType, const uint8_t* data, size_t len) {
-                outputHWM.processHandshakeCommand(inputMac, data, len);
-                return 1;
-            }));
-
-        outputWirelessManager = new WirelessManager(&outputPeerComms, &outputHttpClient);
-        inputWirelessManager  = new WirelessManager(&inputPeerComms,  &inputHttpClient);
-
-        outputHWM.initialize(outputWirelessManager);
-        inputHWM.initialize(inputWirelessManager);
-    }
-
-    void TearDown() override {
-        delete outputWirelessManager;
-        delete inputWirelessManager;
-    }
-
-    // Deliver a raw packet directly to a manager (bypasses sendData, for malformed-packet tests)
-    void deliverRawToInput(const uint8_t* data, size_t len) {
-        inputHWM.processHandshakeCommand(outputMac, data, len);
-    }
-
-    NiceMock<MockPeerComms> outputPeerComms;
-    NiceMock<MockPeerComms> inputPeerComms;
-    MockHttpClient outputHttpClient;
-    MockHttpClient inputHttpClient;
-
-    WirelessManager* outputWirelessManager = nullptr;
-    WirelessManager* inputWirelessManager  = nullptr;
-
-    HandshakeWirelessManager outputHWM;
-    HandshakeWirelessManager inputHWM;
-
-    uint8_t outputMac[6] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
-    uint8_t inputMac[6]  = {0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB};
-};
-
-// Test: EXCHANGE_ID sent by output (OUTPUT) is routed to the input INPUT callback
-inline void handshakeCompleteBountyPerspective(HandshakeIntegrationTests* suite) {
-    HandshakeCommand receivedCmd(nullptr, -1, 0, SerialIdentifier::OUTPUT_JACK, SerialIdentifier::INPUT_JACK);
-    bool callbackFired = false;
-
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        receivedCmd = cmd;
-        callbackFired = true;
-    }, SerialIdentifier::INPUT_JACK);
-
-    suite->outputHWM.setMacPeer(SerialIdentifier::OUTPUT_JACK, makePeer(suite->inputMac, SerialIdentifier::INPUT_JACK));
-    suite->outputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::OUTPUT_JACK);
-
-    EXPECT_TRUE(callbackFired);
-    EXPECT_EQ(receivedCmd.command, HSCommand::EXCHANGE_ID);
-    EXPECT_EQ(receivedCmd.receivingJack, SerialIdentifier::INPUT_JACK);
-}
-
-// Test: EXCHANGE_ID sent by input (INPUT) is routed to the output OUTPUT callback
-inline void handshakeCompleteHunterPerspective(HandshakeIntegrationTests* suite) {
-    HandshakeCommand receivedCmd(nullptr, -1, 0, SerialIdentifier::INPUT_JACK, SerialIdentifier::OUTPUT_JACK);
-    bool callbackFired = false;
-
-    suite->outputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        receivedCmd = cmd;
-        callbackFired = true;
-    }, SerialIdentifier::OUTPUT_JACK);
-
-    suite->inputHWM.setMacPeer(SerialIdentifier::INPUT_JACK, makePeer(suite->outputMac, SerialIdentifier::OUTPUT_JACK));
-    suite->inputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::INPUT_JACK);
-
-    EXPECT_TRUE(callbackFired);
-    EXPECT_EQ(receivedCmd.command, HSCommand::EXCHANGE_ID);
-    EXPECT_EQ(receivedCmd.receivingJack, SerialIdentifier::OUTPUT_JACK);
-}
-
-// Test: Full 4-step symmetric handshake protocol
-inline void handshakeTwoDeviceFullFlow(HandshakeIntegrationTests* suite) {
-    std::vector<HandshakeCommand> outputReceived;
-    std::vector<HandshakeCommand> inputReceived;
-
-    suite->outputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        outputReceived.push_back(cmd);
-    }, SerialIdentifier::OUTPUT_JACK);
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        inputReceived.push_back(cmd);
-    }, SerialIdentifier::INPUT_JACK);
-
-    // Step 1: output → input: EXCHANGE_ID
-    suite->outputHWM.setMacPeer(SerialIdentifier::OUTPUT_JACK, makePeer(suite->inputMac, SerialIdentifier::INPUT_JACK));
-    suite->outputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::OUTPUT_JACK);
-
-    // Step 2: input → output: EXCHANGE_ID reply
-    suite->inputHWM.setMacPeer(SerialIdentifier::INPUT_JACK, makePeer(suite->outputMac, SerialIdentifier::OUTPUT_JACK));
-    suite->inputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::INPUT_JACK);
-
-    // Step 3: output → input: final EXCHANGE_ID ack
-    suite->outputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::OUTPUT_JACK);
-
-    EXPECT_EQ(outputReceived.size(), 1u);  // step 2
-    EXPECT_EQ(inputReceived.size(), 2u);   // steps 1 and 3
-}
-
-// Test: Incomplete handshake (only step 1) leaves system stable
-inline void handshakeTimeoutBeforeCompletion(HandshakeIntegrationTests* suite) {
-    bool inputCallbackFired = false;
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand) {
-        inputCallbackFired = true;
-    }, SerialIdentifier::INPUT_JACK);
-
-    suite->outputHWM.setMacPeer(SerialIdentifier::OUTPUT_JACK, makePeer(suite->inputMac, SerialIdentifier::INPUT_JACK));
-    suite->outputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::OUTPUT_JACK);
-
-    EXPECT_TRUE(inputCallbackFired);
-    // Input received the packet; output is still waiting — no crash.
-}
-
-// Test: Malformed packet (wrong size) is rejected
-inline void handshakeRejectsInvalidPacketData(HandshakeIntegrationTests* suite) {
-    bool callbackFired = false;
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand) {
-        callbackFired = true;
-    }, SerialIdentifier::INPUT_JACK);
-
-    uint8_t badPacket[3] = {0x01, 0x02, 0x03};
-    suite->deliverRawToInput(badPacket, sizeof(badPacket));
-
-    EXPECT_FALSE(callbackFired);
-}
-
-// Test: Out-of-range command value is rejected
-inline void handshakeIgnoresUnexpectedCommands(HandshakeIntegrationTests* suite) {
-    bool callbackFired = false;
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand) {
-        callbackFired = true;
-    }, SerialIdentifier::INPUT_JACK);
-
-    HandshakeIntegrationTests::RawHSPacket pkt{
-        static_cast<int>(SerialIdentifier::OUTPUT_JACK),
-        static_cast<int>(SerialIdentifier::INPUT_JACK),
-        HSCommand::HS_COMMAND_COUNT  // one past the valid range
-    };
-    suite->deliverRawToInput(reinterpret_cast<const uint8_t*>(&pkt), sizeof(pkt));
-
-    EXPECT_FALSE(callbackFired);
-}
-
-// Test: Sender MAC is captured in the HandshakeCommand
-inline void handshakeSetsOpponentMacAddress(HandshakeIntegrationTests* suite) {
-    HandshakeCommand receivedCmd(nullptr, -1, 0, SerialIdentifier::OUTPUT_JACK, SerialIdentifier::INPUT_JACK);
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        receivedCmd = cmd;
-    }, SerialIdentifier::INPUT_JACK);
-
-    suite->outputHWM.setMacPeer(SerialIdentifier::OUTPUT_JACK, makePeer(suite->inputMac, SerialIdentifier::INPUT_JACK));
-    suite->outputHWM.sendPacket(HSCommand::EXCHANGE_ID, SerialIdentifier::OUTPUT_JACK);
-
-    EXPECT_TRUE(receivedCmd.wifiMacAddrValid);
-}
-
-// Test: NOTIFY_DISCONNECT is routed correctly
-inline void handshakeMatchDataPropagatedCorrectly(HandshakeIntegrationTests* suite) {
-    HandshakeCommand receivedCmd(nullptr, -1, 0, SerialIdentifier::OUTPUT_JACK, SerialIdentifier::INPUT_JACK);
-    suite->inputHWM.setPacketReceivedCallback([&](HandshakeCommand cmd) {
-        receivedCmd = cmd;
-    }, SerialIdentifier::INPUT_JACK);
-
-    suite->outputHWM.setMacPeer(SerialIdentifier::OUTPUT_JACK, makePeer(suite->inputMac, SerialIdentifier::INPUT_JACK));
-    suite->outputHWM.sendPacket(HSCommand::NOTIFY_DISCONNECT, SerialIdentifier::OUTPUT_JACK);
-
-    EXPECT_EQ(receivedCmd.command, HSCommand::NOTIFY_DISCONNECT);
-}
-
-inline void handshakePacketPreservesPlayerIds(HandshakeIntegrationTests* suite) {
-    handshakeMatchDataPropagatedCorrectly(suite);
-}
-
-inline void handshakeMultiplePacketsDontInterfere(HandshakeIntegrationTests* suite) {
-    handshakeTwoDeviceFullFlow(suite);
 }

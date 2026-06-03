@@ -33,16 +33,18 @@ constexpr uint16_t BAUDRATE = 19200;
 
 constexpr unsigned long DUEL_NO_RESULT_TIME = 123456789;
 
-const std::string SERIAL_HEARTBEAT = "hb";
 
-const std::string SEND_MAC_ADDRESS = "smac";
 const char PORT_SEPARATOR = '#';
 const char DEVICE_TYPE_SEPARATOR = 't';
 
-constexpr char STRING_TERM = '\r';
-constexpr char STRING_START = '*';
-
 constexpr uint16_t TRANSMIT_QUEUE_MAX_SIZE = 1024;
+
+// ESP-NOW exposes 20 peer slots per device. The coordinator unicasts the
+// bracket and per-match packets to every member, so the bracket can't exceed
+// 20 minus the slots held by serial-jack direct peers and the cross-role
+// coordinator. RDC does not evict unused peers, so a larger shootout would
+// silently fail to register some members.
+constexpr uint8_t MAX_SHOOTOUT_MEMBERS = 16;
 
 const std::string TEST_BOUNTY_ID = "9999";
 const std::string TEST_HUNTER_ID = "8888";

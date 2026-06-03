@@ -14,7 +14,7 @@
 #include "device/drivers/storage-interface.hpp"
 #include "device/light-manager.hpp"
 #include "wireless/quickdraw-wireless-manager.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include <queue>
 #include <vector>
 
@@ -32,55 +32,22 @@ class FakeHWSerialWrapper : public HWSerialWrapper {
         return msgQueue.size() > 0;
     }
 
-    int peek() override {
-        return msgQueue.front();
-    }
-
-    int read() override {
-        char val = msgQueue.front();
-        msgQueue.pop_front();
-        return val;
-    }
-
-    std::string readStringUntil(char terminator) override {
-        vector<char> buffer;
-        while (msgQueue.front() != terminator) {
-            buffer.push_back(msgQueue.front());
-            msgQueue.pop_front();
-        }
-        msgQueue.pop_front();
-        return std::string(&buffer.front(), buffer.size());
-    }
-
-    void print(char msg) override {
-        msgQueue.emplace_back(msg);
-    }
-
-    void println(char* msg) override {
-        while(msg[0] != '\0') {
-            print(*msg);
-        }
-        print(STRING_TERM);
-    }
-
-    void println(const std::string& msg) override {
-        const char* str = msg.c_str();
-        for(size_t i = 0; i < msg.length(); i++) {
-            print(str[i]);
-        }
-        print(STRING_TERM);
-    }
-
     void flush() override {
         msgQueue.clear();
     }
 
-    void setStringCallback(const SerialStringCallback& callback) override {
-        stringCallback = callback;
+    void setBytesCallback(const SerialBytesCallback& callback) override {
+        bytesCallback = callback;
+    }
+
+    void writeBytes(const uint8_t* data, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            msgQueue.emplace_back(static_cast<char>(data[i]));
+        }
     }
 
     deque<char> msgQueue;
-    SerialStringCallback stringCallback;
+    SerialBytesCallback bytesCallback;
 };
 
 class FakeDevice : public Device {
@@ -216,26 +183,46 @@ private:
     bool inputPeerSet = false;
 };
 
-// Stand-in CDM for tests that flip isLoop() without standing up the full
-// handshake stack. Used by ShootoutProposal/BracketReveal debounce tests.
-class FakeChainDuelManager : public ChainDuelManager {
+// Stand-in CDM for tests that flip isCoordinator() without standing up the
+// full handshake stack. Used by ShootoutProposal/BracketReveal debounce
+// tests to simulate a coordinator-loss event without driving the whole
+// loop-close pipeline.
+class FakeChainManager : public ChainManager {
 public:
-    FakeChainDuelManager(Player* p, WirelessManager* wm, RemoteDeviceCoordinator* rdc)
-        : ChainDuelManager(p, wm, rdc) {}
-    bool isLoop() const override { return isLoop_; }
-    void setIsLoop(bool v) { isLoop_ = v; }
+    FakeChainManager(Player* p, WirelessManager* wm, RemoteDeviceCoordinator* rdc)
+        : ChainManager(p, wm, rdc) {}
+    bool isCoordinator() const override { return isCoordinator_; }
+    void setIsCoordinator(bool v) { isCoordinator_ = v; }
+    // Stub the settled-topology signals so tests can drive loop presence/loss
+    // directly instead of priming a real roster. Default to "in a stable loop"
+    // since shootout tests run inside a ring.
+    bool isInStableLoop() const override { return inStableLoop_; }
+    void setInStableLoop(bool v) { inStableLoop_ = v; }
+    bool isTopologyStable() const override { return rosterStable_; }
+    void setRosterStable(bool v) { rosterStable_ = v; }
 private:
-    bool isLoop_ = true;
+    bool isCoordinator_ = true;
+    bool inStableLoop_ = true;
+    bool rosterStable_ = true;
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.
-// Call deliverLastTo() to route the most-recently-captured packet to another manager's
-// processQuickdrawCommand(), exercising the real serialization/deserialization path.
+// Call deliverLastTo() to route the most-recently-captured packet into another manager's
+// transport (deliverIncoming), exercising the real serialization/deserialization path.
 class FakeQuickdrawWirelessManager : public QuickdrawWirelessManager {
 public:
     FakeQuickdrawWirelessManager() : QuickdrawWirelessManager() {}
 
     int broadcastPacket(const uint8_t* /*macAddress*/, QuickdrawCommand& command) override {
+        sentCommands.push_back(command);
+        return 0;
+    }
+
+    int broadcastReliable(const uint8_t* /*macAddress*/, QuickdrawCommand& command) override {
+        // Funnels into sentCommands like broadcastPacket so test assertions are uniform.
+        // This skips the channel, so command.seqId stays 0 and deliverLastTo injects
+        // a fire-and-forget packet (no ack/dedup). Channel-owned reliable dedup is
+        // covered directly by PacketParsingTests.dedupsResentReliablePacket.
         sentCommands.push_back(command);
         return 0;
     }
@@ -251,9 +238,12 @@ public:
         pkt.isHunter       = cmd.isHunter;
         pkt.playerDrawTime = cmd.playerDrawTime;
         pkt.command        = cmd.command;
+        pkt.seqId          = cmd.seqId;
 
-        recipient->processQuickdrawCommand(
-            senderMac,
+        // Inject at the same boundary the radio uses: the recipient's transport
+        // acks, dedups, and dispatches via the channel's onReceive.
+        recipient->getTransport()->deliverIncoming(
+            PktType::kQuickdrawCommand, 0, senderMac,
             reinterpret_cast<const uint8_t*>(&pkt),
             sizeof(pkt));
     }
@@ -285,7 +275,13 @@ public:
         mockSecondaryButton = new MockButton();
         mockHaptics = new MockHaptics();
         mockHttpClient = new MockHttpClient();
-        mockPeerComms = new MockPeerComms();
+        // NiceMock: the multi-device fixture calls getMacAddress/getPeerCommsState
+        // tens of thousands of times with only ON_CALL defaults (no EXPECT_CALL).
+        // Plain mocks emit a ~5-line "uninteresting call" warning per call —
+        // ~333K lines of output that `pio test`'s per-line parser then spends
+        // minutes chewing through. NiceMock suppresses the warnings; ON_CALL
+        // defaults and any EXPECT_CALL expectations still apply.
+        mockPeerComms = new testing::NiceMock<MockPeerComms>();
         mockStorage = new MockStorage();
         lightManager = new LightManager(fakeLightStrip);
         serialManager = new SerialManager(&outputJackSerial, &inputJackSerial);
@@ -322,11 +318,10 @@ public:
     LightManager* getLightManager() override { return lightManager; }
     WirelessManager* getWirelessManager() override { return wirelessManager; }
     SerialManager* getSerialManager() override { return serialManager; }
-    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override { return &fakeRemoteDeviceCoordinator; }
-
-    std::string getHead() {
-        return serialManager->getOutputHead();
+    RemoteDeviceCoordinator* getRemoteDeviceCoordinator() override {
+        return rdcOverride ? rdcOverride : &fakeRemoteDeviceCoordinator;
     }
+    void setRdcOverride(RemoteDeviceCoordinator* rdc) { rdcOverride = rdc; }
 
     // Mock interface instances
     MockDisplay* mockDisplay;
@@ -344,4 +339,5 @@ public:
     FakeHWSerialWrapper outputJackSerial;
     FakeHWSerialWrapper inputJackSerial;
     FakeRemoteDeviceCoordinator fakeRemoteDeviceCoordinator;
+    RemoteDeviceCoordinator* rdcOverride = nullptr;
 };

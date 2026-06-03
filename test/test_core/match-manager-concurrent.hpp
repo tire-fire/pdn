@@ -16,11 +16,10 @@
 // race between the simulated WiFi task (receivePacket) and the main loop (exec +
 // MatchManager reads).
 //
-// Before the fix: receivePacket() called listenForMatchEvents() directly, racing
-// with the main loop reading isMatchReady() / getHunterDrawTime() etc.
-//
-// After the fix: receivePacket() only enqueues; exec() drains on the caller's
-// thread. MatchManager is therefore only ever touched from a single thread.
+// Invariant under test: receivePacket() only enqueues; exec() drains on the
+// caller's thread, so MatchManager is only ever touched from a single thread.
+// A direct receivePacket()->listenForMatchEvents() call would race the main
+// loop reading isMatchReady() / getHunterDrawTime() etc.
 //
 // Run under TSan to confirm zero race reports:
 //   pio test -e native_tsan -f test_core --filter "*MatchManagerConcurrent*"
@@ -69,7 +68,7 @@ inline void matchManagerConcurrentDriverVsReader() {
 
     std::atomic<bool> running{true};
 
-    // Simulates the WiFi task: only enqueues after the fix — never touches MatchManager.
+    // Simulates the WiFi task: only enqueues — never touches MatchManager.
     std::thread wifiTask([&]() {
         int iter = 0;
         while (running.load(std::memory_order_relaxed)) {

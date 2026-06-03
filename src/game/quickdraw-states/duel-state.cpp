@@ -1,17 +1,17 @@
 #include "game/quickdraw-states.hpp"
 #include "game/quickdraw-resources.hpp"
 #include "game/match-manager.hpp"
-#include "game/chain-duel-manager.hpp"
+#include "game/chain-manager.hpp"
 #include "game/shootout-manager.hpp"
 #include "device/drivers/logger.hpp"
 #include "device/device.hpp"
 
 #define DUEL_TAG "DUEL_STATE"
 
-Duel::Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainDuelManager* chainDuelManager, ShootoutManager* shootoutManager) : ConnectState(remoteDeviceCoordinator, DUEL) {
+Duel::Duel(Player* player, MatchManager* matchManager, RemoteDeviceCoordinator* remoteDeviceCoordinator, ChainManager* chainManager, ShootoutManager* shootoutManager) : ConnectState(remoteDeviceCoordinator, DUEL) {
     this->player = player;
     this->matchManager = matchManager;
-    this->chainDuelManager = chainDuelManager;
+    this->chainManager = chainManager;
     this->shootoutManager = shootoutManager;
 }
 
@@ -25,7 +25,7 @@ void Duel::onStateMounted(Device *PDN) {
     LOG_I(DUEL_TAG, "Duel state mounted");
 
     // Arm the supporter chain for confirmations during the draw window.
-    chainDuelManager->sendGameEventToSupporters(ChainGameEventType::DRAW);
+    chainManager->sendGameEventToSupporters(ChainGameEventType::DRAW);
 
     matchManager->setDuelLocalStartTime(SimpleTimer::getPlatformClock()->milliseconds());
 
@@ -78,8 +78,9 @@ void Duel::onStateLoop(Device *PDN) {
         return;
     }
 
-    // Shootout timeout: hunter forfeits, bounty wins.
-    if (player->isHunter()) {
+    // Shootout timeout: hunter forfeits, bounty wins. Uses the per-match draw
+    // slot, not allegiance — in a same-role ring both duelists are hunters.
+    if (matchManager->localIsHunterForMatch()) {
         transitionToShootoutEliminatedState = true;
         return;
     }
@@ -138,9 +139,9 @@ void Duel::onStateDismounted(Device *PDN) {
 }
 
 bool Duel::isPrimaryRequired() {
-    return player->isHunter();
+    return matchManager->localIsHunterForMatch();
 }
 
 bool Duel::isAuxRequired() {
-    return !player->isHunter();
+    return !matchManager->localIsHunterForMatch();
 }

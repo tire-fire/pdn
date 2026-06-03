@@ -387,3 +387,44 @@ TEST(WirelessTransportTest, unsequencedDeliveryNeverDeduped) {
     transport.deliverIncoming(PktType::kChainGameEvent, 0, from, bytes, sizeof(p));
     EXPECT_EQ(deliveries, 2);
 }
+
+TEST(WireFormatTest, shootoutConfirmPayloadSize) {
+    static_assert(sizeof(ShootoutConfirmPayload) == 2 + 6 + kNameLength,
+                  "ShootoutConfirmPayload layout drift");
+    SUCCEED();
+}
+TEST(WireFormatTest, shootoutMatchStartPayloadSize) {
+    static_assert(sizeof(ShootoutMatchStartPayload) == 2 + 6 + 6 + 1,
+                  "ShootoutMatchStartPayload layout drift");
+    SUCCEED();
+}
+TEST(WireFormatTest, shootoutMatchResultPayloadSize) {
+    static_assert(sizeof(ShootoutMatchResultPayload) == 2 + 6 + 6 + 1,
+                  "ShootoutMatchResultPayload layout drift");
+    SUCCEED();
+}
+TEST(WireFormatTest, bracketEntryCarriesBatchHeader) {
+    static_assert(sizeof(ShootoutBracketEntryPayload) == 1 + 1 + 1 + 1 + 1 + 6,
+                  "ShootoutBracketEntryPayload size drift");
+    static_assert(offsetof(ShootoutBracketEntryPayload, seqId) == 1, "");
+    static_assert(offsetof(ShootoutBracketEntryPayload, batchId) == 2, "");
+    static_assert(offsetof(ShootoutBracketEntryPayload, slot) == 3, "");
+    static_assert(offsetof(ShootoutBracketEntryPayload, totalSlots) == 4, "");
+    static_assert(offsetof(ShootoutBracketEntryPayload, mac) == 5, "");
+    SUCCEED();
+}
+TEST(WireFormatTest, shootoutTournamentEndPayloadSize) {
+    static_assert(sizeof(ShootoutTournamentEndPayload) == 2 + 6,
+                  "ShootoutTournamentEndPayload layout drift");
+    SUCCEED();
+}
+TEST(WireFormatTest, shootoutPeerLostPayloadSize) {
+    static_assert(sizeof(ShootoutPeerLostPayload) == 2 + 6,
+                  "ShootoutPeerLostPayload layout drift");
+    SUCCEED();
+}
+TEST(WireFormatTest, shootoutAbortPayloadSize) {
+    static_assert(sizeof(ShootoutAbortPayload) == 2,
+                  "ShootoutAbortPayload layout drift");
+    SUCCEED();
+}

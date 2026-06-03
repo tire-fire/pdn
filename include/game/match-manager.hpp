@@ -33,15 +33,24 @@ struct LastMatchDisplay {
 
 struct ActiveDuelState {
     bool matchIsReady = false;
-    bool hasReceivedDrawResult = false;
-    bool hasPressedButton = false;
-    bool gracePeriodExpiredNoResult = false;
-    bool opponentNeverPressed = false;
+    // Each side's duel outcome, resolved once (first writer wins). Absent means
+    // not yet known; pressed=false means that side timed out and its draw time
+    // is the pity time. "Pressed" and "timed out" are the same field, so the
+    // contradiction (pressed AND timed-out) cannot be represented.
+    struct SideResult { bool pressed; };
+    std::optional<SideResult> myResult;
+    std::optional<SideResult> theirResult;
     unsigned long duelLocalStartTime = 0;
     unsigned long BUTTON_MASHER_PENALTY_MS = 75;
     int buttonMasherCount = 0;
     std::optional<Match> match;
     std::array<uint8_t, 6> opponentMac = {};
+    // This device's draw-slot for THIS match (which of hunter_draw_time /
+    // bounty_draw_time it writes), captured at match init. For a normal duel it
+    // equals the player's allegiance; for a same-role shootout duel it is
+    // MAC-ordered so two hunters still slot into distinct draw times. Kept off
+    // Player::isHunter() so the shootout never mutates global allegiance.
+    bool localIsHunter = false;
 
     unsigned long calculateButtonMasherPenalty() {
         return BUTTON_MASHER_PENALTY_MS * buttonMasherCount;
@@ -69,9 +78,18 @@ public:
 
     // Shootout mode: prime a match without the SEND_MATCH_ID handshake.
     // Both duelists call this independently on MATCH_START with the same
-    // derived match ID. Assumes hunter-vs-bounty pairing (same-role
-    // Shootout matches are out of MVP scope).
-    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac);
+    // derived match ID. localIsHunter is the MAC-ordered per-match draw-slot
+    // (both sides compute the same ordering), so same-role ring devices still
+    // form a valid hunter-vs-bounty pairing without touching global allegiance.
+    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac,
+                                 bool localIsHunter);
+
+    // This device's draw-slot for the active match (see ActiveDuelState).
+    // Falls back to global allegiance when no match is active.
+    bool localIsHunterForMatch() const {
+        return activeDuelState.match.has_value() ? activeDuelState.localIsHunter
+                                                 : player->isHunter();
+    }
 
     bool isMatchReady();
 
@@ -144,11 +162,27 @@ public:
 
     void sendNeverPressed(unsigned long pityTime);
 
-    // For testing purposes only DO NOT USE IN PRODUCTION
-    void setReceivedDrawResult();
+    void voidCurrentMatch();
+    bool isVoided() const {
+        return activeDuelState.match.has_value() && activeDuelState.match->isVoided();
+    }
+
+    // Shootout (SHT-prefixed) matches are venue-local: they never persist or
+    // upload, so they must not touch lifetime career stats either. Gates the
+    // same way finalizeMatch() gates persistence, keeping the two consistent.
+    bool currentMatchIsShootout() const;
+
+    // A reliable send is abandoned only after exhausting its retry budget.
+    // Only DRAW_RESULT (sent when we pressed) and NEVER_PRESSED (sent when we
+    // didn't) go reliably, so whether we pressed identifies which was lost: a
+    // lost DRAW_RESULT means the opponent never learned our time, so void; a
+    // lost NEVER_PRESSED is harmless since our loss is already recorded locally.
+    void onReliableSendAbandoned();
+
+    // Marks that this device pressed its button. Public because the button-push
+    // callback (getDuelButtonPush) is a free function with no access to the
+    // private duel state; every other duel-state transition is internal.
     void setReceivedButtonPush();
-    void setNeverPressed();
-    void setOpponentNeverPressed() { activeDuelState.opponentNeverPressed = true; }
 
 
 private:
@@ -201,7 +235,7 @@ private:
 
     // Emplace match with given id/opponent. Common path for both the
     // cable-handshake init and the Shootout MATCH_START init.
-    void primeMatch(const char* matchId, const uint8_t* opponentMac);
+    void primeMatch(const char* matchId, const uint8_t* opponentMac, bool localIsHunter);
 };
 
 

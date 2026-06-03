@@ -1,5 +1,6 @@
 #include "apps/player-registration/player-registration-states.hpp"
 #include "device/device.hpp"
+#include "device/device-constants.hpp"
 #include "game/quickdraw-resources.hpp"
 #include "game/quickdraw-requests.hpp"
 #include "device/drivers/logger.hpp"
@@ -19,6 +20,17 @@ PlayerRegistrationState::~PlayerRegistrationState() {
 
 void PlayerRegistrationState::onStateMounted(Device *PDN) {
     LOG_I(TAG, "State mounted - Starting player registration");
+
+    // If main set the user ID to a test slug (AUTO_REGISTER path), skip the
+    // pairing-code UI entirely and let FetchUserDataState pick role from the
+    // test ID. Keeps hardware-test flashes button-free.
+    const std::string& uid = player->getUserID();
+    if (uid == TEST_HUNTER_ID || uid == TEST_BOUNTY_ID) {
+        LOG_W(TAG, "AUTO_REGISTER: skipping pairing code for test ID %s",
+              uid.c_str());
+        transitionToUserFetchState = true;
+        return;
+    }
 
     PDN->getDisplay()->invalidateScreen()->
     setGlyphMode(FontMode::TEXT)->

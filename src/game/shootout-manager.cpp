@@ -1,6 +1,8 @@
 #include "game/shootout-manager.hpp"
 #include "game/match-manager.hpp"
 #include "device/drivers/logger.hpp"
+#include "device/device-constants.hpp"
+#include "device/mac-types.hpp"
 #include "utils/simple-timer.hpp"
 #include "wireless/mac-functions.hpp"
 #include "id-generator.hpp"
@@ -12,9 +14,6 @@
 #define TAG "SHT"
 
 namespace {
-// Indexed by retry count. Table length matches kMaxShootoutAckRetries.
-constexpr unsigned long kAckBackoffMs[] = {100, 200, 400};
-
 void deriveShootoutMatchId(int matchIndex, char* out, size_t outSize) {
     // Deterministic ID so both duelists prime MatchManager with the same
     // value without a SEND_MATCH_ID handshake.
@@ -25,8 +24,174 @@ void deriveShootoutMatchId(int matchIndex, char* out, size_t outSize) {
 ShootoutManager::ShootoutManager(Player* player,
                                  WirelessManager* wirelessManager,
                                  RemoteDeviceCoordinator* rdc,
-                                 ChainDuelManager* cdm)
+                                 ChainManager* cdm)
     : player_(player), wirelessManager_(wirelessManager), rdc_(rdc), cdm_(cdm) {}
+
+void ShootoutManager::initialize(WirelessTransport* transport) {
+    transport_ = transport;
+    if (transport_ == nullptr) return;
+
+    auto abandonToAbort = [this](uint8_t /*seqId*/, const uint8_t* /*mac*/) {
+        // BRACKET_ENTRY / MATCH_START / MATCH_RESULT abandons drop tournament
+        // state. Latched and processed in sync() so we don't mutate the
+        // pending list from inside the Resender's callback chain.
+        tournamentAbortPending_ = true;
+    };
+    auto abandonNoop = [](uint8_t /*seqId*/, const uint8_t* /*mac*/) {};
+
+    // Stream channel: the bracket roster is split into one reliable packet per
+    // slot, all sent to the same peer. Each slot must keep its own retry entry,
+    // so a dropped non-final slot still retransmits instead of being superseded.
+    bracketEntryChannel_ = transport_->channel<ShootoutBracketEntryPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::BRACKET_ENTRY, abandonToAbort,
+        Resender::SendMode::KeepDistinct);
+    bracketEntryChannel_->onReceive(
+        [this](const uint8_t* fromMac, const ShootoutBracketEntryPayload& p) {
+            onBracketEntryReceived(fromMac, p);
+        });
+
+    matchStartChannel_ = transport_->channel<ShootoutMatchStartPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::MATCH_START, abandonToAbort);
+    matchStartChannel_->onReceive(
+        [this](const uint8_t* /*fromMac*/, const ShootoutMatchStartPayload& p) {
+            onMatchStartReceived(p.duelistA, p.duelistB, p.matchIndex, p.seqId);
+        });
+
+    matchResultChannel_ = transport_->channel<ShootoutMatchResultPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::MATCH_RESULT, abandonToAbort);
+    matchResultChannel_->onReceive(
+        [this](const uint8_t* fromMac, const ShootoutMatchResultPayload& p) {
+            onMatchResultReceived(p.winner, p.loser, p.matchIndex, p.seqId, fromMac);
+        });
+
+    tournamentEndChannel_ = transport_->channel<ShootoutTournamentEndPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::TOURNAMENT_END, abandonNoop);
+    tournamentEndChannel_->onReceive(
+        [this](const uint8_t* /*fromMac*/, const ShootoutTournamentEndPayload& p) {
+            onTournamentEndReceived(p.winner, p.seqId);
+        });
+
+    confirmChannel_ = transport_->channel<ShootoutConfirmPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::CONFIRM, abandonNoop);
+    confirmChannel_->onReceive(
+        [this](const uint8_t* fromMac, const ShootoutConfirmPayload& p) {
+            onConfirmReceived(p.mac, p.name);
+            (void)fromMac;
+        });
+
+    peerLostChannel_ = transport_->channel<ShootoutPeerLostPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::PEER_LOST, abandonNoop);
+    peerLostChannel_->onReceive(
+        [this](const uint8_t* /*fromMac*/, const ShootoutPeerLostPayload& p) {
+            onPeerLostReceived(p.mac);
+        });
+
+    abortChannel_ = transport_->channel<ShootoutAbortPayload, ShootoutCmd>(
+        PktType::kShootoutCommand, ShootoutCmd::ABORT, abandonNoop);
+    abortChannel_->onReceive(
+        [this](const uint8_t* /*fromMac*/, const ShootoutAbortPayload& /*p*/) {
+            onAbortReceived();
+        });
+
+    // Route inbound kShootoutCommand bytes from the wireless driver into the
+    // transport's per-cmd dispatcher. The leading byte of every payload is
+    // the ShootoutCmd discriminator; each cmd has its own channel claim.
+    WirelessManager* wm = transport_->getWirelessManager();
+    if (wm != nullptr) {
+        wm->setEspNowPacketHandler(
+            PktType::kShootoutCommand,
+            [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
+                auto* self = static_cast<ShootoutManager*>(ctx);
+                if (self->transport_ == nullptr || dataLen < 1) return;
+                uint8_t cmd = data[0];
+                self->transport_->deliverIncoming(
+                    PktType::kShootoutCommand, cmd, fromMac, data, dataLen);
+            },
+            this);
+    }
+}
+
+bool ShootoutManager::batchIsNewer(uint8_t a, uint8_t b) {
+    int8_t diff = static_cast<int8_t>(a - b);
+    return diff > 0;
+}
+
+void ShootoutManager::onBracketEntryReceived(const uint8_t* fromMac,
+                                             const ShootoutBracketEntryPayload& p) {
+    // Competing-coordinator tiebreaker. Two rings that close independently and
+    // then merge can each carry a self-elected coordinator that already built
+    // and broadcast a bracket. The lower-MAC coordinator wins; a higher-MAC
+    // coordinator that receives the lower one's BRACKET_ENTRY must stand down
+    // AND adopt it. Demoting CDM alone is not enough once we have anchored
+    // coordinatorMac_ to self (post-bracket): isCoordinator() then reads the
+    // anchor and ignores CDM, so we must also drop the anchor and our bracket
+    // so the adoption path below treats us as fromMac's follower.
+    if (fromMac != nullptr && isCoordinator()) {
+        const uint8_t* self = wirelessManager_ ? wirelessManager_->getMacAddress() : nullptr;
+        if (self != nullptr && memcmp(fromMac, self, 6) < 0) {
+            if (cdm_ != nullptr) cdm_->demoteCoordinator();
+            memset(coordinatorMac_.data(), 0, 6);
+            bracket_.clear();
+            currentRound_.clear();
+            pendingBracket_.active = false;
+            // If our own tournament was already underway (a ring merging in
+            // after we started), drop the stale match progress too, so the
+            // adopted lower-MAC bracket begins clean instead of carrying our
+            // defunct match/elimination state forward.
+            currentMatchIndex_ = -1;
+            memset(currentDuelistA_.data(), 0, 6);
+            memset(currentDuelistB_.data(), 0, 6);
+            memset(opponentMac_.data(), 0, 6);
+            memset(tournamentWinner_.data(), 0, 6);
+            eliminated_.clear();
+            reportedLocalWin_ = false;
+        }
+    }
+    if (isCoordinator()) return;
+
+    // totalSlots == 0 sentinel: clear local bracket view.
+    if (p.totalSlots == 0) {
+        pendingBracket_.active = false;
+        bracket_.clear();
+        currentRound_.clear();
+        return;
+    }
+
+    auto& pend = pendingBracket_;
+    if (!pend.active || batchIsNewer(p.batchId, pend.batchId)) {
+        pend.active = true;
+        pend.batchId = p.batchId;
+        pend.totalSlots = p.totalSlots;
+        pend.seqId = p.seqId;
+        pend.buffer.assign(p.totalSlots, std::array<uint8_t, 6>{});
+        pend.receivedSlots.assign(p.totalSlots, false);
+    } else if (p.batchId != pend.batchId) {
+        return; // stale batch; ignore.
+    }
+
+    if (p.slot >= pend.totalSlots) return;
+    std::memcpy(pend.buffer[p.slot].data(), p.mac, 6);
+    pend.receivedSlots[p.slot] = true;
+
+    for (bool got : pend.receivedSlots) {
+        if (!got) return;
+    }
+
+    // All slots present: atomic swap into bracket_.
+    bracket_ = std::move(pend.buffer);
+    currentRound_ = bracket_;
+    // The coordinator is whoever sent the BRACKET_ENTRY (the device that
+    // observed loop closure and built the bracket). Anchor here so the
+    // post-bracket isCoordinator() check stays stable across cable nudges.
+    if (fromMac != nullptr) {
+        std::memcpy(coordinatorMac_.data(), fromMac, 6);
+    } else {
+        coordinatorMac_ = lowestMacIn(bracket_);
+    }
+    pend.active = false;
+    phase_ = Phase::BRACKET_REVEAL;
+    bracketRevealTimer_.setTimer(kBracketRevealMs);
+}
 
 bool ShootoutManager::active() const {
     return phase_ != Phase::IDLE;
@@ -48,12 +213,21 @@ bool ShootoutManager::hasBye() const {
     return bracket_.size() % 2 == 1;
 }
 
-uint8_t ShootoutManager::getLastBracketSeqId() const {
-    return lastBracketSeqId_;
-}
 
 size_t ShootoutManager::getBracketPendingAckCount() const {
-    return bracketPendingAcks_.size();
+    // Bracket sends are per-slot BRACKET_ENTRY through the transport.
+    // Pending count is the number of slot-level in-flight entries.
+    if (transport_ == nullptr) return 0;
+    if (bracketEntryChannel_ == nullptr) return 0;
+    // No pendingCount accessor on the transport, so count via the channel:
+    // isPending(target) is true if any (type, subType, target) entry remains in
+    // flight. Counts targets with at least one in-flight BRACKET_ENTRY —
+    // sufficient for "are all peers caught up?".
+    size_t count = 0;
+    for (const auto& peer : bracket_) {
+        if (bracketEntryChannel_->isPending(peer.data())) ++count;
+    }
+    return count;
 }
 
 int ShootoutManager::getCurrentMatchIndex() const {
@@ -67,57 +241,18 @@ bool ShootoutManager::isLocalDuelist() const {
            memcmp(selfMac, currentDuelistB_.data(), 6) == 0;
 }
 
-uint8_t ShootoutManager::nextSeqId() {
-    uint8_t id = nextShootoutSeqId_++;
-    if (nextShootoutSeqId_ == 0) nextShootoutSeqId_ = 1;
-    return id;
-}
-
-void ShootoutManager::sendToPeers(const std::vector<std::array<uint8_t, 6>>& peers,
-                                  const uint8_t* packet, size_t len) {
-    const uint8_t* selfMac = wirelessManager_->getMacAddress();
-    for (const auto& m : peers) {
-        if (selfMac != nullptr && memcmp(m.data(), selfMac, 6) == 0) continue;
-        wirelessManager_->sendEspNowData(m.data(), PktType::kShootoutCommand, packet, len);
-    }
-}
-
-void ShootoutManager::sendReliablyToPeers(std::vector<BracketPending>& pending,
-                                          const std::vector<std::array<uint8_t, 6>>& peers,
-                                          const uint8_t* packet, size_t len) {
-    sendToPeers(peers, packet, len);
-    const uint8_t* selfMac = wirelessManager_->getMacAddress();
-    pending.clear();
-    for (const auto& m : peers) {
-        if (selfMac != nullptr && memcmp(m.data(), selfMac, 6) == 0) continue;
-        BracketPending p;
-        p.peer = m;
-        p.timer.setTimer(ackTimeoutForRetry(0));
-        pending.push_back(p);
-    }
-}
-
-void ShootoutManager::eraseFromPending(std::vector<BracketPending>& pending,
-                                       const uint8_t* fromMac) {
-    for (auto it = pending.begin(); it != pending.end(); ) {
-        if (memcmp(it->peer.data(), fromMac, 6) == 0) {
-            it = pending.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
 std::array<uint8_t, 6> ShootoutManager::getOpponentMac() const {
     return opponentMac_;
 }
 
-uint8_t ShootoutManager::getLastMatchStartSeqId() const {
-    return lastMatchStartSeqId_;
-}
 
 size_t ShootoutManager::getTournamentEndPendingAckCount() const {
-    return tournamentEndPendingAcks_.size();
+    if (tournamentEndChannel_ == nullptr) return 0;
+    size_t count = 0;
+    for (const auto& peer : confirmedSet_) {
+        if (tournamentEndChannel_->isPending(peer.data())) ++count;
+    }
+    return count;
 }
 
 std::array<uint8_t, 6> ShootoutManager::getTournamentWinner() const {
@@ -127,6 +262,22 @@ std::array<uint8_t, 6> ShootoutManager::getTournamentWinner() const {
 void ShootoutManager::setLoopMembersForTest(const std::vector<std::array<uint8_t, 6>>& members) {
     testLoopMembers_ = members;
     testLoopMembersOverride_ = !members.empty();
+
+    // Claim coordinator on this device when self is the lowest-MAC member of
+    // the simulated loop. Tests that need non-coordinator behavior pick a
+    // self-mac that isn't the lowest, which leaves CDM coordinator clear.
+    if (cdm_ != nullptr && wirelessManager_ != nullptr && !members.empty()) {
+        const uint8_t* selfMac = wirelessManager_->getMacAddress();
+        if (selfMac != nullptr) {
+            const std::array<uint8_t, 6>* lowest = &members[0];
+            for (const auto& m : members) {
+                if (memcmp(m.data(), lowest->data(), 6) < 0) lowest = &m;
+            }
+            if (memcmp(lowest->data(), selfMac, 6) == 0) {
+                cdm_->claimCoordinator();
+            }
+        }
+    }
 }
 
 std::vector<std::array<uint8_t, 6>> ShootoutManager::getLoopMembers() const {
@@ -137,37 +288,37 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::getLoopMembers() const {
 void ShootoutManager::resetToIdle() {
     LOG_W(TAG, "resetToIdle from phase=%d", static_cast<int>(phase_));
     phase_ = Phase::IDLE;
+    // Drain any in-flight channel sends through the shared transport's
+    // Resender. Pending entries are keyed by (PktType, subType, target);
+    // iterate before clearing bracket_/confirmedSet_ below.
+    auto cancelEachTarget = [this](auto* channel) {
+        if (channel == nullptr) return;
+        for (const auto& t : bracket_) channel->cancel(t.data());
+        for (const auto& t : confirmedSet_) channel->cancel(t.data());
+    };
+    cancelEachTarget(bracketEntryChannel_);
+    cancelEachTarget(matchStartChannel_);
+    cancelEachTarget(matchResultChannel_);
+    cancelEachTarget(tournamentEndChannel_);
     confirmedSet_.clear();
     bracket_.clear();
     currentRound_.clear();
-    bracketPendingAcks_.clear();
-    matchStartPendingAcks_.clear();
-    tournamentEndPendingAcks_.clear();
-    matchResultPendingAcks_.clear();
+    pendingBracket_.active = false;
+    tournamentAbortPending_ = false;
     eliminated_.clear();
     reportedLocalWin_ = false;
     names_.clear();
-    lastObservedBracketSeqId_ = 0;
-    lastObservedMatchStartSeqId_ = 0;
-    lastObservedTournamentEndSeqId_ = 0;
     currentMatchIndex_ = -1;
     memset(tournamentWinner_.data(), 0, 6);
     memset(opponentMac_.data(), 0, 6);
     memset(currentDuelistA_.data(), 0, 6);
     memset(currentDuelistB_.data(), 0, 6);
     memset(coordinatorMac_.data(), 0, 6);
-    if (originalIsHunter_ && player_) {
-        player_->setIsHunter(*originalIsHunter_);
-    }
-    originalIsHunter_.reset();
 }
 
 void ShootoutManager::startProposal() {
     LOG_W(TAG, "startProposal");
     resetToIdle();
-    if (player_) {
-        originalIsHunter_ = player_->isHunter();
-    }
     phase_ = Phase::PROPOSAL;
 }
 
@@ -197,11 +348,22 @@ void ShootoutManager::confirmLocal() {
 }
 
 void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name) {
+    // Non-coordinator entry: first inbound CONFIRM from a peer is how a
+    // ring member learns the shootout is starting. Promote phase from IDLE
+    // to PROPOSAL so subsequent gates accept the message and downstream
+    // state transitions can fire (SupporterReady→Idle→ShootoutProposal).
+    if (phase_ == Phase::IDLE && !isCoordinator()) {
+        phase_ = Phase::PROPOSAL;
+    }
     if (phase_ != Phase::PROPOSAL) return;
-    // Fast path: already-confirmed peers bypass the loop-membership scan (this
-    // is the common case during 1Hz rebroadcasts — the gate only needs to
-    // block first-time stray CONFIRMs from outside the ring).
-    if (!hasConfirmed(fromMac)) {
+    const bool firstSeen = !hasConfirmed(fromMac);
+
+    // Coordinator gates first-time CONFIRMs by loop-membership: getLoopMembers()
+    // is the authoritative set, derived from the settled peer-graph topology
+    // (rdc_->getChainMembers()), not from who has confirmed so far. Non-
+    // coordinators don't yet have a stable view (they learn the roster via
+    // BRACKET_ENTRY) and accept every CONFIRM until then.
+    if (firstSeen && isCoordinator()) {
         auto members = getLoopMembers();
         bool inLoop = false;
         for (const auto& m : members) {
@@ -210,14 +372,33 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
         if (!inLoop) return;
     }
     recordName(fromMac, name);
-    bool added = !hasConfirmed(fromMac);
-    if (added) {
+    if (firstSeen) {
         std::array<uint8_t, 6> mac;
         memcpy(mac.data(), fromMac, 6);
         confirmedSet_.push_back(mac);
         LOG_W(TAG, "onConfirmReceived from=%s count=%zu",
               MacToString(fromMac), confirmedSet_.size());
+
+        // Ring forwarding: non-coordinators relay a first-time CONFIRM out
+        // their OTHER direct-peer jack so the message walks around the ring
+        // to the coordinator. The coordinator terminates propagation.
+        if (!isCoordinator() && confirmChannel_ != nullptr) {
+            ShootoutConfirmPayload fwd{};
+            fwd.cmd = static_cast<uint8_t>(ShootoutCmd::CONFIRM);
+            fwd.seqId = 0;
+            memcpy(fwd.mac, fromMac, 6);
+            const std::string lookup = getNameForMac(fromMac);
+            size_t copyLen = lookup.size() < kNameLength ? lookup.size() : kNameLength;
+            memcpy(fwd.name, lookup.data(), copyLen);
+            for (auto jack : {SerialIdentifier::INPUT_JACK, SerialIdentifier::OUTPUT_JACK}) {
+                const uint8_t* direct = rdc_->getPeerMac(jack);
+                if (direct == nullptr) continue;
+                if (memcmp(direct, fromMac, 6) == 0) continue;  // don't echo to source
+                confirmChannel_->sendOnce(direct, fwd);
+            }
+        }
     }
+
     if (allMembersConfirmed()) {
         LOG_W(TAG, "allMembersConfirmed -> advanceToBracketReveal");
         advanceToBracketReveal();
@@ -273,15 +454,29 @@ std::array<uint8_t, 6> ShootoutManager::getCoordinatorMac() const {
 }
 
 bool ShootoutManager::isCoordinator() const {
-    const uint8_t* selfMac = wirelessManager_->getMacAddress();
+    // Pre-bracket: defer to CDM (the device that observed loop closure).
+    // Post-bracket: anchor on coordinatorMac_, set when the bracket was
+    // generated locally (or received from the originating coordinator via
+    // BRACKET_ENTRY's fromMac). A mid-tournament CDM demote (heartbeat
+    // timeout, transient cable nudge) must NOT change who runs the
+    // tournament; the coordinator stays put until ABORT/END.
+    const uint8_t* selfMac = wirelessManager_ ? wirelessManager_->getMacAddress() : nullptr;
     if (selfMac == nullptr) return false;
-    auto coord = getCoordinatorMac();
-    return memcmp(coord.data(), selfMac, 6) == 0;
+    if (!net::isAllZeroMac(coordinatorMac_)) {
+        return memcmp(coordinatorMac_.data(), selfMac, 6) == 0;
+    }
+    return cdm_ != nullptr && cdm_->isCoordinator();
 }
 
 void ShootoutManager::generateBracket() {
     bracket_ = confirmedSet_;
-    coordinatorMac_ = lowestMacIn(bracket_);
+    // Coordinator is whoever called generateBracket (i.e., self — we ran
+    // through the coord-claim path and ended up here building the bracket).
+    if (wirelessManager_ != nullptr && wirelessManager_->getMacAddress() != nullptr) {
+        std::memcpy(coordinatorMac_.data(), wirelessManager_->getMacAddress(), 6);
+    } else {
+        coordinatorMac_ = lowestMacIn(bracket_);
+    }
     // std::random_device is deterministic under newlib on ESP32, so seed
     // from platform clock XOR self-MAC to get real variation.
     unsigned long seed = 0;
@@ -308,13 +503,13 @@ void ShootoutManager::primeMatchManagerForMatch() {
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
     bool localIsHunterForMatch = selfMac != nullptr &&
         memcmp(selfMac, opponentMac_.data(), 6) < 0;
-    if (player_) player_->setIsHunter(localIsHunterForMatch);
 
     char matchId[IdGenerator::UUID_BUFFER_SIZE];
     deriveShootoutMatchId(currentMatchIndex_, matchId, sizeof(matchId));
     LOG_W(TAG, "primeMatchManagerForMatch matchIndex=%d localHunter=%d",
           currentMatchIndex_, localIsHunterForMatch);
-    matchManager_->initializeShootoutMatch(matchId, opponentMac_.data());
+    // Pass the MAC-ordered slot to the match; do NOT touch global allegiance.
+    matchManager_->initializeShootoutMatch(matchId, opponentMac_.data(), localIsHunterForMatch);
 }
 
 void ShootoutManager::advanceToBracketReveal() {
@@ -326,80 +521,99 @@ void ShootoutManager::advanceToBracketReveal() {
     }
 }
 
-unsigned long ShootoutManager::ackTimeoutForRetry(uint8_t retries) {
-    constexpr size_t kTableSize = sizeof(kAckBackoffMs) / sizeof(kAckBackoffMs[0]);
-    if (retries >= kTableSize) return kAckBackoffMs[kTableSize - 1];
-    return kAckBackoffMs[retries];
-}
-
-std::vector<uint8_t> ShootoutManager::buildBracketPacket() const {
-    std::vector<uint8_t> packet;
-    packet.push_back(static_cast<uint8_t>(ShootoutCmd::BRACKET));
-    packet.push_back(lastBracketSeqId_);
-    packet.push_back(static_cast<uint8_t>(bracket_.size()));
-    for (const auto& m : bracket_) {
-        packet.insert(packet.end(), m.begin(), m.end());
-    }
-    return packet;
-}
-
 void ShootoutManager::sendBracketToPeers() {
-    if (bracket_.empty()) return;
-    lastBracketSeqId_ = nextSeqId();
-    auto packet = buildBracketPacket();
-    sendReliablyToPeers(bracketPendingAcks_, bracket_, packet.data(), packet.size());
-}
-
-void ShootoutManager::onBracketAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    if (seqId != lastBracketSeqId_) return;
-    eraseFromPending(bracketPendingAcks_, fromMac);
-}
-
-bool ShootoutManager::retryBracketForPeer(BracketPending& p) {
-    if (p.retries >= kMaxShootoutAckRetries) {
-        // Caller is iterating bracketPendingAcks_; don't abort here (that
-        // clears the vector and invalidates the iterator). Signal and let
-        // the caller abort after exiting the loop.
-        return true;
+    if (bracket_.empty() || bracketEntryChannel_ == nullptr) return;
+    if (bracket_.size() > MAX_SHOOTOUT_MEMBERS) {
+        LOG_E(TAG, "bracket size %zu exceeds ESP-NOW peer cap (%u); aborting",
+              bracket_.size(), (unsigned)MAX_SHOOTOUT_MEMBERS);
+        abortTournament();
+        return;
     }
-    auto packet = buildBracketPacket();
-    wirelessManager_->sendEspNowData(p.peer.data(), PktType::kShootoutCommand,
-                                     packet.data(), packet.size());
-    p.retries++;
-    p.timer.setTimer(ackTimeoutForRetry(p.retries));
-    return false;
+    uint8_t batchId = nextBracketBatchId_++;
+    if (nextBracketBatchId_ == 0) nextBracketBatchId_ = 1;
+    uint8_t total = static_cast<uint8_t>(bracket_.size());
+    const uint8_t* selfMac = wirelessManager_->getMacAddress();
+
+    for (const auto& target : bracket_) {
+        if (selfMac && std::memcmp(target.data(), selfMac, 6) == 0) continue;
+        for (uint8_t i = 0; i < total; ++i) {
+            ShootoutBracketEntryPayload p{};
+            p.cmd = static_cast<uint8_t>(ShootoutCmd::BRACKET_ENTRY);
+            p.batchId = batchId;
+            p.slot = i;
+            p.totalSlots = total;
+            std::memcpy(p.mac, bracket_[i].data(), 6);
+            bracketEntryChannel_->sendReliable(target.data(), p);
+        }
+    }
+}
+
+void ShootoutManager::onBracketAckReceived(const uint8_t* fromMac) {
+    // Test seam: simulate `fromMac` acking its BRACKET_ENTRY sends by cancelling
+    // every pending entry to it (production acks arrive via the channel's
+    // deliver path). Cancelling by MAC clears all of a peer's slots at once,
+    // matching "this peer is caught up".
+    if (bracketEntryChannel_ != nullptr) {
+        bracketEntryChannel_->cancel(fromMac);
+    }
 }
 
 void ShootoutManager::abortTournament() {
-    if (phase_ == Phase::ABORTED) return;
+    // ENDED is terminal-success; this guard stops a straggling
+    // MATCH_RESULT abandon from latching tournamentAbortPending_
+    // and demoting the success state.
+    if (phase_ == Phase::ABORTED || phase_ == Phase::ENDED) return;
     LOG_W(TAG, "abortTournament from phase=%d", static_cast<int>(phase_));
 
     // Broadcast before resetToIdle clears bracket_/confirmedSet_.
-    uint8_t packet[2];
-    packet[0] = static_cast<uint8_t>(ShootoutCmd::ABORT);
-    packet[1] = 0;
-    const auto& targets = bracket_.empty() ? confirmedSet_ : bracket_;
-    sendToPeers(targets, packet, sizeof(packet));
+    if (abortChannel_ != nullptr) {
+        ShootoutAbortPayload p{};
+        p.cmd = static_cast<uint8_t>(ShootoutCmd::ABORT);
+        p.seqId = 0;
+        const auto& targets = bracket_.empty() ? confirmedSet_ : bracket_;
+        const uint8_t* selfMac = wirelessManager_->getMacAddress();
+        for (const auto& m : targets) {
+            if (selfMac != nullptr && memcmp(m.data(), selfMac, 6) == 0) continue;
+            abortChannel_->sendOnce(m.data(), p);
+        }
+    }
 
     resetToIdle();
     phase_ = Phase::ABORTED;
 }
 
 void ShootoutManager::sendLocalConfirm() {
-    // [cmd, seq, 6-byte MAC, kNameLength-byte null-padded name]
-    uint8_t payload[2 + 6 + kNameLength];
-    payload[0] = static_cast<uint8_t>(ShootoutCmd::CONFIRM);
-    payload[1] = 0;
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
-    memcpy(&payload[2], selfMac, 6);
-    memset(&payload[8], 0, kNameLength);
+    if (selfMac == nullptr) return;
+
+    ShootoutConfirmPayload p{};
+    p.cmd = static_cast<uint8_t>(ShootoutCmd::CONFIRM);
+    p.seqId = 0;
+    memcpy(p.mac, selfMac, 6);
+    memset(p.name, 0, kNameLength);
     if (player_ != nullptr) {
         const std::string& n = player_->getName();
         size_t copyLen = n.size() < kNameLength ? n.size() : kNameLength;
-        memcpy(&payload[8], n.data(), copyLen);
+        memcpy(p.name, n.data(), copyLen);
     }
 
-    sendToPeers(getLoopMembers(), payload, sizeof(payload));
+    if (confirmChannel_ == nullptr) return;
+
+    // Coordinator addresses every loop member directly (it has the full set
+    // in getLoopMembers()). Non-coordinators don't yet know the membership;
+    // they send to both RDC direct peers and rely on each receiver
+    // forwarding to its other direct peer to propagate around the ring.
+    if (isCoordinator()) {
+        for (const auto& m : getLoopMembers()) {
+            if (memcmp(m.data(), selfMac, 6) == 0) continue;
+            confirmChannel_->sendOnce(m.data(), p);
+        }
+    } else {
+        for (auto jack : {SerialIdentifier::INPUT_JACK, SerialIdentifier::OUTPUT_JACK}) {
+            const uint8_t* direct = rdc_->getPeerMac(jack);
+            if (direct != nullptr) confirmChannel_->sendOnce(direct, p);
+        }
+    }
     confirmRebroadcastTimer_.setTimer(kConfirmRebroadcastMs);
 }
 
@@ -413,69 +627,13 @@ void ShootoutManager::sync() {
         }
     }
 
-    bool shouldAbort = false;
-    for (auto& p : bracketPendingAcks_) {
-        if (p.timer.expired()) {
-            if (retryBracketForPeer(p)) {
-                shouldAbort = true;
-                break;
-            }
-        }
+    if (transport_) transport_->sync();
+    if (tournamentAbortPending_) {
+        tournamentAbortPending_ = false;
+        abortTournament();
     }
-    if (shouldAbort) abortTournament();
 
     maybeStartNextMatch();
-
-    if (isCoordinator() && phase_ == Phase::MATCH_IN_PROGRESS &&
-        matchStartPendingAcks_.empty() &&
-        matchStartWatchdog_.expired()) {
-        sendMatchStartToPeers(currentMatchIndex_);
-    }
-
-    if (phase_ == Phase::ENDED && !tournamentEndPendingAcks_.empty()) {
-        uint8_t packet[8];
-        packet[0] = static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END);
-        packet[1] = lastTournamentEndSeqId_;
-        memcpy(&packet[2], tournamentWinner_.data(), 6);
-        for (auto it = tournamentEndPendingAcks_.begin();
-             it != tournamentEndPendingAcks_.end(); ) {
-            if (!it->timer.expired()) { ++it; continue; }
-            if (it->retries >= kMaxShootoutAckRetries) {
-                LOG_W(TAG, "TOURNAMENT_END retries exhausted for %s",
-                      MacToString(it->peer.data()));
-                it = tournamentEndPendingAcks_.erase(it);
-                continue;
-            }
-            wirelessManager_->sendEspNowData(it->peer.data(),
-                                             PktType::kShootoutCommand,
-                                             packet, sizeof(packet));
-            it->retries++;
-            it->timer.setTimer(ackTimeoutForRetry(it->retries));
-            ++it;
-        }
-    }
-
-    if (!matchResultPendingAcks_.empty()) {
-        auto packet = buildMatchResultPacket(
-            lastMatchResult_.winner.data(), lastMatchResult_.loser.data(),
-            lastMatchResult_.matchIndex);
-        for (auto it = matchResultPendingAcks_.begin();
-             it != matchResultPendingAcks_.end(); ) {
-            if (!it->timer.expired()) { ++it; continue; }
-            if (it->retries >= kMaxShootoutAckRetries) {
-                LOG_W(TAG, "MATCH_RESULT retries exhausted for %s",
-                      MacToString(it->peer.data()));
-                it = matchResultPendingAcks_.erase(it);
-                continue;
-            }
-            wirelessManager_->sendEspNowData(it->peer.data(),
-                                             PktType::kShootoutCommand,
-                                             packet.data(), packet.size());
-            it->retries++;
-            it->timer.setTimer(ackTimeoutForRetry(it->retries));
-            ++it;
-        }
-    }
 }
 
 std::pair<std::array<uint8_t,6>, std::array<uint8_t,6>>
@@ -484,22 +642,7 @@ ShootoutManager::getCurrentMatchPair() const {
     return {currentDuelistA_, currentDuelistB_};
 }
 
-std::vector<uint8_t> ShootoutManager::buildMatchStartPacket(int matchIndex) const {
-    std::vector<uint8_t> packet;
-    packet.push_back(static_cast<uint8_t>(ShootoutCmd::MATCH_START));
-    packet.push_back(lastMatchStartSeqId_);
-    const auto& a = currentRound_[matchIndex * 2];
-    const auto& b = currentRound_[matchIndex * 2 + 1];
-    packet.insert(packet.end(), a.begin(), a.end());
-    packet.insert(packet.end(), b.begin(), b.end());
-    packet.push_back(static_cast<uint8_t>(matchIndex));
-    return packet;
-}
-
 void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
-    lastMatchStartSeqId_ = nextSeqId();
-
-    auto packet = buildMatchStartPacket(matchIndex);
     const uint8_t* selfMac = wirelessManager_->getMacAddress();
     const auto& a = currentRound_[matchIndex * 2];
     const auto& b = currentRound_[matchIndex * 2 + 1];
@@ -513,13 +656,22 @@ void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
         memcpy(opponentMac_.data(), opp, 6);
         primeMatchManagerForMatch();
     }
-    sendReliablyToPeers(matchStartPendingAcks_, bracket_, packet.data(), packet.size());
-    matchStartWatchdog_.setTimer(kMatchWatchdogMs);
+
+    if (matchStartChannel_ == nullptr) return;
+    ShootoutMatchStartPayload p{};
+    p.cmd = static_cast<uint8_t>(ShootoutCmd::MATCH_START);
+    std::memcpy(p.duelistA, a.data(), 6);
+    std::memcpy(p.duelistB, b.data(), 6);
+    p.matchIndex = static_cast<uint8_t>(matchIndex);
+
+    for (const auto& target : bracket_) {
+        if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
+        matchStartChannel_->sendReliable(target.data(), p);
+    }
 }
 
-void ShootoutManager::onMatchStartAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    if (seqId != lastMatchStartSeqId_) return;
-    eraseFromPending(matchStartPendingAcks_, fromMac);
+void ShootoutManager::onMatchStartAckReceived(const uint8_t* fromMac) {
+    if (matchStartChannel_ != nullptr) matchStartChannel_->cancel(fromMac);
 }
 
 bool ShootoutManager::isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const {
@@ -536,17 +688,39 @@ bool ShootoutManager::isActiveDuelist(const uint8_t* mac) const {
            memcmp(pair.second.data(), mac, 6) == 0;
 }
 
+
+void ShootoutManager::onDirectPeerChange(SerialIdentifier /*port*/,
+                                         std::optional<RemoteDeviceCoordinator::Peer> previous,
+                                         std::optional<RemoteDeviceCoordinator::Peer> current) {
+    // Connect transitions don't change tournament state; the peer must have
+    // already participated in CONFIRM/BRACKET to be a duelist. Disconnect
+    // routes into onLocalRDCDisconnect, which decides whether to broadcast
+    // PEER_LOST.
+    if (current.has_value() || !previous.has_value()) return;
+    onLocalRDCDisconnect(previous->mac.data());
+}
+
 void ShootoutManager::onLocalRDCDisconnect(const uint8_t* lostMac) {
     LOG_W(TAG, "onLocalRDCDisconnect %s phase=%d",
           MacToString(lostMac), static_cast<int>(phase_));
     if (phase_ == Phase::IDLE || phase_ == Phase::ABORTED || phase_ == Phase::ENDED) return;
-    if (rdc_ && rdc_->canReachPeer(lostMac)) return;
-    uint8_t packet[8];
-    packet[0] = static_cast<uint8_t>(ShootoutCmd::PEER_LOST);
-    packet[1] = 0;
-    memcpy(&packet[2], lostMac, 6);
-    const auto& targets = bracket_.empty() ? confirmedSet_ : bracket_;
-    sendToPeers(targets, packet, sizeof(packet));
+    // Stale-disconnect filter: if the "lost" peer is still our RDC direct
+    // peer (handshake hasn't actually torn down), the loss is informational
+    // and PEER_LOST shouldn't fire. Transitive reachability isn't tracked here;
+    // bracket-side filtering happens via the coordinator's ABORT-on-demotion path.
+    if (rdc_->isDirectPeer(lostMac)) return;
+    if (peerLostChannel_ != nullptr) {
+        ShootoutPeerLostPayload p{};
+        p.cmd = static_cast<uint8_t>(ShootoutCmd::PEER_LOST);
+        p.seqId = 0;
+        memcpy(p.mac, lostMac, 6);
+        const auto& targets = bracket_.empty() ? confirmedSet_ : bracket_;
+        const uint8_t* selfMac = wirelessManager_->getMacAddress();
+        for (const auto& m : targets) {
+            if (selfMac != nullptr && memcmp(m.data(), selfMac, 6) == 0) continue;
+            peerLostChannel_->sendOnce(m.data(), p);
+        }
+    }
     onPeerLostReceived(lostMac);
 }
 
@@ -554,18 +728,23 @@ void ShootoutManager::onPeerLostReceived(const uint8_t* lostMac) {
     LOG_W(TAG, "onPeerLostReceived %s phase=%d",
           MacToString(lostMac), static_cast<int>(phase_));
     if (phase_ == Phase::IDLE || phase_ == Phase::ABORTED || phase_ == Phase::ENDED) return;
-    if (rdc_ && rdc_->canReachPeer(lostMac)) return;
+    // If the "lost" peer is still our direct RDC peer the message is stale
+    // for us (we'd observe the loss locally first). Otherwise the tournament
+    // participant is gone and we abort.
+    if (rdc_->isDirectPeer(lostMac)) return;
     abortTournament();
 }
 
 void ShootoutManager::maybeStartNextMatch() {
     if (!isCoordinator()) return;
-    if (!bracketPendingAcks_.empty()) return;
+    if (getBracketPendingAckCount() != 0) return;
     if (phase_ != Phase::BRACKET_REVEAL && phase_ != Phase::BETWEEN_MATCHES) return;
     if (phase_ == Phase::BRACKET_REVEAL && !bracketRevealTimer_.expired()) return;
-    // Re-entrancy guard: this function mutates currentMatchIndex_, bracket_,
-    // and phase_; concurrent entry from sync() and ESP-NOW recv callbacks
-    // (Core 0 vs main loop) would double-advance the bracket.
+    // Re-entrancy guard: reportLocalWin calls maybeStartNextMatch directly,
+    // and the same sync() tick can then re-enter through the match-advance
+    // path. Both run on the main loop (ESP-NOW packets land in the drain
+    // queue and dispatch from sync()), so this guards same-tick recursion,
+    // not cross-thread concurrency.
     if (inMaybeStartNextMatch_) return;
     inMaybeStartNextMatch_ = true;
     struct Guard { bool& f; ~Guard() { f = false; } } guard{inMaybeStartNextMatch_};
@@ -604,35 +783,27 @@ std::array<uint8_t, 6> ShootoutManager::lowestMacIn(
 
 void ShootoutManager::onBracketReceived(
     const std::vector<std::array<uint8_t, 6>>& bracket, uint8_t seqId) {
+    // Test-only entry point: production receive path goes through the
+    // BRACKET_ENTRY channel installed in initialize(). Acks are emitted by
+    // ReliableChannel::deliver on the wire path; this synthesized path skips
+    // them since callers are bypassing the channel for state injection.
     if (isCoordinator()) return;
-    if (seqId != 0 && seqId == lastObservedBracketSeqId_) {
-        auto coord = lowestMacIn(bracket);
-        sendShootoutAck(ShootoutCmd::BRACKET, seqId, coord.data());
-        return;
-    }
-    lastObservedBracketSeqId_ = seqId;
+    (void)seqId;  // immediate-duplicate dedup is the channel's job on the wire path
     bracket_ = bracket;
     currentRound_ = bracket;
     coordinatorMac_ = lowestMacIn(bracket_);
     phase_ = Phase::BRACKET_REVEAL;
     bracketRevealTimer_.setTimer(kBracketRevealMs);
-    sendShootoutAck(ShootoutCmd::BRACKET, seqId, coordinatorMac_.data());
 }
 
 void ShootoutManager::onMatchStartReceived(
     const uint8_t* duelistA, const uint8_t* duelistB,
     uint8_t matchIndex, uint8_t seqId) {
+    // Test-only entry point: production receive routes through matchStartChannel_.
     if (isCoordinator()) return;
-    if (seqId != 0 && seqId == lastObservedMatchStartSeqId_) {
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac_.data());
-        return;
-    }
+    (void)seqId;  // immediate-duplicate dedup is the channel's job; dedup by match below
     bool sameMatch = isSameMatch(matchIndex, duelistA, duelistB);
-    lastObservedMatchStartSeqId_ = seqId;
-    if (sameMatch) {
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac_.data());
-        return;
-    }
+    if (sameMatch) return;
     currentMatchIndex_ = matchIndex;
     memcpy(currentDuelistA_.data(), duelistA, 6);
     memcpy(currentDuelistB_.data(), duelistB, 6);
@@ -644,13 +815,6 @@ void ShootoutManager::onMatchStartReceived(
         memcpy(opponentMac_.data(), opp, 6);
         primeMatchManagerForMatch();
     }
-    sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac_.data());
-}
-
-void ShootoutManager::sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint8_t* toMac) {
-    ShootoutAckPayload ack{cmd, seqId};
-    wirelessManager_->sendEspNowData(toMac, PktType::kShootoutCommandAck,
-                                     reinterpret_cast<uint8_t*>(&ack), sizeof(ack));
 }
 
 bool ShootoutManager::isEliminated(const uint8_t* mac) const {
@@ -666,36 +830,23 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
         memcpy(mac.data(), loser, 6);
         eliminated_.push_back(mac);
     }
-    // Restore pre-tournament role at each match boundary. primeMatchManagerForMatch
-    // re-applies the per-match override on the next match start if this device is a
-    // duelist again. Prevents role from staying flipped when the tournament ends.
-    if (originalIsHunter_ && player_) {
-        player_->setIsHunter(*originalIsHunter_);
-    }
     phase_ = Phase::BETWEEN_MATCHES;
-    matchStartWatchdog_.invalidate();
-}
-
-std::vector<uint8_t> ShootoutManager::buildMatchResultPacket(
-    const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) const {
-    std::vector<uint8_t> packet;
-    packet.push_back(static_cast<uint8_t>(ShootoutCmd::MATCH_RESULT));
-    packet.push_back(lastMatchResultSeqId_);
-    packet.insert(packet.end(), winner, winner + 6);
-    packet.insert(packet.end(), loser, loser + 6);
-    packet.push_back(matchIndex);
-    return packet;
 }
 
 void ShootoutManager::sendMatchResultToPeers(
     const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) {
-    lastMatchResultSeqId_ = nextSeqId();
-    memcpy(lastMatchResult_.winner.data(), winner, 6);
-    memcpy(lastMatchResult_.loser.data(), loser, 6);
-    lastMatchResult_.matchIndex = matchIndex;
-    auto packet = buildMatchResultPacket(winner, loser, matchIndex);
-    // Targets confirmedSet_ to reach already-eliminated players too.
-    sendReliablyToPeers(matchResultPendingAcks_, confirmedSet_, packet.data(), packet.size());
+    if (matchResultChannel_ == nullptr) return;
+    ShootoutMatchResultPayload p{};
+    p.cmd = static_cast<uint8_t>(ShootoutCmd::MATCH_RESULT);
+    std::memcpy(p.winner, winner, 6);
+    std::memcpy(p.loser, loser, 6);
+    p.matchIndex = matchIndex;
+
+    const uint8_t* selfMac = wirelessManager_->getMacAddress();
+    for (const auto& target : confirmedSet_) {
+        if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
+        matchResultChannel_->sendReliable(target.data(), p);
+    }
 }
 
 void ShootoutManager::reportLocalWin() {
@@ -712,8 +863,10 @@ void ShootoutManager::reportLocalWin() {
 void ShootoutManager::onMatchResultReceived(
     const uint8_t* winner, const uint8_t* loser,
     uint8_t matchIndex, uint8_t seqId, const uint8_t* fromMac) {
-    // Always ack so the sender stops retrying, even when this is a duplicate.
-    sendShootoutAck(ShootoutCmd::MATCH_RESULT, seqId, fromMac);
+    // Production path acks via ReliableChannel::deliver before this fires.
+    // Tests inject MATCH_RESULT directly without driving the channel, so they
+    // already get the response semantics they need from this call.
+    (void)seqId; (void)fromMac;
     // Dedup by loser-MAC rather than seqId: non-coord senders have independent
     // seq counters, but each loser is eliminated exactly once per tournament.
     if (isEliminated(loser)) {
@@ -724,13 +877,17 @@ void ShootoutManager::onMatchResultReceived(
     if (isCoordinator()) maybeStartNextMatch();
 }
 
-void ShootoutManager::onMatchResultAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    if (seqId != lastMatchResultSeqId_) return;
-    eraseFromPending(matchResultPendingAcks_, fromMac);
+void ShootoutManager::onMatchResultAckReceived(const uint8_t* fromMac) {
+    if (matchResultChannel_ != nullptr) matchResultChannel_->cancel(fromMac);
 }
 
 size_t ShootoutManager::getMatchResultPendingAckCount() const {
-    return matchResultPendingAcks_.size();
+    if (matchResultChannel_ == nullptr) return 0;
+    size_t count = 0;
+    for (const auto& peer : confirmedSet_) {
+        if (matchResultChannel_->isPending(peer.data())) ++count;
+    }
+    return count;
 }
 
 std::array<uint8_t, 6> ShootoutManager::findLastRemaining() const {
@@ -742,66 +899,60 @@ std::array<uint8_t, 6> ShootoutManager::findLastRemaining() const {
 
 void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     LOG_W(TAG, "tournamentEnd winner=%s", MacToString(winner));
-    lastTournamentEndSeqId_ = nextSeqId();
-    uint8_t packet[8];
-    packet[0] = static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END);
-    packet[1] = lastTournamentEndSeqId_;
-    memcpy(&packet[2], winner, 6);
-    // Targets confirmedSet_ rather than bracket_: eliminated players need the
-    // tournament-end transition or they stall in BETWEEN_MATCHES.
-    sendReliablyToPeers(tournamentEndPendingAcks_, confirmedSet_, packet, sizeof(packet));
+    if (tournamentEndChannel_ != nullptr) {
+        ShootoutTournamentEndPayload p{};
+        p.cmd = static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END);
+        std::memcpy(p.winner, winner, 6);
+        const uint8_t* selfMac = wirelessManager_->getMacAddress();
+        // Targets confirmedSet_ rather than bracket_: eliminated players need the
+        // tournament-end transition or they stall in BETWEEN_MATCHES.
+        for (const auto& target : confirmedSet_) {
+            if (selfMac != nullptr && std::memcmp(target.data(), selfMac, 6) == 0) continue;
+            tournamentEndChannel_->sendReliable(target.data(), p);
+        }
+    }
     memcpy(tournamentWinner_.data(), winner, 6);
     phase_ = Phase::ENDED;
+    // Drop any in-flight MATCH_RESULT pending so a straggling abandon does
+    // not latch tournamentAbortPending_ after the tournament has ended.
+    if (matchResultChannel_ != nullptr) {
+        // The channel's pending entries live in the shared transport Resender.
+        // Cancel each peer that still has a MATCH_RESULT in flight.
+        for (const auto& target : confirmedSet_) {
+            matchResultChannel_->cancel(target.data());
+        }
+    }
 }
 
-void ShootoutManager::onTournamentEndAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    if (seqId != lastTournamentEndSeqId_) return;
-    eraseFromPending(tournamentEndPendingAcks_, fromMac);
+void ShootoutManager::onTournamentEndAckReceived(const uint8_t* fromMac) {
+    if (tournamentEndChannel_ != nullptr) tournamentEndChannel_->cancel(fromMac);
 }
 
 void ShootoutManager::onTournamentEndReceived(const uint8_t* winner, uint8_t seqId) {
-    if (seqId != 0 && seqId == lastObservedTournamentEndSeqId_) {
-        auto coord = getCoordinatorMac();
-        sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coord.data());
-        return;
-    }
-    lastObservedTournamentEndSeqId_ = seqId;
+    (void)seqId;  // immediate-duplicate dedup is the channel's job; re-run is idempotent
     memcpy(tournamentWinner_.data(), winner, 6);
     phase_ = Phase::ENDED;
-    auto coord = getCoordinatorMac();
-    sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coord.data());
+    // Drop any in-flight MATCH_RESULT pending so a straggling abandon does
+    // not latch tournamentAbortPending_ after the tournament has ended.
+    if (matchResultChannel_ != nullptr) {
+        for (const auto& target : confirmedSet_) {
+            matchResultChannel_->cancel(target.data());
+        }
+    }
 }
 
 void ShootoutManager::onAbortReceived() {
-    if (phase_ == Phase::ABORTED || phase_ == Phase::IDLE) return;
+    // ENDED is terminal-success and must not be demoted by a stray ABORT
+    // from a peer that diverged.
+    if (phase_ == Phase::ABORTED || phase_ == Phase::IDLE || phase_ == Phase::ENDED) return;
     resetToIdle();
     phase_ = Phase::ABORTED;
 }
 
 std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const {
-    if (!cdm_->isLoop()) return {};
-
-    std::vector<std::array<uint8_t, 6>> out;
-    auto addUnique = [&out](const uint8_t* mac) {
-        if (mac == nullptr) return;
-        for (const auto& existing : out) {
-            if (memcmp(existing.data(), mac, 6) == 0) return;
-        }
-        std::array<uint8_t, 6> copy;
-        memcpy(copy.data(), mac, 6);
-        out.push_back(copy);
-    };
-
-    addUnique(wirelessManager_->getMacAddress());
-    addUnique(rdc_->getPeerMac(SerialIdentifier::OUTPUT_JACK));
-    addUnique(rdc_->getPeerMac(SerialIdentifier::INPUT_JACK));
-
-    for (auto jack : {SerialIdentifier::OUTPUT_JACK, SerialIdentifier::INPUT_JACK}) {
-        PortState state = rdc_->getPortState(jack);
-        for (const auto& peer : state.peerMacAddresses) {
-            addUnique(peer.data());
-        }
-    }
-
-    return out;
+    // Building a bracket from mid-convergence partial topology state produces
+    // inconsistent members across devices. Wait for the peer-graph topology to
+    // settle (isTopologyStable) before opening any derived state from it.
+    if (!rdc_->isTopologyStable()) return {};
+    return rdc_->getChainMembers();
 }

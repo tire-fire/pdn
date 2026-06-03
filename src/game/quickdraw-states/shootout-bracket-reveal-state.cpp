@@ -1,8 +1,8 @@
 #include "game/quickdraw-states.hpp"
 #include "device/device.hpp"
 
-ShootoutBracketReveal::ShootoutBracketReveal(ShootoutManager* shootout, ChainDuelManager* chainDuelManager)
-    : State(SHOOTOUT_BRACKET_REVEAL), shootout_(shootout), chainDuelManager_(chainDuelManager) {}
+ShootoutBracketReveal::ShootoutBracketReveal(ShootoutManager* shootout, ChainManager* chainManager)
+    : State(SHOOTOUT_BRACKET_REVEAL), shootout_(shootout), chainManager_(chainManager) {}
 
 void ShootoutBracketReveal::onStateMounted(Device *PDN) {
     // Clear stale button callbacks left by ShootoutProposal.
@@ -17,7 +17,6 @@ void ShootoutBracketReveal::onStateMounted(Device *PDN) {
 }
 
 void ShootoutBracketReveal::onStateLoop(Device *PDN) {
-    shootout_->sync();
     auto p = shootout_->getPhase();
     if (p == ShootoutManager::Phase::MATCH_IN_PROGRESS) {
         if (shootout_->isLocalDuelist()) {
@@ -27,10 +26,11 @@ void ShootoutBracketReveal::onStateLoop(Device *PDN) {
         }
     }
     if (p == ShootoutManager::Phase::ABORTED) shouldGoToAborted_ = true;
-    bool loopBroken = chainDuelManager_ && !chainDuelManager_->isLoop();
-    if (loopBreakDebounce_.heldFor(loopBroken, kLoopBreakDebounceMs)) {
-        shootout_->resetToIdle();
-        shouldGoToIdle_ = true;
+    // Abort only once the roster has settled into a non-loop. Routes through
+    // ShootoutAborted via phase=ABORTED.
+    bool ringSettledOpen = chainManager_ && chainManager_->isRingSettledOpen();
+    if (loopBreakDebounce_.heldFor(ringSettledOpen, kLoopBreakDebounceMs)) {
+        shootout_->abortTournament();
     }
 }
 

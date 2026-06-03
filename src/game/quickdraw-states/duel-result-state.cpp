@@ -24,16 +24,34 @@ DuelResult::~DuelResult() {
 void DuelResult::onStateMounted(Device *PDN) {
     LOG_I(DUEL_RESULT_TAG, "Duel result state mounted");
 
-    player->incrementMatchesPlayed();
+    if (matchManager->isVoided()) {
+        LOG_W(DUEL_RESULT_TAG, "Match voided; routing to Idle");
+        voided = true;
+        matchManager->finalizeMatch();
+        PDN->getHaptics()->setIntensity(0);
+        PDN->getDisplay()->invalidateScreen()->render();
+        return;
+    }
+
+    // Shootout matches are venue-local: they route to spectator/eliminated
+    // below and never persist, so they must not move lifetime win/loss/streak
+    // counters. wonBattle/captured are still set so the result screen renders.
+    bool countsTowardCareer = !matchManager->currentMatchIsShootout();
 
     if(matchManager->didWin()) {
         wonBattle = true;
-        player->incrementWins();
-        player->incrementStreak();
+        if (countsTowardCareer) {
+            player->incrementMatchesPlayed();
+            player->incrementWins();
+            player->incrementStreak();
+        }
     } else {
         captured = true;
-        player->resetStreak();
-        player->incrementLosses();
+        if (countsTowardCareer) {
+            player->incrementMatchesPlayed();
+            player->resetStreak();
+            player->incrementLosses();
+        }
     }
 
     PDN->getHaptics()->setIntensity(0);
@@ -44,13 +62,11 @@ void DuelResult::onStateMounted(Device *PDN) {
 }
 
 void DuelResult::onStateLoop(Device *PDN) {
-    // No loop processing needed for result state
 }
 
 void DuelResult::onStateDismounted(Device *PDN) {
     LOG_I(DUEL_RESULT_TAG, "Duel result state dismounted - Cleaning up");
-    
-    // Log state before reset
+
     LOG_I(DUEL_RESULT_TAG, "State before reset - wonBattle: %d, captured: %d",
              wonBattle, captured);
 
@@ -59,7 +75,37 @@ void DuelResult::onStateDismounted(Device *PDN) {
 
     wonBattle = false;
     captured = false;
+    voided = false;
     PDN->getLightManager()->stopAnimation();
+}
+
+bool DuelResult::transitionToIdleOnVoid() {
+    if (!voided) return false;
+    // A void while the tournament is still in flight is handled by
+    // transitionToShootoutAbortOnVoid (it aborts, then everyone routes out).
+    // Everything else falls to Idle: no shootout, or a terminal ENDED/ABORTED
+    // tournament. Routing this device to Idle touches no shared state, so it
+    // does not clobber the standings other devices are viewing.
+    if (shootoutManager && shootoutManager->active()) {
+        // ABORTED is routed to the abort screen by the phaseIsAborted transition
+        // registered ahead of this one, so only the ENDED terminal phase needs
+        // an Idle escape here.
+        if (shootoutManager->getPhase() != ShootoutManager::Phase::ENDED) return false;
+    }
+    return true;
+}
+
+bool DuelResult::transitionToShootoutAbortOnVoid() {
+    if (!shootoutManager || !voided) return false;
+    // Only abort while the tournament is still in flight. ENDED/ABORTED are
+    // terminal phases whose UI must not be clobbered by a late-arriving void.
+    auto phase = shootoutManager->getPhase();
+    if (phase == ShootoutManager::Phase::IDLE
+        || phase == ShootoutManager::Phase::ENDED
+        || phase == ShootoutManager::Phase::ABORTED) return false;
+    LOG_W(DUEL_RESULT_TAG, "Voided shootout duel; aborting tournament");
+    shootoutManager->abortTournament();
+    return true;
 }
 
 bool DuelResult::transitionToWin() {
@@ -79,6 +125,7 @@ bool DuelResult::transitionToLose() {
 }
 
 bool DuelResult::transitionToShootoutSpectator() {
+    if (voided) return false;
     if (!shootoutManager || !shootoutManager->active()) return false;
     if (!wonBattle) return false;
     shootoutManager->reportLocalWin();
@@ -86,6 +133,10 @@ bool DuelResult::transitionToShootoutSpectator() {
 }
 
 bool DuelResult::transitionToShootoutEliminated() {
+    // A voided match has no winner or loser; it must never read as an
+    // elimination (voided leaves wonBattle=false, which would otherwise fall
+    // through to the Eliminated screen even in a terminal ENDED/ABORTED phase).
+    if (voided) return false;
     if (!shootoutManager || !shootoutManager->active()) return false;
     return !wonBattle;
 }
