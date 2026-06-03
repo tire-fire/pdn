@@ -41,6 +41,17 @@ struct AckPayload
     uint8_t seqId;
 } __attribute__((packed));
 
+// Wire format shared between ChainManager send sites and ChainGameEvent
+// receivers; must stay packed. Holds enough room for the largest game-event
+// payload currently in flight; fields beyond event_type and seqId are
+// populated only by event types that need them.
+struct ChainGameEventPayload
+{
+    uint8_t event_type; // ChainGameEventType
+    uint8_t seqId;      // 0 = no-ack/no-retry; nonzero = reliable
+    uint8_t payload[14];
+} __attribute__((packed));
+
 struct DataPktHdr
 {
     //Total packet length including header
