@@ -62,16 +62,41 @@ public:
     }
 
     void connect() override {
+        // A preceding WiFi.begin() association attempt (the HTTP excursion that
+        // fetches player data) can leave the STA driver wedged: after it,
+        // esp_now_send returns OK but its TX-complete callback never fires, so
+        // the callback-driven send queue never advances and every transmit
+        // stalls forever. The radio still receives, which masks the fault.
+        // Power the interface fully off and back on to discard that residual
+        // association state before ESP-NOW re-initializes. Harmless on the
+        // first (boot) connect where no association ever happened.
+        WiFi.disconnect(true, false);
+        WiFi.mode(WIFI_OFF);
+        delay(50);
+
         // Set WiFi to station mode
         WiFi.mode(WIFI_STA);
-        
+
+        // Stop the STA auto-reconnect scan loop. Without this, the WiFi library
+        // periodically scans every channel looking for a saved AP — those scans
+        // pull the radio off ESPNOW_CHANNEL and ESP-NOW peers can't ACK each
+        // other's unicast packets during the off-channel windows. The scan
+        // continues even after a failed connection unless explicitly stopped.
+        WiFi.setAutoReconnect(false);
+
         // Disconnect from any AP but keep WiFi radio ON (false = keep radio running)
         // ESP-NOW requires the WiFi radio to be active!
         WiFi.disconnect(false);
-        
+
+        // STA modem sleep defaults to ON. With no AP connected, the radio is
+        // off most of the time waking only for beacons it never sees — ESP-NOW
+        // peers can't get L2 ACKs back during sleep windows, killing the link.
+        // PS_NONE keeps the radio always-on for offline ESP-NOW operation.
+        esp_wifi_set_ps(WIFI_PS_NONE);
+
         // Small delay to let WiFi stabilize after mode change
         delay(100);
-        
+
         // Set the channel using ESP-IDF API for reliability
         esp_err_t err = esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
         if (err != ESP_OK) {
@@ -269,11 +294,23 @@ private:
         sendMutex_(xSemaphoreCreateMutex())
     {
 
+#if PDN_ENABLE_RSSI_TRACKING
+        // Promiscuous mode is needed ONLY when RSSI tracking is enabled,
+        // because the standard ESP-NOW recv callback doesn't provide RSSI.
+        // When unconditionally on, the radio decodes 802.11 frames addressed
+        // to other devices on the channel too — ESP-NOW callbacks then fire
+        // for frames our STA MAC didn't filter, breaking the addressed-only
+        // unicast assumption and letting cross-pair handshake EXCHANGE_IDs
+        // reach the HandshakeWirelessManager dispatcher. Verified on hardware:
+        // with this enabled, dev3 (bounty) was receiving dev1's (hunter)
+        // unicast handshake packets and latching dev1 as a wireless direct
+        // peer, despite no physical cable between them.
         wifi_promiscuous_filter_t filter = {
             .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT};
         esp_wifi_set_promiscuous_filter(&filter);
         esp_wifi_set_promiscuous_rx_cb(EspNowManager::WifiPromiscuousRecvCallback);
         esp_wifi_set_promiscuous(true);
+#endif
         // ESP-NOW initialization happens in connect() -> initializeEspNow()
         // after WiFi has been set up
     }
