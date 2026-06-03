@@ -20,6 +20,9 @@
 #include "chain-duel-multi-device-fixture.hpp"
 #include "shootout-manager-tests.hpp"
 #include "match-manager-concurrent.hpp"
+#include "crc16-tests.hpp"
+#include "peer-graph-tests.hpp"
+#include "peer-graph-codec-tests.hpp"
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -1467,6 +1470,83 @@ TEST_F(ShootoutManagerTests, isHunterRestoredAfterTournament) { isHunterRestored
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }
+
+// ============================================
+// PEER GRAPH TESTS
+// ============================================
+
+TEST_F(PeerGraphTests, storesBeaconBySource) {
+    peerGraphStoresBeaconBySource(this);
+}
+
+TEST_F(PeerGraphTests, mutualEdgeRequiresBothClaims) {
+    peerGraphMutualEdgeRequiresBothClaims(this);
+}
+
+TEST_F(PeerGraphTests, isInLoopThreeNodeRing) {
+    peerGraphIsInLoopThreeNodeRing(this);
+}
+
+TEST_F(PeerGraphTests, threeNodeChainNotInLoop) {
+    peerGraphThreeNodeChainNotInLoop(this);
+}
+
+TEST_F(PeerGraphTests, fourNodeRingInLoop) {
+    peerGraphFourNodeRingInLoop(this);
+}
+
+TEST_F(PeerGraphTests, selfIslandNotInLoop) {
+    peerGraphSelfIslandNotInLoop(this);
+}
+
+TEST_F(PeerGraphTests, rejectsPoisonBeaconSource) {
+    peerGraphRejectsPoisonBeaconSource(this);
+}
+
+TEST_F(PeerGraphTests, topologyStableAfterDebounceWindow) {
+    peerGraphTopologyStableAfterDebounceWindow(this);
+}
+TEST_F(PeerGraphTests, backwardsClockNotStable) {
+    peerGraphBackwardsClockNotStable(this);
+}
+
+TEST_F(PeerGraphTests, unchangedBeaconDoesNotResetStability) {
+    peerGraphUnchangedBeaconDoesNotResetStability(this);
+}
+
+TEST_F(PeerGraphTests, nonMutualNodeExcludedFromMembers) {
+    peerGraphNonMutualNodeExcludedFromMembers(this);
+}
+
+TEST_F(PeerGraphTests, peerDropsOutWhenSelfStopsClaiming) {
+    peerGraphPeerDropsOutWhenSelfStopsClaiming(this);
+}
+
+TEST_F(PeerGraphTests, twoDeviceBothJacksNotLoopButRetainsPeer) {
+    peerGraphTwoDeviceBothJacksNotLoopButRetainsPeer(this);
+}
+
+TEST_F(PeerGraphTests, countReachableSplitsChainAtSelf) {
+    peerGraphCountReachableSplitsChainAtSelf(this);
+}
+
+TEST_F(PeerGraphTests, countReachableDirectPeerBeforeBeacon) {
+    peerGraphCountReachableDirectPeerBeforeBeacon(this);
+}
+
+TEST_F(PeerGraphTests, countReachableZeroForAbsentPeer) {
+    peerGraphCountReachableZeroForAbsentPeer(this);
+}
+
+// ============================================
+// PEER GRAPH CODEC TESTS
+// ============================================
+
+TEST(PeerGraphCodecTests, helloRoundTrip) { codecHelloRoundTrip(); }
+TEST(PeerGraphCodecTests, beaconRoundTrip) { codecBeaconRoundTrip(); }
+TEST(PeerGraphCodecTests, beaconEmptyPeersRoundTrip) { codecBeaconEmptyPeersRoundTrip(); }
+TEST(PeerGraphCodecTests, rejectsCorruptedCrc) { codecRejectsCorruptedCrc(); }
+TEST(PeerGraphCodecTests, rejectsWrongOpcode) { codecRejectsWrongOpcode(); }
 
 // ============================================
 // MAIN
