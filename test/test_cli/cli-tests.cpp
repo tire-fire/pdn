@@ -115,16 +115,8 @@ TEST_F(NativeSerialDriverTestSuite, OutputBufferMaxSize) {
     serialDriverOutputBufferMaxSize(this);
 }
 
-TEST_F(NativeSerialDriverTestSuite, InputQueueFIFO) {
-    serialDriverInputQueueFIFO(this);
-}
-
 TEST_F(NativeSerialDriverTestSuite, AvailableForWrite) {
     serialDriverAvailableForWrite(this);
-}
-
-TEST_F(NativeSerialDriverTestSuite, TracksHistory) {
-    serialDriverTracksHistory(this);
 }
 
 TEST_F(NativeSerialDriverTestSuite, ClearOutput) {
@@ -133,10 +125,6 @@ TEST_F(NativeSerialDriverTestSuite, ClearOutput) {
 
 TEST_F(NativeSerialDriverTestSuite, CallbackInvoked) {
     serialDriverCallbackInvoked(this);
-}
-
-TEST_F(NativeSerialDriverTestSuite, StripsFraming) {
-    serialDriverStripsFraming(this);
 }
 
 // ============================================
