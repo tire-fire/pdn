@@ -23,6 +23,7 @@
 #include "crc16-tests.hpp"
 #include "peer-graph-tests.hpp"
 #include "peer-graph-codec-tests.hpp"
+#include "wireless-transport-tests.hpp"
 
 #if defined(ARDUINO)
 #include <Arduino.h>

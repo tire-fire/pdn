@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 //PktType determines which callback will handle the packet on the receiving end
@@ -20,8 +21,28 @@ enum class PktType : uint8_t
     kShootoutCommandAck = 12,
     kSymbolMatchCommand = 13,
     kFdnConnect = 14,
+    kAck = 15,
     kNumPacketTypes //Not a real packet type, DO NOT USE
 };
+
+// Max length of a player name on the wire (no null terminator).
+inline constexpr size_t kNameLength = 12;
+
+// Identifies a reliable channel by (PktType, subType). The Resender keys its
+// per-channel stats with this and WirelessTransport keys its channel registry
+// with it; they must agree, so both the type and the encoding live here.
+using ChannelKey = uint32_t;
+inline constexpr ChannelKey channelKey(PktType type, uint8_t subType) {
+    return (static_cast<ChannelKey>(subType) << 16) |
+           static_cast<ChannelKey>(static_cast<uint8_t>(type));
+}
+
+struct AckPayload
+{
+    uint8_t originalType;
+    uint8_t subType;
+    uint8_t seqId;
+} __attribute__((packed));
 
 struct DataPktHdr
 {
