@@ -66,16 +66,11 @@ int SymbolWirelessManager::processSymbolMatchCommand(const uint8_t* macAddress, 
     bool portResolved = false;
 
     for (SerialIdentifier port : {SerialIdentifier::OUTPUT_JACK, SerialIdentifier::INPUT_JACK}) {
-        PortState portState = remoteDeviceCoordinator->getPortState(port);
-        for (const auto& peerMac : portState.peerMacAddresses) {
-            if (macAddress != nullptr && std::memcmp(peerMac.data(), macAddress, 6) == 0) {
-                resolvedPort = port;
-                portResolved = true;
-                break;
-            }
-        }
-
-        if (portResolved) {
+        const uint8_t* directMac = remoteDeviceCoordinator->getPeerMac(port);
+        if (directMac != nullptr && macAddress != nullptr &&
+            std::memcmp(directMac, macAddress, 6) == 0) {
+            resolvedPort = port;
+            portResolved = true;
             break;
         }
     }
