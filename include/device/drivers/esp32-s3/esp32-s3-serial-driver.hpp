@@ -8,6 +8,7 @@
 #include "device/drivers/logger.hpp"
 #include <Arduino.h>
 #include <esp_rom_gpio.h>
+#include <driver/gpio.h>
 #include "device/device-constants.hpp"
 #include <HardwareSerial.h>
 #include <string>
@@ -33,6 +34,13 @@ public:
 
         Serial1.begin(BAUDRATE, SERIAL_8N1, TXr, TXt, true);
         Serial1.setTimeout(100);  // 100ms timeout for readStringUntil
+
+        // RX bias on the OUTPUT jack (TXr = GPIO 38). Through a marginal TRS
+        // contact the floating input drifts HIGH and injects spurious edges; a
+        // pulldown holds it at the idle level, and the remote's active-HIGH data
+        // pulses overpower the weak internal pulldown so reception stays clean.
+        // A truly unplugged jack is detected by handshake silence, not pin level.
+        gpio_set_pull_mode(static_cast<gpio_num_t>(TXr), GPIO_PULLDOWN_ONLY);
         return 0;
     };
 
@@ -113,6 +121,12 @@ public:
 
         Serial2.begin(BAUDRATE, SERIAL_8N1, RXr, RXt, true);
         Serial2.setTimeout(100);  // 100ms timeout for readStringUntil
+
+        // Pullup on the INPUT jack RX pin (RXr) so a marginal contact idles HIGH
+        // (the inverted UART's idle level) instead of floating and injecting
+        // spurious edges; the remote's data pulses still drive the line cleanly.
+        // A truly unplugged jack is detected by handshake silence, not pin level.
+        gpio_pullup_en(static_cast<gpio_num_t>(RXr));
         return 0;
     };
 
