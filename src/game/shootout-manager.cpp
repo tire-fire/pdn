@@ -203,10 +203,7 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
     // block first-time stray CONFIRMs from outside the ring).
     if (!hasConfirmed(fromMac)) {
         auto members = getLoopMembers();
-        bool inLoop = false;
-        for (const auto& m : members) {
-            if (memcmp(m.data(), fromMac, 6) == 0) { inLoop = true; break; }
-        }
+        bool inLoop = macInList(fromMac, members);
         if (!inLoop) return;
     }
     recordName(fromMac, name);
@@ -252,10 +249,7 @@ std::string ShootoutManager::getNameForMac(const uint8_t* mac) const {
 }
 
 bool ShootoutManager::hasConfirmed(const uint8_t* mac) const {
-    for (const auto& existing : confirmedSet_) {
-        if (memcmp(existing.data(), mac, 6) == 0) return true;
-    }
-    return false;
+    return macInList(mac, confirmedSet_);
 }
 
 bool ShootoutManager::allMembersConfirmed() const {
@@ -593,14 +587,6 @@ void ShootoutManager::maybeStartNextMatch() {
     phase_ = Phase::MATCH_IN_PROGRESS;
 }
 
-std::array<uint8_t, 6> ShootoutManager::lowestMacIn(
-    const std::vector<std::array<uint8_t, 6>>& set) {
-    std::array<uint8_t, 6> lowest = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    for (const auto& m : set) {
-        if (memcmp(m.data(), lowest.data(), 6) < 0) lowest = m;
-    }
-    return lowest;
-}
 
 void ShootoutManager::onBracketReceived(
     const std::vector<std::array<uint8_t, 6>>& bracket, uint8_t seqId) {
@@ -654,10 +640,7 @@ void ShootoutManager::sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint
 }
 
 bool ShootoutManager::isEliminated(const uint8_t* mac) const {
-    for (const auto& m : eliminated_) {
-        if (memcmp(m.data(), mac, 6) == 0) return true;
-    }
-    return false;
+    return macInList(mac, eliminated_);
 }
 
 void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* loser) {
@@ -784,9 +767,7 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const 
     std::vector<std::array<uint8_t, 6>> out;
     auto addUnique = [&out](const uint8_t* mac) {
         if (mac == nullptr) return;
-        for (const auto& existing : out) {
-            if (memcmp(existing.data(), mac, 6) == 0) return;
-        }
+        if (macInList(mac, out)) return;
         std::array<uint8_t, 6> copy;
         memcpy(copy.data(), mac, 6);
         out.push_back(copy);

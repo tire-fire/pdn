@@ -175,8 +175,6 @@ private:
     bool retryBracketForPeer(BracketPending& p);
     void abortTournament();
     std::vector<uint8_t> buildBracketPacket() const;
-    static std::array<uint8_t, 6> lowestMacIn(
-        const std::vector<std::array<uint8_t, 6>>& set);
 
     // Stable post-bracket-formation. Used in place of lowestMacIn(bracket_)
     // which would otherwise rescan the bracket on every ack path.
