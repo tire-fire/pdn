@@ -723,6 +723,43 @@ inline void stateFlowThroughDuelResultToLose(StateFlowIntegrationTests* suite) {
     EXPECT_TRUE(resultState.transitionToLose());
 }
 
+// Both-timeout (indeterminate) duel is voided, not scored as a loss: no
+// win/loss/streak recorded, and DuelResult routes to Idle (no shootout active).
+inline void stateFlowThroughDuelResultToVoid(StateFlowIntegrationTests* suite) {
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+    ON_CALL(*suite->device.mockDisplay, drawText(_, _, _))
+        .WillByDefault(Return(suite->device.mockDisplay));
+
+    int lossesBefore = suite->player->getLosses();
+    int winsBefore = suite->player->getWins();
+    int playedBefore = suite->player->getMatchesPlayed();
+
+    DuelPushed pushedState(suite->player, suite->matchManager,
+                           &suite->device.fakeRemoteDeviceCoordinator);
+    pushedState.onStateMounted(&suite->device);
+
+    // Grace period elapses with no result on either side: the match is voided.
+    suite->fakeClock->advance(2000);
+    pushedState.onStateLoop(&suite->device);
+    EXPECT_TRUE(suite->matchManager->isVoided());
+
+    DuelResult resultState(suite->player, suite->matchManager,
+                           suite->wirelessManager, nullptr);
+    resultState.onStateMounted(&suite->device);
+
+    EXPECT_FALSE(resultState.transitionToWin());
+    EXPECT_FALSE(resultState.transitionToLose());
+    EXPECT_TRUE(resultState.transitionToIdleOnVoid());
+    EXPECT_FALSE(resultState.transitionToShootoutAbortOnVoid());
+
+    EXPECT_EQ(suite->player->getLosses(), lossesBefore);
+    EXPECT_EQ(suite->player->getWins(), winsBefore);
+    EXPECT_EQ(suite->player->getMatchesPlayed(), playedBefore);
+
+    // Voided match is dropped, not persisted.
+    EXPECT_FALSE(suite->matchManager->getCurrentMatch().has_value());
+}
+
 inline void stateFlowDuelToWin(StateFlowIntegrationTests* suite) {
     stateFlowThroughDuelResultToWin(suite);
 }

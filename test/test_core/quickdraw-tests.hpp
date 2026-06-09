@@ -1460,7 +1460,10 @@ inline void cleanupDuelStateClearsCallbacksWhenGoingToDuelReceivedResult(StateCl
     duelState.onStateDismounted(&suite->device);
 }
 
-// Test: DuelPushed clears match when disconnected on dismount
+// Test: DuelPushed clears match only on a persistent disconnect at dismount.
+// A single transient disconnect tick must NOT wipe the match (it could erase a
+// just-voided match before DuelResult routes it out); the clear only fires once
+// the disconnect has been held past the debounce window.
 inline void pushedClearsMatchOnDisconnect(StateCleanupTests* suite) {
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     suite->matchManager->initializeMatch(dummyMac);
@@ -1468,9 +1471,14 @@ inline void pushedClearsMatchOnDisconnect(StateCleanupTests* suite) {
 
     ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value());
 
-    // FakeRemoteDeviceCoordinator always reports DISCONNECTED, so isConnected() == false
+    // FakeRemoteDeviceCoordinator always reports DISCONNECTED.
     DuelPushed pushedState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator);
     pushedState.onStateMounted(&suite->device);
+
+    // Arm the disconnect debounce, then hold the disconnect past the window so
+    // dismount sees a persistent disconnect and clears the match.
+    EXPECT_FALSE(pushedState.disconnectedBackToIdle());
+    suite->fakeClock->advance(2000);
     pushedState.onStateDismounted(&suite->device);
 
     EXPECT_FALSE(suite->matchManager->getCurrentMatch().has_value());
@@ -1554,6 +1562,8 @@ inline void duelReceivedResultDebouncesTransientDisconnect(StateCleanupTests* su
     EXPECT_TRUE(received.disconnectedBackToIdle());
 }
 
+// Same persistent-disconnect contract as pushedClearsMatchOnDisconnect: a
+// single transient tick must not clear; only a held disconnect does.
 inline void receivedResultClearsMatchOnDisconnect(StateCleanupTests* suite) {
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     suite->matchManager->initializeMatch(dummyMac);
@@ -1569,6 +1579,9 @@ inline void receivedResultClearsMatchOnDisconnect(StateCleanupTests* suite) {
 
     DuelReceivedResult receivedState(suite->player, suite->matchManager, &suite->device.fakeRemoteDeviceCoordinator);
     receivedState.onStateMounted(&suite->device);
+
+    EXPECT_FALSE(receivedState.disconnectedBackToIdle());
+    suite->fakeClock->advance(2000);
     receivedState.onStateDismounted(&suite->device);
 
     EXPECT_FALSE(suite->matchManager->getCurrentMatch().has_value());

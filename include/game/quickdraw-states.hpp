@@ -319,6 +319,8 @@ public:
     // bracket advances exactly once per match.
     bool transitionToShootoutSpectator();
     bool transitionToShootoutEliminated();
+    bool transitionToIdleOnVoid();
+    bool transitionToShootoutAbortOnVoid();
 
 private:
     Player* player;
@@ -327,6 +329,7 @@ private:
     ShootoutManager* shootoutManager;
     bool wonBattle = false;
     bool captured = false;
+    bool voided = false;
 };
 
 class Win : public State {

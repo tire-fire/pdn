@@ -28,12 +28,16 @@ void DuelPushed::onStateMounted(Device *PDN) {
 
 void DuelPushed::onStateLoop(Device *PDN) {
     gracePeriodTimer.updateTime();
+
+    if (gracePeriodTimer.expired() && !matchManager->matchResultsAreIn()) {
+        matchManager->voidCurrentMatch();
+    }
 }
 
 void DuelPushed::onStateDismounted(Device *PDN) {
     LOG_I(DUEL_PUSHED_TAG, "DuelPushed state dismounted");
 
-    if (!isConnected()) {
+    if (isPersistentlyDisconnected()) {
         matchManager->clearCurrentMatch();
     }
 

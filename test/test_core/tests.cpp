@@ -1139,6 +1139,10 @@ TEST_F(StateFlowIntegrationTests, throughDuelResultToLose) {
     stateFlowThroughDuelResultToLose(this);
 }
 
+TEST_F(StateFlowIntegrationTests, throughDuelResultToVoid) {
+    stateFlowThroughDuelResultToVoid(this);
+}
+
 // ============================================
 // QUICKDRAW INTEGRATION TESTS - TWO DEVICE SIMULATION
 // ============================================

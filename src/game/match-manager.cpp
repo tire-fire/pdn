@@ -48,6 +48,12 @@ void MatchManager::clearCurrentMatch() {
     }
 }
 
+void MatchManager::voidCurrentMatch() {
+    if (!activeDuelState.match) return;
+    LOG_W(MATCH_MANAGER_TAG, "Voiding match %s", activeDuelState.match->getMatchId());
+    activeDuelState.match->setVoided(true);
+}
+
 void MatchManager::primeMatch(const char* matchId, const uint8_t* opponentMac) {
     activeDuelState.match.emplace(matchId, player->getUserID().c_str(), player->isHunter());
     memcpy(activeDuelState.opponentMac.data(), opponentMac, 6);

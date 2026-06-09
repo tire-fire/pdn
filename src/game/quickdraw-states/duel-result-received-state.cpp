@@ -47,7 +47,7 @@ void DuelReceivedResult::onStateLoop(Device *PDN) {
 void DuelReceivedResult::onStateDismounted(Device *PDN) {
     LOG_I(DUEL_RESULT_RECEIVED_TAG, "Duel result received state dismounted");
 
-    if (!isConnected()) {
+    if (isPersistentlyDisconnected()) {
         matchManager->clearCurrentMatch();
     }
 

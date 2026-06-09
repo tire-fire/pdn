@@ -24,6 +24,15 @@ DuelResult::~DuelResult() {
 void DuelResult::onStateMounted(Device *PDN) {
     LOG_I(DUEL_RESULT_TAG, "Duel result state mounted");
 
+    if (matchManager->isVoided()) {
+        LOG_W(DUEL_RESULT_TAG, "Match voided; routing out without recording result");
+        voided = true;
+        matchManager->clearCurrentMatch();
+        PDN->getHaptics()->setIntensity(0);
+        PDN->getDisplay()->invalidateScreen()->render();
+        return;
+    }
+
     player->incrementMatchesPlayed();
 
     if(matchManager->didWin()) {
@@ -59,6 +68,7 @@ void DuelResult::onStateDismounted(Device *PDN) {
 
     wonBattle = false;
     captured = false;
+    voided = false;
     PDN->getLightManager()->stopAnimation();
 }
 
@@ -88,4 +98,20 @@ bool DuelResult::transitionToShootoutSpectator() {
 bool DuelResult::transitionToShootoutEliminated() {
     if (!shootoutManager || !shootoutManager->active()) return false;
     return !wonBattle;
+}
+
+bool DuelResult::transitionToIdleOnVoid() {
+    if (!voided) return false;
+    if (shootoutManager && shootoutManager->active()) {
+        if (shootoutManager->getPhase() != ShootoutManager::Phase::ENDED) return false;
+    }
+    return true;
+}
+
+bool DuelResult::transitionToShootoutAbortOnVoid() {
+    if (!shootoutManager || !voided) return false;
+    auto phase = shootoutManager->getPhase();
+    if (phase == ShootoutManager::Phase::IDLE || phase == ShootoutManager::Phase::ENDED || phase == ShootoutManager::Phase::ABORTED) return false;
+    shootoutManager->abortTournament();
+    return true;
 }

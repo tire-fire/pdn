@@ -98,6 +98,8 @@ public:
     size_t getTournamentEndPendingAckCount() const;
     uint8_t getLastTournamentEndSeqId() const { return lastTournamentEndSeqId_; }
     void onAbortReceived();
+    // Voided in-flight match aborts the whole tournament; DuelResult drives this.
+    void abortTournament();
     std::array<uint8_t, 6> getTournamentWinner() const;
 
     // Reset all tournament state back to IDLE phase so a subsequent loop
@@ -173,7 +175,6 @@ private:
     // Returns true iff the retry budget is exhausted for this peer and the
     // caller should abort the tournament after exiting its iteration.
     bool retryBracketForPeer(BracketPending& p);
-    void abortTournament();
     std::vector<uint8_t> buildBracketPacket() const;
     static std::array<uint8_t, 6> lowestMacIn(
         const std::vector<std::array<uint8_t, 6>>& set);

@@ -456,6 +456,16 @@ void Quickdraw::populateStateMap() {
 
     duelResult->addTransition(
         new StateTransition(
+            std::bind(&DuelResult::transitionToShootoutAbortOnVoid, duelResult),
+            shAborted));
+
+    duelResult->addTransition(
+        new StateTransition(
+            std::bind(&DuelResult::transitionToIdleOnVoid, duelResult),
+            idle));
+
+    duelResult->addTransition(
+        new StateTransition(
             std::bind(&DuelResult::transitionToWin, duelResult),
             win));
 

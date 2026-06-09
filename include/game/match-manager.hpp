@@ -120,6 +120,9 @@ public:
 
     void clearCurrentMatch();
 
+    void voidCurrentMatch();
+    bool isVoided() const { return activeDuelState.match.has_value() && activeDuelState.match->isVoided(); }
+
     void setBoostProvider(std::function<unsigned long()> provider);
 
     const LastMatchDisplay& getLastMatchDisplay() const { return lastMatchDisplay_; }

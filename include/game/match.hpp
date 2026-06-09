@@ -91,10 +91,16 @@ public:
     unsigned long getHunterDrawTime() const { return hunter_draw_time_ms; }
     unsigned long getBountyDrawTime() const { return bounty_draw_time_ms; }
 
+    // Transient (not serialized): set when a duel ends with no determinable
+    // result so it is routed out without recording a win or loss.
+    bool isVoided() const { return voided; }
+    void setVoided(bool v) { voided = v; }
+
 private:
     char match_id[IdGenerator::UUID_BUFFER_SIZE] = {};
     char hunter[5] = {};
     char bounty[5] = {};
     unsigned long hunter_draw_time_ms = 0;
     unsigned long bounty_draw_time_ms = 0;
+    bool voided = false;
 };
