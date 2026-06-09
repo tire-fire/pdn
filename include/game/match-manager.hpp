@@ -101,6 +101,10 @@ public:
      */
     std::optional<Match>& getCurrentMatch() { return activeDuelState.match; }
 
+    // True when the active match is a shootout (venue-local, ephemeral) match.
+    // Shootout duels must not move lifetime career stats.
+    bool currentMatchIsShootout() const;
+
     /**
      * Converts all stored matches to a JSON array string
      * @return JSON string containing all stored matches

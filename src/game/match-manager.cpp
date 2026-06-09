@@ -34,6 +34,11 @@ void MatchManager::setShootoutManager(ShootoutManager* shootoutManager) {
     shootoutManager_ = shootoutManager;
 }
 
+bool MatchManager::currentMatchIsShootout() const {
+    return activeDuelState.match.has_value()
+        && std::string(activeDuelState.match->getMatchId()).rfind(kShootoutMatchIdPrefix, 0) == 0;
+}
+
 void MatchManager::clearCurrentMatch() {
     if (activeDuelState.match) {
         LOG_I(MATCH_MANAGER_TAG, "Clearing current match");
@@ -388,7 +393,11 @@ void MatchManager::initialize(Player* player, StorageInterface* storage, Quickdr
 
         // Player stats record the raw (unboosted) reaction time — boost is a
         // duel-time advantage, not an achievement the player actually made.
-        player->addReactionTime(reactionTimeMs);
+        // Shootout matches are venue-local and never uploaded, so they don't
+        // contribute to the career reaction-time average either.
+        if (!matchManager->currentMatchIsShootout()) {
+            player->addReactionTime(reactionTimeMs);
+        }
 
         LOG_I(MATCH_MANAGER_TAG, "Stored reaction time in MatchManager");
 
@@ -498,8 +507,11 @@ void MatchManager::sendNeverPressed(unsigned long pityTime) {
     player->isHunter() ? setHunterDrawTime(pityTime) : setBountyDrawTime(pityTime);
     setNeverPressed();
     // Mirror what gets uploaded: every duel contributes a draw time to the server,
-    // so on-device "average reaction" should include pity times too.
-    player->addReactionTime(pityTime);
+    // so on-device "average reaction" should include pity times too. Shootout
+    // matches aren't uploaded, so they don't count toward the average.
+    if (!currentMatchIsShootout()) {
+        player->addReactionTime(pityTime);
+    }
 
     QuickdrawCommand command(activeDuelState.opponentMac.data(), QDCommand::NEVER_PRESSED, activeDuelState.match->getMatchId(), player->getUserID().c_str(), pityTime, player->isHunter());
     quickdrawWirelessManager->broadcastPacket(activeDuelState.opponentMac.data(), command);

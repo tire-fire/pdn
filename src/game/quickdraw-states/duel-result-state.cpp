@@ -24,16 +24,26 @@ DuelResult::~DuelResult() {
 void DuelResult::onStateMounted(Device *PDN) {
     LOG_I(DUEL_RESULT_TAG, "Duel result state mounted");
 
-    player->incrementMatchesPlayed();
+    // Shootout duels are venue-local: they decide the bracket but must not move
+    // lifetime career stats (matches played, W/L record, streak).
+    bool countsTowardCareer = !matchManager->currentMatchIsShootout();
+
+    if (countsTowardCareer) {
+        player->incrementMatchesPlayed();
+    }
 
     if(matchManager->didWin()) {
         wonBattle = true;
-        player->incrementWins();
-        player->incrementStreak();
+        if (countsTowardCareer) {
+            player->incrementWins();
+            player->incrementStreak();
+        }
     } else {
         captured = true;
-        player->resetStreak();
-        player->incrementLosses();
+        if (countsTowardCareer) {
+            player->resetStreak();
+            player->incrementLosses();
+        }
     }
 
     PDN->getHaptics()->setIntensity(0);
