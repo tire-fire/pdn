@@ -97,6 +97,11 @@ void DuelCountdown::onStateDismounted(Device *PDN) {
     doBattle = false;
     currentStepIndex = 0;
     countdownTimer.invalidate();
+    hapticTimer.invalidate();
+    // The countdown pulses the haptic for HAPTIC_DURATION each step and relies on
+    // onStateLoop to clear it when the pulse timer expires. Leaving mid-pulse
+    // (abort, disconnect) skips that clear and the motor latches on. Force it off.
+    PDN->getHaptics()->setIntensity(0);
     PDN->getPrimaryButton()->removeButtonCallbacks();
     PDN->getSecondaryButton()->removeButtonCallbacks();
 }
