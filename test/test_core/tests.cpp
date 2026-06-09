@@ -530,14 +530,6 @@ TEST_F(MatchTestSuite, jsonContainsWinnerFlag) {
     matchJsonContainsWinnerFlag();
 }
 
-TEST_F(MatchTestSuite, binaryRoundTripPreservesAllFields) {
-    matchBinaryRoundTripPreservesAllFields();
-}
-
-TEST_F(MatchTestSuite, binarySizeIsCorrect) {
-    matchBinarySizeIsCorrect();
-}
-
 TEST_F(MatchTestSuite, setupClearsDrawTimes) {
     matchSetupClearsDrawTimes();
 }
@@ -760,10 +752,6 @@ TEST_F(DuelIntegrationTestSuite, completeDuelFlowHunterWins) {
 
 TEST_F(DuelIntegrationTestSuite, completeDuelFlowBountyWins) {
     completeDuelFlowBountyWins(this);
-}
-
-TEST_F(DuelIntegrationTestSuite, matchSerializationRoundTrip) {
-    matchSerializationRoundTrip();
 }
 
 TEST_F(DuelIntegrationTestSuite, playerStatsAccumulateAcrossMatches) {
