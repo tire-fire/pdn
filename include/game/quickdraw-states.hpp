@@ -329,10 +329,12 @@ private:
     bool captured = false;
 };
 
-class Win : public State {
+// Terminal duel screen for both outcomes; `won` selects the WIN vs LOSE state
+// id, image, chain event, and animation.
+class DuelOutcome : public State {
 public:
-    Win(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager);
-    ~Win();
+    DuelOutcome(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager, bool won);
+    ~DuelOutcome();
 
     void onStateMounted(Device *PDN) override;
     void onStateLoop(Device *PDN) override;
@@ -341,30 +343,11 @@ public:
     bool isTerminalState() override;
 
 private:
-    SimpleTimer winTimer = SimpleTimer();
+    SimpleTimer outcomeTimer = SimpleTimer();
     Player *player;
     ChainDuelManager* chainDuelManager;
     MatchManager* matchManager;
-    bool reset = false;
-};
-
-class Lose : public State {
-public:
-    Lose(Player *player, ChainDuelManager* chainDuelManager, MatchManager* matchManager);
-    ~Lose();
-
-    void onStateMounted(Device *PDN) override;
-    void onStateLoop(Device *PDN) override;
-    void onStateDismounted(Device *PDN) override;
-    bool resetGame();
-    bool isTerminalState() override;
-
-private:
-    SimpleTimer loseTimer = SimpleTimer();
-    Player *player;
-    ChainDuelManager* chainDuelManager;
-    MatchManager* matchManager;
-    bool reset = false;
+    bool won_;
 };
 
 class UploadMatchesState : public State {

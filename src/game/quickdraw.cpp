@@ -305,8 +305,8 @@ void Quickdraw::populateStateMap() {
     SupporterReady* supporterReady = new SupporterReady(player, remoteDeviceCoordinator, chainDuelManager);
     this->supporterReadyState = supporterReady;
 
-    Win* win = new Win(player, chainDuelManager, matchManager);
-    Lose* lose = new Lose(player, chainDuelManager, matchManager);
+    DuelOutcome* win = new DuelOutcome(player, chainDuelManager, matchManager, true);
+    DuelOutcome* lose = new DuelOutcome(player, chainDuelManager, matchManager, false);
 
     Sleep* sleep = new Sleep(player);
     UploadMatchesState* uploadMatches = new UploadMatchesState(player, wirelessManager, matchManager);
@@ -477,12 +477,12 @@ void Quickdraw::populateStateMap() {
     // --- Post-game flow ---
     win->addTransition(
         new StateTransition(
-            std::bind(&Win::resetGame, win),
+            std::bind(&DuelOutcome::resetGame, win),
             uploadMatches));
 
     lose->addTransition(
         new StateTransition(
-            std::bind(&Lose::resetGame, lose),
+            std::bind(&DuelOutcome::resetGame, lose),
             uploadMatches));
 
     uploadMatches->addTransition(
