@@ -1593,7 +1593,7 @@ inline void rdcRingLatchedNeverAnnouncesOrReportsToSelf(RDCHelloTests* suite) {
 }
 
 // Demotion: a head that adopts a new head above it hands its roster over in a
-// single unicast and clears it locally.
+// single unicast and clears it locally — once the link to that new head is up.
 inline void rdcDemotedHeadTransfersRoster(RDCHelloTests* suite) {
     const uint8_t memberA[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
     const uint8_t memberB[6] = {0xB2, 0x02, 0x03, 0x04, 0x05, 0x06};
@@ -1614,8 +1614,10 @@ inline void rdcDemotedHeadTransfersRoster(RDCHelloTests* suite) {
     ASSERT_EQ(suite->rdc.getChainMembers().size(), 2u);
     ASSERT_EQ(membershipChanges, 2);
 
-    // A standalone head plugs in above: its HELLO makes it our effective head.
-    suite->deliverHello(suite->inJack, chainHelloFrame(newHead, nullptr));
+    // A standalone head plugs in above and its link establishes: it becomes this
+    // device's effective head.
+    connectJack(suite, suite->inJack, SerialIdentifier::INPUT_JACK,
+                chainHelloFrame(newHead, nullptr));
 
     ASSERT_EQ(transfer.count, 1);
     EXPECT_EQ(0, memcmp(transfer.lastDst.data(), newHead, 6));
@@ -2254,4 +2256,194 @@ inline void rdcStaleTransferDoesNotReforkClaimedUpstream(RDCHelloTests* suite) {
     std::vector<std::array<uint8_t, 6>> members = suite->rdc.getChainMembers();
     ASSERT_EQ(members.size(), 1u);
     EXPECT_EQ(0, memcmp(members[0].data(), memberY, 6));
+}
+
+// ============================================
+// Public API surface (#159)
+// ============================================
+
+// getPeerMac must read the per-jack HELLO link, not the handshake peer table the
+// HELLO path never populates: the game layer addresses its neighbour with this.
+// Served from CONNECTING (the MAC is known from the first HELLO) and cleared on
+// link death, per jack.
+inline void rdcPeerMacReadsHelloLink(RDCHelloTests* suite) {
+    const uint8_t outPeer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    EXPECT_EQ(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), nullptr);
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTING);
+    ASSERT_NE(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), nullptr);
+    EXPECT_EQ(0, memcmp(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), outPeer, 6));
+    EXPECT_TRUE(suite->rdc.isDirectPeer(outPeer));
+    // Per-jack: the OUTPUT peer must not show up on the INPUT jack.
+    EXPECT_EQ(suite->rdc.getPeerMac(SerialIdentifier::INPUT_JACK), nullptr);
+
+    suite->rdc.onContextExchangeComplete(SerialIdentifier::OUTPUT_JACK);
+    suite->rdc.sync(&suite->device);
+    EXPECT_EQ(0, memcmp(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), outPeer, 6));
+
+    suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
+    suite->rdc.sync(&suite->device);
+    EXPECT_EQ(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), nullptr);
+    EXPECT_FALSE(suite->rdc.isDirectPeer(outPeer));
+}
+
+// getPeerUserId lifts the userId out of the peer's PlayerProfile — absent until
+// the context lands, present while connected, gone again on link death so the
+// next peer on the jack cannot inherit it.
+inline void rdcPeerUserIdLiftedFromContext(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    EXPECT_EQ(suite->rdc.getPeerUserId(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::PEER_USER_ID_NONE);
+
+    std::vector<uint8_t> ctx = pdnContextBytes(/*chainRole=*/1, /*userId=*/4242, /*seqId=*/9);
+    suite->transport()->deliverIncoming(
+        PktType::kPdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    EXPECT_EQ(suite->rdc.getPeerUserId(SerialIdentifier::OUTPUT_JACK), 4242);
+    // Lifted per jack, not device-wide.
+    EXPECT_EQ(suite->rdc.getPeerUserId(SerialIdentifier::INPUT_JACK),
+              RemoteDeviceCoordinator::PEER_USER_ID_NONE);
+
+    suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
+    suite->rdc.sync(&suite->device);
+    EXPECT_EQ(suite->rdc.getPeerUserId(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::PEER_USER_ID_NONE);
+}
+
+// An FDN peer carries no player id, so its context must leave the port's id
+// absent rather than lifting the first bytes of an FdnProfile.
+inline void rdcPeerUserIdAbsentForFdnContext(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+
+    FdnConnectionContext fdn{};
+    fdn.seqId = 4;
+    fdn.chainRole = 1;
+    fdn.fdn.reserved = 0x7F;
+    std::vector<uint8_t> ctx(sizeof(fdn));
+    memcpy(ctx.data(), &fdn, sizeof(fdn));
+    suite->transport()->deliverIncoming(
+        PktType::kFdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    EXPECT_EQ(suite->rdc.getPeerUserId(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::PEER_USER_ID_NONE);
+}
+
+// The role observer must fire on the way DOWN as well as up. A child whose
+// upstream link dies is STANDALONE again, and the game layer only learns that
+// from this callback — a missed edge leaves it acting as a chain member forever.
+inline void rdcChainRoleChangeFiresOnConnectAndLinkDeath(RDCHelloTests* suite) {
+    std::vector<ChainRole> roles;
+    suite->rdc.setOnChainRoleChange([&](ChainRole role) { roles.push_back(role); });
+
+    connectJack(suite, suite->inJack, SerialIdentifier::INPUT_JACK, suite->helloFrame(0xA1));
+    ASSERT_EQ(suite->rdc.getChainRole(), ChainRole::CHILD);
+    ASSERT_EQ(roles.size(), 1u);
+    EXPECT_EQ(roles[0], ChainRole::CHILD);
+
+    suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
+    suite->rdc.sync(&suite->device);
+
+    ASSERT_EQ(suite->rdc.getChainRole(), ChainRole::STANDALONE);
+    ASSERT_EQ(roles.size(), 2u);
+    EXPECT_EQ(roles[1], ChainRole::STANDALONE);
+
+    // Edge-triggered: a steady role re-fires nothing.
+    suite->rdc.sync(&suite->device);
+    EXPECT_EQ(roles.size(), 2u);
+}
+
+// Ring closure reaches the role observer too (the shootout coordinator claim
+// reads getChainRole() when onRingClosed fires), and the latch opening on a
+// broken loop reports the fallback role.
+inline void rdcChainRoleChangeReportsRingLatch(RDCHelloTests* suite) {
+    std::vector<ChainRole> roles;
+    suite->rdc.setOnChainRoleChange([&](ChainRole role) { roles.push_back(role); });
+    int ringClosedCount = 0;
+    suite->rdc.setOnRingClosed([&]() { ringClosedCount++; });
+
+    connectJack(suite, suite->outJack, SerialIdentifier::OUTPUT_JACK, suite->helloFrame(0xB1));
+    ASSERT_EQ(roles.size(), 1u);
+    EXPECT_EQ(roles[0], ChainRole::HEAD);
+
+    // Our own MAC returns as the INPUT peer's head: the loop closed through us.
+    const uint8_t lowNeighbour[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+    suite->deliverHello(suite->inJack, chainHelloFrame(lowNeighbour, suite->localMac));
+    suite->rdc.sync(&suite->device);
+    suite->rdc.onContextExchangeComplete(SerialIdentifier::INPUT_JACK);
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(ringClosedCount, 1);
+    ASSERT_EQ(roles.size(), 2u);
+    EXPECT_EQ(roles[1], ChainRole::RING);
+
+    // The OUTPUT link dies: the loop is broken and only the INPUT link remains.
+    suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
+    suite->deliverHello(suite->inJack, chainHelloFrame(lowNeighbour, suite->localMac));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(roles.size(), 3u);
+    EXPECT_EQ(roles[2], ChainRole::CHILD);
+}
+
+// A one-way cable: the upstream's HELLOs arrive but this device's own side of the
+// exchange never completes, so its link cycles Connecting -> Idle forever. That
+// upstream is unproven, and a head with a roster must not act on it — no head
+// advertised downstream, no roster shipped to a peer that cannot answer.
+inline void rdcUnprovenUpstreamIsNeverAdopted(RDCHelloTests* suite) {
+    const uint8_t deafUpstream[6] = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+    const uint8_t member[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+    EXPECT_CALL(*suite->device.mockPeerComms, removeEspNowPeer(_)).Times(testing::AnyNumber());
+    RosterSendCapture transfer;
+    captureSends(suite, PktType::kHeadTransfer, transfer);
+
+    connectJack(suite, suite->outJack, SerialIdentifier::OUTPUT_JACK, suite->helloFrame(0xB1));
+    std::vector<uint8_t> join = announceBytes(suite->localMac, 1);
+    suite->transport()->deliverIncoming(PktType::kConnectionAnnounce, member,
+                                        join.data(), join.size());
+    ASSERT_EQ(suite->rdc.getChainRole(), ChainRole::HEAD);
+    ASSERT_EQ(suite->rdc.getChainMembers().size(), 1u);
+
+    // Past two full context-exchange timeouts, so the INPUT link has cycled back
+    // to Idle and re-armed more than once.
+    unsigned long elapsed = 0;
+    while (elapsed <= 2 * RemoteDeviceCoordinator::CONTEXT_EXCHANGE_TIMEOUT_MS) {
+        suite->deliverHello(suite->inJack, chainHelloFrame(deafUpstream, nullptr));
+        suite->deliverHello(suite->outJack, suite->helloFrame(0xB1));
+        suite->rdc.sync(&suite->device);
+        suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_CADENCE_MS);
+        elapsed += RemoteDeviceCoordinator::HELLO_CADENCE_MS;
+    }
+
+    EXPECT_NE(suite->rdc.getHelloLinkState(SerialIdentifier::INPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    EXPECT_EQ(suite->rdc.getChainRole(), ChainRole::HEAD);
+    EXPECT_EQ(suite->rdc.getChainMembers().size(), 1u);
+    EXPECT_EQ(suite->rdc.getHeadMac(), nullptr);
+    EXPECT_EQ(transfer.count, 0);
+
+    // Nothing downstream may be told to route to that peer either.
+    suite->outJack.clearOutput();
+    suite->rdc.emitHello();
+    const uint8_t zero[6] = {0, 0, 0, 0, 0, 0};
+    EXPECT_EQ(0, memcmp(parseEmittedHello(suite->outJack.getOutput()).headMac, zero, 6));
 }

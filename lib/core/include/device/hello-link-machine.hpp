@@ -42,7 +42,7 @@ struct HelloLinkContext {
     unsigned long contextTimeoutMs = 500;
 
     unsigned long lastHelloMs = 0;
-    std::array<uint8_t, 6> peerMac{};  // source MAC last heard; consumed by #157
+    std::array<uint8_t, 6> peerMac{};  // source MAC last heard; the owner's per-jack peer identity
 
     // Silent-link gap with a defensive underflow clamp: HELLO processing is
     // main-loop-only today, but any backwards step between stamp and read (a
@@ -72,11 +72,22 @@ public:
         context->peerMac = {};
     }
 
-    void arm() { transitionToConnectingState = true; }
+    /// The armed peer is published on the way out, not when it arrives: the
+    /// jack is down for as long as this state is current, and peer() promises
+    /// all-zero there. Dismount runs before Connecting mounts, so the peer is in
+    /// place for the context request that mount fires.
+    void onStateDismounted(Device*) override { context->peerMac = armedPeer; }
+
+    /// Opens the link on the next tick, with `source` as the peer it tracks.
+    void arm(const uint8_t* source) {
+        memcpy(armedPeer.data(), source, 6);
+        transitionToConnectingState = true;
+    }
     bool transitionToConnecting() { return transitionToConnectingState; }
 
 private:
     HelloLinkContext* context = nullptr;
+    std::array<uint8_t, 6> armedPeer{};
     bool transitionToConnectingState = false;
 };
 
@@ -170,13 +181,15 @@ public:
             skipToState(nullptr, 0);
         }
         context.lastHelloMs = context.nowMs();
-        memcpy(context.peerMac.data(), hello.source, 6);
+        // A live link past the guard above already tracks this source, so the peer
+        // identity only ever changes here: Idle takes it and publishes it as it
+        // dismounts into Connecting.
         if (currentState && currentState->getStateId() == HELLO_LINK_IDLE) {
-            static_cast<HelloIdleState*>(currentState)->arm();
+            static_cast<HelloIdleState*>(currentState)->arm(hello.source);
         }
     }
 
-    // #157 drives this when the context exchange completes; only meaningful while
+    // Driven when the context exchange completes; only meaningful while
     // Connecting (mirrors the enum's state guard).
     void onContextExchangeComplete() {
         if (currentState && currentState->getStateId() == HELLO_LINK_CONNECTING) {

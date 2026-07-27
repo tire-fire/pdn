@@ -91,8 +91,13 @@ public:
     /// Status plus the peer MACs reachable via the port.
     PortState getPortState(SerialIdentifier port);
 
+    /// No peer id known: an FDN peer, an unregistered player, or no peer at all.
+    static constexpr uint16_t PEER_USER_ID_NONE = 0xFFFF;
+
     /**
-     * Returns a pointer to the peer's MAC address for the given port, or nullptr if no peer is connected.
+     * Returns a pointer to the port's direct peer MAC address, or nullptr when the
+     * port tracks no peer. Known from the first HELLO, so it is served from
+     * CONNECTING onward, not only once CONNECTED.
      * Prefer this over getPortState() when only the MAC address is needed.
      */
     virtual const uint8_t* getPeerMac(SerialIdentifier port) const;
@@ -100,10 +105,13 @@ public:
     /// The direct peer's hardware kind (PDN/FDN) for the given port.
     virtual DeviceType getPeerDeviceType(SerialIdentifier port) const;
 
-    /// The direct peer's 4-digit player id for the given port; 0xFFFF when
-    /// unregistered or no peer. STUB until the context exchange lands (#157):
-    /// always 0xFFFF.
-    virtual uint16_t getPeerUserId(SerialIdentifier port) const { return 0xFFFF; }
+    /// The direct peer's 4-digit player id for the given port, lifted from the
+    /// PlayerProfile its context exchange delivered; PEER_USER_ID_NONE until then.
+    /// Gated on getPeerMac so the two never disagree about the port having a peer.
+    virtual uint16_t getPeerUserId(SerialIdentifier port) const {
+        if (getPeerMac(port) == nullptr) return PEER_USER_ID_NONE;
+        return helloByPort[portIndex(port)].peerUserId;
+    }
 
     /// Returns true iff `mac` matches the direct peer on either jack.
     virtual bool isDirectPeer(const uint8_t* mac) const;
@@ -125,8 +133,9 @@ public:
     /// Head-only chain member roster; empty for a child or standalone device.
     virtual std::vector<std::array<uint8_t, 6>> getChainMembers() const;
 
-    /// Registers the per-jack connect/disconnect observer. The disconnect fires
-    /// before chain-state teardown, so handlers must not read chain state here;
+    /// Registers the per-jack connect/disconnect observer. The connect fires
+    /// after the chain state it implies is in place; the disconnect fires BEFORE
+    /// chain-state teardown, so handlers must not read chain state there —
     /// consistent chain facts arrive via setOnChainRoleChange.
     void setOnJackChange(JackChangeCallback callback) {
         jackChangeCallback = std::move(callback);
@@ -147,7 +156,7 @@ public:
 
     static constexpr unsigned long HELLO_CADENCE_MS = 20;
     static constexpr unsigned long HELLO_SILENT_LINK_MS = 100;
-    // A link stuck mid-context-exchange past this falls back to IDLE (#157).
+    // A link stuck mid-context-exchange past this falls back to IDLE.
     static constexpr unsigned long CONTEXT_EXCHANGE_TIMEOUT_MS = 500;
     // A ring latch is evidence-based: it survives a higher-MAC head claim only
     // while this device's own MAC keeps returning on INPUT within this window.
@@ -220,8 +229,8 @@ public:
     void connectivityTaskBody();
 #endif
 
-    /// #157 drives this once the context exchange completes: CONNECTING->CONNECTED
-    /// and fires the jack-connect observer.
+    /// Driven by a completed context exchange: CONNECTING->CONNECTED, whose mount
+    /// fires the jack-connect observer.
     void onContextExchangeComplete(SerialIdentifier jack);
 
     /// This jack's HELLO link state (observability / tests).
@@ -361,6 +370,9 @@ private:
         DeviceType peerDeviceType = DeviceType::UNKNOWN;
         std::array<uint8_t, MAX_PEER_PROFILE_BYTES> peerProfile{};
         size_t peerProfileLen = 0;
+        // The only profile field lifted onto the port surface; the profile itself
+        // stays opaque and reaches the game layer as raw bytes.
+        uint16_t peerUserId = PEER_USER_ID_NONE;
         // Last recovery resend to this jack's peer (0 = never); throttles the
         // CONNECTED-state resend so two CONNECTED sides can't volley at radio RTT.
         unsigned long lastContextResendMs = 0;
@@ -398,6 +410,7 @@ private:
         std::array<uint8_t, 6> mac{};
         DeviceType peerType = DeviceType::UNKNOWN;
         uint8_t chainRole = 0;
+        uint16_t peerUserId = PEER_USER_ID_NONE;
         std::array<uint8_t, MAX_PEER_PROFILE_BYTES> profile{};
         size_t len = 0;
         unsigned long arrivedAtMs = 0;
@@ -415,18 +428,18 @@ private:
     // Serialize + reliably send this device's context to `mac` per selfDeviceType.
     void sendSelfContext(const uint8_t* mac);
     // Cache a received peer context by MAC, then apply it to jacks (rationale in .cpp).
-    void onContextReceived(const uint8_t* fromMac, DeviceType peerType,
-                           uint8_t chainRole, const uint8_t* profile, size_t len);
+    void onContextReceived(const uint8_t* fromMac, DeviceType peerType, uint8_t chainRole,
+                           uint16_t peerUserId, const uint8_t* profile, size_t len);
     // Completes every jack currently CONNECTING to `fromMac` (live receive path).
-    void applyContextToJacks(const uint8_t* fromMac, DeviceType peerType,
-                             uint8_t chainRole, const uint8_t* profile, size_t len);
+    void applyContextToJacks(const uint8_t* fromMac, DeviceType peerType, uint8_t chainRole,
+                             uint16_t peerUserId, const uint8_t* profile, size_t len);
     // Assumes `jack` is CONNECTING to this peer; both timing paths route through here,
     // so the context callback fires exactly once per jack.
     void completeJackContext(SerialIdentifier jack, DeviceType peerType, uint8_t chainRole,
-                             const uint8_t* profile, size_t len);
+                             uint16_t peerUserId, const uint8_t* profile, size_t len);
     // Holds a context whose jack is not yet CONNECTING; evicts oldest when full.
     void bufferContext(const uint8_t* fromMac, DeviceType peerType, uint8_t chainRole,
-                       const uint8_t* profile, size_t len);
+                       uint16_t peerUserId, const uint8_t* profile, size_t len);
     // Applies any cached context for `jack`'s peer to `jack` as it connects. Leaves
     // the cache entry for the peer's other jack (2-node ring); the TTL clears it.
     void drainBufferedContext(SerialIdentifier jack, const uint8_t* mac);
@@ -452,8 +465,8 @@ private:
 
     // ---- Device-level chain state machine (#156) ----
     // headMac (48 bits) + a confirmed bit packed into one atomic: the emit task
-    // reads it while the main loop writes it. confirmed is wired but always 0
-    // until #157's context exchange populates it.
+    // reads it while the main loop writes it. The confirmed bit rises only when the
+    // announce to the head currently held is delivered.
     static constexpr uint64_t HEAD_MAC_MASK = 0xFFFFFFFFFFFFULL;
     static constexpr uint64_t CONFIRMED_BIT = 1ULL << 48;
     std::atomic<uint64_t> chainHeadState{0};
@@ -467,10 +480,19 @@ private:
     mutable std::array<uint8_t, 6> headMacScratch{};
     // Last role reported to chainRoleChangeCallback, for edge-triggered firing.
     ChainRole lastChainRole = ChainRole::STANDALONE;
+    // The effective head the INPUT peer last advertised (all-zero = none), kept
+    // apart from chainHeadState: a HELLO can advertise a head long before the
+    // link carrying it is established, and only the latter may be acted on.
+    std::array<uint8_t, 6> upstreamAdvertisedHead{};
 
     static uint64_t packHead(const uint8_t* mac, bool confirmed);
     static void unpackMac(uint64_t value, uint8_t* out);
+    // Ring detection and the latched-head conflict, driven by any INPUT HELLO;
+    // taking on a foreign head is left to adoptUpstreamHead.
     void applyUpstreamHead(const HelloPayload& hello);
+    // Adopts upstreamAdvertisedHead once the INPUT link reports CONNECTED: claims
+    // the head's radio slot, hands over the roster, announces. No-op before that.
+    void adoptUpstreamHead();
     void onLinkLost(SerialIdentifier port);
     void maybeFireChainRoleChange();
     // Drops a former head's radio slot (and its dead roster retries) unless an
