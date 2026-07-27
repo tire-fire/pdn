@@ -128,7 +128,7 @@ void Quickdraw::onRoleAnnounceAckPacket(const uint8_t* fromMac, const uint8_t* d
     chainDuelManager->onRoleAnnounceAckReceived(fromMac, payload->seqId);
 }
 
-void Quickdraw::onStateLoop(Device *PDN) {
+void Quickdraw::onStateLoop(Device* pdn) {
     if (chainDuelManager) chainDuelManager->sync();
 
     if (chainDuelManager) {
@@ -159,7 +159,7 @@ void Quickdraw::onStateLoop(Device *PDN) {
         statsLogTimer_.setTimer(kStatsLogIntervalMs);
     }
 
-    StateMachine::onStateLoop(PDN);
+    StateMachine::onStateLoop(pdn);
 }
 
 void Quickdraw::onChainGameEventPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
@@ -271,7 +271,19 @@ void Quickdraw::onShootoutCommandAckPacket(const uint8_t* fromMac, const uint8_t
 
 Quickdraw::~Quickdraw() {
     player = nullptr;
+    // The coordinator and the wireless manager are device-owned and outlive this
+    // app, so every slot holding `this` has to be emptied here. kSymbolMatchCommand
+    // is deliberately absent: its ctx is the symbol manager, which outlives
+    // Quickdraw, so clearing it here would deafen a live consumer.
+    remoteDeviceCoordinator->setChainChangeCallback(nullptr);
+    remoteDeviceCoordinator->setPeerLostCallback(nullptr);
     remoteDeviceCoordinator = nullptr;
+    for (PktType handled : {PktType::kChainGameEvent, PktType::kChainGameEventAck,
+                            PktType::kChainConfirm, PktType::kRoleAnnounce,
+                            PktType::kRoleAnnounceAck, PktType::kShootoutCommand,
+                            PktType::kShootoutCommandAck}) {
+        wirelessManager->clearEspNowPacketHandler(handled);
+    }
     if (quickdrawWirelessManager) {
         quickdrawWirelessManager->clearCallbacks();
     }

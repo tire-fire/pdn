@@ -132,8 +132,6 @@ private:
     SimpleTimer matchInitializationTimer;
     const int MATCH_INITIALIZATION_TIMEOUT = 1000;
 
-    bool transitionToSymbolState = false;
-
     // void serialEventCallbacks(const std::string& message);
 };
 

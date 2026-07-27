@@ -35,7 +35,8 @@ public:
     void onRoleAnnounceAckPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
     void onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
     void onShootoutCommandAckPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
-    void onStateLoop(Device *PDN) override;
+    /// Pumps the chain-duel manager's retransmit timers, then runs the states.
+    void onStateLoop(Device* pdn) override;
 
 private:
     void onChainStateChanged();

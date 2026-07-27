@@ -17,6 +17,7 @@
 #include "hwm-tests.hpp"
 #include "rdc-tests.hpp"
 #include "rdc-hello-tests.hpp"
+#include "connect-state-callback-tests.hpp"
 #include "chain-duel-manager-tests.hpp"
 #include "chain-duel-multi-device-fixture.hpp"
 #include "shootout-manager-tests.hpp"
@@ -1306,6 +1307,62 @@ TEST_F(RDCHelloTests, rejectsSelfAndZeroSource) {
 
 TEST_F(RDCHelloTests, contextCompleteConnects) {
     rdcHelloContextCompleteConnects(this);
+}
+
+TEST_F(ConnectStateTests, mountedStateReceivesJackConnect) {
+    connectStateMountedReceivesJackConnect(this);
+}
+
+TEST_F(ConnectStateTests, receivesDisconnect) {
+    connectStateReceivesDisconnect(this);
+}
+
+TEST_F(ConnectStateTests, dismountedStopsReceiving) {
+    connectStateDismountedStopsReceiving(this);
+}
+
+TEST_F(ConnectStateTests, replaysConnectedJackAtMount) {
+    connectStateReplaysConnectedJackAtMount(this);
+}
+
+TEST_F(ConnectStateTests, replaysOnlyConnectedJacks) {
+    connectStateReplaysOnlyConnectedJacks(this);
+}
+
+TEST_F(ConnectStateTests, peerFactsClearedOnDisconnect) {
+    connectStatePeerFactsClearedOnDisconnect(this);
+}
+
+TEST_F(ConnectStateTests, destructorReleasesSlot) {
+    connectStateDestructorReleasesSlot(this);
+}
+
+TEST_F(RDCTests, connectStateSkipsReplayWhenHelloOff) {
+    connectStateSkipsReplayWhenHelloOff(this);
+}
+
+TEST_F(ConnectStateTests, constructorRegistrationCoversEveryTenure) {
+    connectStateConstructorRegistrationCoversEveryTenure(this);
+}
+
+TEST_F(ConnectStateTests, clearedHandlerStopsReceiving) {
+    connectStateClearedHandlerStopsReceiving(this);
+}
+
+TEST_F(ConnectStateTests, peerDeviceTypeComesFromContextChannel) {
+    rdcHelloPeerDeviceTypeComesFromContextChannel(this);
+}
+
+TEST_F(ConnectStateTests, connectCarriesPeerContext) {
+    connectStateConnectCarriesPeerContext(this);
+}
+
+TEST_F(ConnectStateTests, replayCarriesPeerContext) {
+    connectStateReplayCarriesPeerContext(this);
+}
+
+TEST_F(ConnectStateTests, disconnectCarriesNoContext) {
+    connectStateDisconnectCarriesNoContext(this);
 }
 
 TEST_F(RDCHelloTests, silentLinkDisconnects) {

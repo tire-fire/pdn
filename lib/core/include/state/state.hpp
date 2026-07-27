@@ -146,6 +146,11 @@ private:
  * the typed onStateMounted(DeviceT*) / onStateLoop(DeviceT*) / onStateDismounted(DeviceT*)
  * API — no manual casting needed and no accidental bridge override is possible.
  *
+ * An intermediate base (ConnectState) that must run code around every subclass's
+ * mount and dismount uses afterMount/beforeDismount. Overriding onStateMounted
+ * instead would be silently shadowed by the concrete subclass's own override
+ * unless every subclass remembered to chain to it.
+ *
  * Usage:
  *   class IdleState : public TypedState<PDN> {
  *       void onStateMounted(PDN* pdn) override { ... }
@@ -165,16 +170,27 @@ public:
     virtual void onStateLoop(DeviceT* device) {}
     virtual void onStateDismounted(DeviceT* device) {}
 
+protected:
+    // Bracket the subclass's own hooks. Ordering is the contract: afterMount runs
+    // once onStateMounted has initialized the subclass, beforeDismount while it is
+    // still live. For intermediate bases only, not concrete states.
+    virtual void afterMount(DeviceT* device) {}
+    virtual void beforeDismount(DeviceT* device) {}
+
 private:
     // Private final bridge — casts once and forwards to the typed user API above.
     // State implementers cannot override or call these.
     void mount(Device* device) final {
-        onStateMounted(static_cast<DeviceT*>(device));
+        DeviceT* typed = static_cast<DeviceT*>(device);
+        onStateMounted(typed);
+        afterMount(typed);
     }
     void loop(Device* device) final {
         onStateLoop(static_cast<DeviceT*>(device));
     }
     void dismount(Device* device) final {
-        onStateDismounted(static_cast<DeviceT*>(device));
+        DeviceT* typed = static_cast<DeviceT*>(device);
+        beforeDismount(typed);
+        onStateDismounted(typed);
     }
 };

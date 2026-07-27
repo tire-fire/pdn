@@ -91,11 +91,6 @@ void Idle::onStateLoop(PDN* pdn) {
         }
     }
 
-    if (!matchInitialized && (getPeerDeviceType(SerialIdentifier::OUTPUT_JACK) == DeviceType::FDN
-    || getPeerDeviceType(SerialIdentifier::INPUT_JACK) == DeviceType::FDN)) {
-        transitionToSymbolState = true;
-    }
-
     if(matchInitializationTimer.expired()) {
         matchInitialized = false;
         matchManager->clearCurrentMatch();
@@ -109,7 +104,6 @@ void Idle::onStateDismounted(PDN* pdn) {
     pdn->getDisplay()->setGlyphMode(FontMode::TEXT);
     pdn->getPrimaryButton()->removeButtonCallbacks();
     pdn->getSecondaryButton()->removeButtonCallbacks();
-    transitionToSymbolState = false;
 }
 
 bool Idle::transitionToDuelCountdown() {
@@ -165,5 +159,9 @@ bool Idle::isAuxRequired() {
 }
 
 bool Idle::transitionToSymbol() {
-    return transitionToSymbolState;
+    // An in-flight match init owns the device until its timeout clears, so an
+    // FDN cabled during that window routes to symbol match once it does.
+    return !matchInitialized &&
+           (getPeerDeviceType(SerialIdentifier::OUTPUT_JACK) == DeviceType::FDN ||
+            getPeerDeviceType(SerialIdentifier::INPUT_JACK) == DeviceType::FDN);
 }

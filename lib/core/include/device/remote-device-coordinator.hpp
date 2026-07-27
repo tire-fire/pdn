@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -132,11 +133,17 @@ public:
     }
 
     // ---- Per-jack HELLO connectivity (#155) ----
-    // HELLO is the serial discovery/liveness beacon that replaces the string
-    // handshake (deleted by #160). Each jack runs an independent link SM fed by
-    // the real exec()-driven RX byte pump. Off by default: production stays on
-    // the handshake until the context exchange (#157) and device chain SM (#156)
-    // land, since nothing drives CONNECTING->CONNECTED before then.
+    // HELLO is the serial discovery/liveness beacon that will replace the string
+    // handshake (#160 deletes it). Each jack runs an independent link SM fed by the
+    // real exec()-driven RX byte pump. No caller under src/ enables it, so
+    // production still runs the handshake.
+
+    // The jacks that can carry a HELLO link, in the order sync() drives them.
+    static constexpr std::array<SerialIdentifier, 3> HELLO_JACKS = {
+        SerialIdentifier::OUTPUT_JACK,
+        SerialIdentifier::INPUT_JACK,
+        SerialIdentifier::INPUT_JACK_SECONDARY,
+    };
 
     static constexpr unsigned long HELLO_CADENCE_MS = 20;
     static constexpr unsigned long HELLO_SILENT_LINK_MS = 100;
@@ -151,6 +158,11 @@ public:
     enum class HelloLinkState { IDLE,
                                 CONNECTING,
                                 CONNECTED };
+
+    // Sized to the larger of the two context profiles so a stored profile is never
+    // truncated; both are packed wire structs, so sizeof is the wire length.
+    static constexpr size_t MAX_PEER_PROFILE_BYTES =
+        std::max(sizeof(PlayerProfile), sizeof(FdnProfile));
 
     /// Hands a received peer context to the game layer opaquely: the jack it
     /// arrived on, the peer's device kind, and the raw profile bytes
@@ -173,6 +185,17 @@ public:
     /// arrives. Recorded for the device chain SM (#156), not acted on here.
     uint8_t getPeerChainRole(SerialIdentifier jack) const {
         return helloByPort[portIndex(jack)].peerChainRole;
+    }
+
+    /// The peer's opaque profile bytes on `jack`, or nullptr before its context
+    /// arrives. PlayerProfile for a PDN peer, FdnProfile for an FDN one; which it
+    /// is comes from getPeerDeviceType. RDC never interprets them. Held per jack
+    /// rather than only forwarded on arrival, so a state mounting later still gets
+    /// the peer's identity instead of only whoever was mounted at the time.
+    const uint8_t* getPeerProfile(SerialIdentifier jack, size_t& length) const {
+        const JackHelloLink& link = helloByPort[portIndex(jack)];
+        length = link.peerProfileLen;
+        return link.peerProfileLen == 0 ? nullptr : link.peerProfile.data();
     }
 
     /// True while a context send to `mac` is still awaiting its SEND_SUCCESS.
@@ -307,8 +330,8 @@ private:
 
     SerialManager* serialManager = nullptr;
     WirelessManager* wirelessManager_ = nullptr;
-    std::function<void()> chainChangeCallback_;
-    std::function<void(const uint8_t*)> peerLostCallback_;
+    std::function<void()> chainChangeCallback;
+    std::function<void(const uint8_t*)> peerLostCallback;
     AnnouncementEmitCallback announcementEmitCallback_;
 
     // New-surface observers (#154); fired by the RDC internals as #155-#159 land.
@@ -333,6 +356,11 @@ private:
         HelloLinkMachine* machine = nullptr;  // per-jack link SM; owned, deleted in dtor
         // Recorded from the peer's received context; consumed by the chain SM (#156).
         uint8_t peerChainRole = 0;
+        // Which context channel the peer's context arrived on, so the kind and the
+        // profile bytes below always describe the same peer and the same moment.
+        DeviceType peerDeviceType = DeviceType::UNKNOWN;
+        std::array<uint8_t, MAX_PEER_PROFILE_BYTES> peerProfile{};
+        size_t peerProfileLen = 0;
         // Last recovery resend to this jack's peer (0 = never); throttles the
         // CONNECTED-state resend so two CONNECTED sides can't volley at radio RTT.
         unsigned long lastContextResendMs = 0;
@@ -370,7 +398,7 @@ private:
         std::array<uint8_t, 6> mac{};
         DeviceType peerType = DeviceType::UNKNOWN;
         uint8_t chainRole = 0;
-        std::array<uint8_t, sizeof(PlayerProfile)> profile{};
+        std::array<uint8_t, MAX_PEER_PROFILE_BYTES> profile{};
         size_t len = 0;
         unsigned long arrivedAtMs = 0;
         bool valid = false;

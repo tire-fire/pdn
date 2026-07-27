@@ -11,12 +11,6 @@
 #include "device/drivers/peer-comms-types.hpp"
 #include "device/hello-link-machine.hpp"
 
-static constexpr std::array<SerialIdentifier, 3> HELLO_JACKS = {
-    SerialIdentifier::OUTPUT_JACK,
-    SerialIdentifier::INPUT_JACK,
-    SerialIdentifier::INPUT_JACK_SECONDARY,
-};
-
 RemoteDeviceCoordinator::RemoteDeviceCoordinator() : handshakeWirelessManager(HandshakeWirelessManager()) {}
 
 #ifndef NATIVE_BUILD
@@ -326,8 +320,8 @@ void RemoteDeviceCoordinator::sync(Device* PDN) {
                     emitAnnouncementVia(otherPort, {});
                 }
             }
-            if (peerLostCallback_) {
-                peerLostCallback_(prev->data());
+            if (peerLostCallback) {
+                peerLostCallback(prev->data());
             }
             notifyDisconnect();
         }
@@ -503,11 +497,11 @@ std::vector<std::array<uint8_t, 6>> RemoteDeviceCoordinator::peersReachableVia(S
 }
 
 void RemoteDeviceCoordinator::setChainChangeCallback(std::function<void()> callback) {
-    chainChangeCallback_ = callback;
+    chainChangeCallback = std::move(callback);
 }
 
 void RemoteDeviceCoordinator::setPeerLostCallback(std::function<void(const uint8_t*)> callback) {
-    peerLostCallback_ = callback;
+    peerLostCallback = std::move(callback);
 }
 
 void RemoteDeviceCoordinator::setAnnouncementEmitCallback(AnnouncementEmitCallback callback) {
@@ -515,6 +509,12 @@ void RemoteDeviceCoordinator::setAnnouncementEmitCallback(AnnouncementEmitCallba
 }
 
 DeviceType RemoteDeviceCoordinator::getPeerDeviceType(SerialIdentifier port) const {
+    // Same split getPortStatus makes: when HELLO owns the jack the handshake peer
+    // table is never populated, so the kind comes from the peer's context instead
+    // and reads UNKNOWN until that exchange completes.
+    if (isHelloJack(port)) {
+        return helloByPort[portIndex(port)].peerDeviceType;
+    }
     const Peer* macPeer = handshakeWirelessManager.getMacPeer(port);
     return macPeer ? macPeer->deviceType : DeviceType::UNKNOWN;
 }
@@ -610,15 +610,15 @@ void RemoteDeviceCoordinator::registerPeer(const uint8_t* macAddress) {
 }
 
 void RemoteDeviceCoordinator::notifyConnect() {
-    if (chainChangeCallback_) chainChangeCallback_();
+    if (chainChangeCallback) chainChangeCallback();
 }
 
 void RemoteDeviceCoordinator::notifyDisconnect() {
-    if (chainChangeCallback_) chainChangeCallback_();
+    if (chainChangeCallback) chainChangeCallback();
 }
 
 void RemoteDeviceCoordinator::notifyDaisyChained() {
-    if (chainChangeCallback_) chainChangeCallback_();
+    if (chainChangeCallback) chainChangeCallback();
 }
 
 void RemoteDeviceCoordinator::unregisterPeer(const uint8_t* macAddress) {
@@ -681,7 +681,11 @@ void RemoteDeviceCoordinator::enableHelloConnectivity() {
             initiateContextExchange(j);
         };
         context.onJackChange = [this](SerialIdentifier j, bool connected) {
-            if (jackChangeCallback) jackChangeCallback(j, connected);
+            // Copied before the call: a handler that reacts by dismounting its own
+            // state clears this slot, which would destroy the std::function whose
+            // operator() frame is still live.
+            JackChangeCallback handler = jackChangeCallback;
+            if (handler) handler(j, connected);
         };
         // Every link-death path mounts Idle; the initial mount fires this too, a
         // no-op on zero state.
@@ -859,9 +863,18 @@ void RemoteDeviceCoordinator::completeJackContext(SerialIdentifier jack, DeviceT
     // A second fresh-seqId context can land before the Connecting -> Connected
     // commit while the jack still reports CONNECTING; the game callback must
     // fire exactly once per connect.
-    HelloLinkMachine* machine = helloByPort[portIndex(jack)].machine;
-    if (machine != nullptr && machine->didMarkContextComplete()) return;
-    helloByPort[portIndex(jack)].peerChainRole = chainRole;
+    JackHelloLink& link = helloByPort[portIndex(jack)];
+    if (link.machine != nullptr && link.machine->didMarkContextComplete()) return;
+    // The kind comes from the channel that decoded this context, not the HELLO
+    // deviceType byte: the two are independently spoofable, and a consumer reading
+    // peerDeviceType to decide how to cast the profile bytes needs the kind that
+    // produced them.
+    link.peerDeviceType = peerType;
+    link.peerChainRole = chainRole;
+    // The bound is belt-and-braces: ReliableChannel rejects any frame whose length
+    // is not exactly sizeof(P), so both callers pass a compile-time size that fits.
+    link.peerProfileLen = std::min(len, link.peerProfile.size());
+    memcpy(link.peerProfile.data(), profile, link.peerProfileLen);
     if (contextReceivedCallback) contextReceivedCallback(jack, peerType, profile, len);
     onContextExchangeComplete(jack);
     // The upstream exchange completing is the join moment: announce to the head (#158).
@@ -915,6 +928,11 @@ void RemoteDeviceCoordinator::releaseHelloPeer(SerialIdentifier jack, const uint
     // per-MAC, and the next peer on this jack must not inherit the departed
     // peer's chainRole during its CONNECTING window (#156 reads it then).
     helloByPort[portIndex(jack)].peerChainRole = 0;
+    helloByPort[portIndex(jack)].peerDeviceType = DeviceType::UNKNOWN;
+    helloByPort[portIndex(jack)].peerProfileLen = 0;
+    // Defence in depth: the zeroed length already hides the bytes from
+    // getPeerProfile, but a departed peer's identity should not sit in RAM.
+    helloByPort[portIndex(jack)].peerProfile.fill(0);
     helloByPort[portIndex(jack)].lastContextResendMs = 0;
     // A 2-node ring has the same peer on both jacks: releasing the radio slot on a
     // one-cable disconnect would silently break wireless for the still-connected
