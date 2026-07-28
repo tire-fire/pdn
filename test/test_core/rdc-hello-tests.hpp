@@ -2447,3 +2447,213 @@ inline void rdcUnprovenUpstreamIsNeverAdopted(RDCHelloTests* suite) {
     const uint8_t zero[6] = {0, 0, 0, 0, 0, 0};
     EXPECT_EQ(0, memcmp(parseEmittedHello(suite->outJack.getOutput()).headMac, zero, 6));
 }
+
+// Reads the PlayerProfile back out of a captured PdnConnectionContext frame.
+inline PlayerProfile profileFromContextBytes(const std::vector<uint8_t>& bytes) {
+    PdnConnectionContext ctx{};
+    memcpy(&ctx, bytes.data(), sizeof(ctx) < bytes.size() ? sizeof(ctx) : bytes.size());
+    return ctx.player;
+}
+
+// Reads the sender's chainRole back out of a captured PdnConnectionContext frame.
+inline uint8_t chainRoleFromContextBytes(const std::vector<uint8_t>& bytes) {
+    PdnConnectionContext ctx{};
+    memcpy(&ctx, bytes.data(), sizeof(ctx) < bytes.size() ? sizeof(ctx) : bytes.size());
+    return ctx.chainRole;
+}
+
+// Captures every outbound PdnConnectionContext frame's exact bytes, and lets the
+// caller vary the profile the RDC reads at send time.
+inline void captureContextSends(RDCHelloTests* suite, std::vector<std::vector<uint8_t>>* sends) {
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+    ON_CALL(*suite->device.mockPeerComms, sendData(_, PktType::kPdnConnectionContext, _, _))
+        .WillByDefault(testing::DoAll(
+            testing::Invoke([sends](const uint8_t*, PktType, const uint8_t* data, size_t len) {
+                sends->push_back(std::vector<uint8_t>(data, data + len));
+            }),
+            Return(1)));
+}
+
+// #162: a hunter/bounty flip on an already-Connected link must put a fresh
+// context on the air, and that context must carry the CURRENT profile — the
+// exchange otherwise runs once per connect, so the peer would keep acting on the
+// role it learned at plug-in until the cable is pulled.
+inline void rdcResendContextPushesCurrentProfile(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    uint8_t liveRole = 0;
+    suite->rdc.setSelfProfileProvider([&liveRole]() -> PlayerProfile {
+        PlayerProfile profile{};
+        profile.userId = 4242;
+        profile.gameRole = liveRole;
+        return profile;
+    });
+
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+    std::vector<std::vector<uint8_t>> contextSends;
+    ON_CALL(*suite->device.mockPeerComms, sendData(_, PktType::kPdnConnectionContext, _, _))
+        .WillByDefault(testing::DoAll(
+            testing::Invoke([&contextSends](const uint8_t*, PktType, const uint8_t* data,
+                                            size_t len) {
+                contextSends.push_back(std::vector<uint8_t>(data, data + len));
+            }),
+            Return(1)));
+
+    // Full connect on the OUT jack; the connect-time context carries the profile
+    // the provider held at that moment.
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(contextSends.size(), 1u);
+    EXPECT_EQ(profileFromContextBytes(contextSends[0]).userId, 4242);
+    EXPECT_EQ(profileFromContextBytes(contextSends[0]).gameRole, 0);
+    suite->transport()->onSendResult(PktType::kPdnConnectionContext, peer,
+                                     contextSends[0].data(), contextSends[0].size(), true);
+
+    std::vector<uint8_t> ctx = pdnContextBytes(/*chainRole=*/1, /*userId=*/7, /*seqId=*/3);
+    suite->transport()->deliverIncoming(
+        PktType::kPdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    ASSERT_EQ(contextSends.size(), 1u);
+
+    // The role flips; the re-broadcast carries the new one.
+    liveRole = 1;
+    suite->rdc.resendContext();
+
+    ASSERT_EQ(contextSends.size(), 2u);
+    EXPECT_EQ(profileFromContextBytes(contextSends[1]).gameRole, 1);
+    EXPECT_EQ(profileFromContextBytes(contextSends[1]).userId, 4242);
+    EXPECT_TRUE(suite->rdc.isContextSendPending(peer));
+}
+
+// A jack that only reached CONNECTING has no proven return path, so a
+// re-broadcast must skip it rather than racing the connect-time send it would
+// otherwise duplicate. Nothing is Connected here, so nothing goes out.
+inline void rdcResendContextSkipsUnconnectedJacks(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).Times(testing::AnyNumber());
+    int contextSends = 0;
+    std::vector<uint8_t> sentPayload;
+    ON_CALL(*suite->device.mockPeerComms, sendData(_, PktType::kPdnConnectionContext, _, _))
+        .WillByDefault(testing::DoAll(
+            testing::Invoke([&](const uint8_t*, PktType, const uint8_t* data, size_t len) {
+                contextSends++;
+                sentPayload.assign(data, data + len);
+            }),
+            Return(1)));
+
+    // Every jack Idle: a re-broadcast has nowhere to go.
+    suite->rdc.resendContext();
+    EXPECT_EQ(contextSends, 0);
+
+    // OUT jack CONNECTING (one HELLO, no context back). Clear the connect-time
+    // send first so the pending-collapse guard is not what suppresses the resend.
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(contextSends, 1);
+    suite->transport()->onSendResult(
+        PktType::kPdnConnectionContext, peer, sentPayload.data(), sentPayload.size(), true);
+    ASSERT_FALSE(suite->rdc.isContextSendPending(peer));
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTING);
+
+    suite->rdc.resendContext();
+    EXPECT_EQ(contextSends, 1);
+}
+
+// A Connected jack whose connect-time send is still unacked is the case that
+// matters most: that armed entry holds the OLD role's bytes, so skipping the peer
+// would freeze it on the stale role forever. SEND_FAIL is ignored and the peer's
+// context completes the jack without clearing the entry, so this state persists.
+inline void rdcResendContextSupersedesUnackedSend(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    uint8_t liveRole = 0;
+    suite->rdc.setSelfProfileProvider([&liveRole]() -> PlayerProfile {
+        PlayerProfile profile{};
+        profile.userId = 4242;
+        profile.gameRole = liveRole;
+        return profile;
+    });
+
+    std::vector<std::vector<uint8_t>> contextSends;
+    captureContextSends(suite, &contextSends);
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(contextSends.size(), 1u);
+    // Deliberately no onSendResult: the connect-time send stays armed.
+
+    std::vector<uint8_t> ctx = pdnContextBytes(/*chainRole=*/1, /*userId=*/7, /*seqId=*/3);
+    suite->transport()->deliverIncoming(
+        PktType::kPdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    ASSERT_TRUE(suite->rdc.isContextSendPending(peer));
+    ASSERT_EQ(contextSends.size(), 1u);
+
+    liveRole = 1;
+    suite->rdc.resendContext();
+
+    ASSERT_EQ(contextSends.size(), 2u);
+    EXPECT_EQ(profileFromContextBytes(contextSends[1]).gameRole, 1);
+}
+
+// The context tells a neighbour where this device sits in the chain, so the field
+// has to come from the live topology: the connect-time frame goes out with no link
+// up yet (STANDALONE), and once the OUT jack is Connected this device is the HEAD.
+inline void rdcContextCarriesOwnChainRole(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    std::vector<std::vector<uint8_t>> contextSends;
+    captureContextSends(suite, &contextSends);
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xA1));
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(contextSends.size(), 1u);
+    EXPECT_EQ(chainRoleFromContextBytes(contextSends[0]),
+              static_cast<uint8_t>(ChainRole::STANDALONE));
+    suite->transport()->onSendResult(PktType::kPdnConnectionContext, peer,
+                                     contextSends[0].data(), contextSends[0].size(), true);
+
+    std::vector<uint8_t> ctx = pdnContextBytes(/*chainRole=*/0, /*userId=*/7, /*seqId=*/3);
+    suite->transport()->deliverIncoming(
+        PktType::kPdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getChainRole(), ChainRole::HEAD);
+
+    suite->rdc.resendContext();
+
+    ASSERT_EQ(contextSends.size(), 2u);
+    EXPECT_EQ(chainRoleFromContextBytes(contextSends[1]),
+              static_cast<uint8_t>(ChainRole::HEAD));
+}
+
+// A 2-node ring points both jacks at one peer, and one frame reaches it however
+// many jacks face it: the re-broadcast sends once per PEER, not once per jack.
+inline void rdcResendContextSendsOncePerPeer(RDCHelloTests* suite) {
+    const uint8_t peer[6] = {0xB1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    std::vector<std::vector<uint8_t>> contextSends;
+    captureContextSends(suite, &contextSends);
+
+    suite->deliverHello(suite->outJack, suite->helloFrame(0xB1));
+    suite->deliverHello(suite->inJack, suite->helloFrame(0xB1));
+    suite->rdc.sync(&suite->device);
+    std::vector<uint8_t> ctx = pdnContextBytes(/*chainRole=*/1, /*userId=*/7, /*seqId=*/3);
+    suite->transport()->deliverIncoming(
+        PktType::kPdnConnectionContext, peer, ctx.data(), ctx.size());
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::INPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    const size_t beforeResend = contextSends.size();
+
+    suite->rdc.resendContext();
+
+    EXPECT_EQ(contextSends.size(), beforeResend + 1);
+}

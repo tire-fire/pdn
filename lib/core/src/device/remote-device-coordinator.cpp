@@ -808,20 +808,45 @@ void RemoteDeviceCoordinator::initiateContextExchange(SerialIdentifier jack) {
 
 void RemoteDeviceCoordinator::sendSelfContext(const uint8_t* mac) {
     // Each device describes itself, so the payload is chosen by THIS device's kind,
-    // not the peer's. chainRole 0 = unresolved: the device chain SM (#156) fills it
-    // once it learns this device's position.
+    // not the peer's, and the role is read at send time: a resend on a role change
+    // has to carry the position this device holds now, not the one it held at plug-in.
+    const uint8_t role = static_cast<uint8_t>(getChainRole());
     if (selfDeviceType == DeviceType::FDN) {
         if (fdnContextChannel == nullptr) return;
         FdnConnectionContext ctx{};
-        ctx.chainRole = 0;
+        ctx.chainRole = role;
         fdnContextChannel->sendReliable(mac, ctx);
         return;
     }
     if (pdnContextChannel == nullptr) return;
     PdnConnectionContext ctx{};
-    ctx.chainRole = 0;
-    ctx.player = selfPlayerProfile;
+    ctx.chainRole = role;
+    if (selfProfileProvider) ctx.player = selfProfileProvider();
     pdnContextChannel->sendReliable(mac, ctx);
+}
+
+void RemoteDeviceCoordinator::resendContext() {
+    // No pending-send guard, unlike the initiate path: there the queued payload is
+    // the one we would re-queue, here it is the STALE one this call exists to
+    // replace. The context channels supersede per target, so the fresh send drops
+    // the unacked entry and its old bytes.
+    std::array<std::array<uint8_t, 6>, kNumPorts> alreadySent{};
+    size_t sentCount = 0;
+    for (SerialIdentifier port : HELLO_JACKS) {
+        const HelloLinkMachine* machine = helloByPort[portIndex(port)].machine;
+        if (machine == nullptr || machine->currentStateId() != HELLO_LINK_CONNECTED) continue;
+        const uint8_t* mac = machine->peer().data();
+        // A 2-node ring faces the same peer on more than one jack and one copy
+        // covers them all. Every MAC covered so far is checked, not just the last
+        // one: the jacks sharing a peer need not be adjacent in HELLO_JACKS.
+        bool covered = false;
+        for (size_t i = 0; i < sentCount; ++i) {
+            if (memcmp(alreadySent[i].data(), mac, 6) == 0) covered = true;
+        }
+        if (covered) continue;
+        memcpy(alreadySent[sentCount++].data(), mac, 6);
+        sendSelfContext(mac);
+    }
 }
 
 bool RemoteDeviceCoordinator::isContextSendPending(const uint8_t* mac) const {
