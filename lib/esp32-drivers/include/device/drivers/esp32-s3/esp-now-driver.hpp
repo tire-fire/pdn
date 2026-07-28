@@ -24,17 +24,17 @@ constexpr uint8_t PEER_BROADCAST_ADDR[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // Max application payload per frame. ESP-NOW v2.0 (IDF 5.x, all-S3 targets)
 // carries up to 1470 bytes in a single frame, so every packet type fits in
 // one send — no multi-frame clustering.
-// The payload ceiling is whatever DataPktHdr::pktLen can hold (it stores the
-// total packet length), minus the header. ESP-NOW v2 frames are far larger,
-// but the length field is the real ceiling: a payload above this would overflow
-// pktLen and deliver a corrupt short buffer. Derived from the field's type so
-// it follows automatically if pktLen ever widens.
-constexpr size_t MAX_PKT_DATA_SIZE =
-    std::numeric_limits<decltype(DataPktHdr::pktLen)>::max() - sizeof(DataPktHdr);
+constexpr size_t MAX_PKT_DATA_SIZE = ESP_NOW_MAX_DATA_LEN_V2 - sizeof(DataPktHdr);
+
+// pktLen carries the total packet length on the wire, so it has to be able to
+// express a full frame or a large payload would arrive as a corrupt short buffer.
+static_assert(ESP_NOW_MAX_DATA_LEN_V2 <=
+                  std::numeric_limits<decltype(DataPktHdr::pktLen)>::max(),
+              "DataPktHdr::pktLen cannot express a full ESP-NOW v2 frame");
 
 // The head-roster handoff is the largest reliable payload and grows with
-// MAX_CHAIN_MEMBERS (#218 raises it). A cap bump that overflows this budget
-// must break the build here, not silently fail sendData at runtime.
+// MAX_CHAIN_MEMBERS. A cap bump that overflows this budget must break the build
+// here, not silently fail sendData at runtime.
 static_assert(sizeof(HeadTransferPayload) <= MAX_PKT_DATA_SIZE,
               "HeadTransferPayload exceeds the reliable-payload budget; "
               "lower MAX_CHAIN_MEMBERS or split the transfer across frames");
@@ -388,6 +388,19 @@ private:
         }
 
         const auto* pktHdr = reinterpret_cast<const DataPktHdr*>(data);
+
+        // pktLen comes off the wire and is what bounds the copy handed to the packet
+        // handlers, so it has to agree with what the radio actually delivered.
+        // sendData is the sole writer and sets the two equal. Below the header size it
+        // would also underflow handleSinglePacket's subtraction to about SIZE_MAX.
+        if (pktHdr->pktLen < sizeof(DataPktHdr) ||
+            static_cast<size_t>(pktHdr->pktLen) != static_cast<size_t>(data_len)) {
+            LOG_E("ENC", "Declared pktLen %u disagrees with received %i from %X:%X:%X:%X:%X:%X\n",
+                  pktHdr->pktLen, data_len,
+                  esp_now_info->src_addr[0], esp_now_info->src_addr[1], esp_now_info->src_addr[2],
+                  esp_now_info->src_addr[3], esp_now_info->src_addr[4], esp_now_info->src_addr[5]);
+            return;
+        }
 
 #if DEBUG_PRINT_ESP_NOW
         ESP_LOGD("ENC", "Packet Type: %i\n", pktHdr->packetType);

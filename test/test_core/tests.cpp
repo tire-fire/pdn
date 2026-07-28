@@ -1478,6 +1478,15 @@ TEST_F(RDCHelloTests, fullRosterEvictsStaleThenAdmits) {
 TEST_F(RDCHelloTests, duplicateReannounceDoesNotEvict) {
     rdcDuplicateReannounceDoesNotEvict(this);
 }
+TEST_F(RDCHelloTests, rosterHoldsFullEventChain) {
+    rdcRosterHoldsFullEventChain(this);
+}
+TEST_F(RDCHelloTests, announceOverCapIsDroppedNotAdmitted) {
+    rdcAnnounceOverCapIsDroppedNotAdmitted(this);
+}
+TEST_F(RDCHelloTests, headTransferCarriesFullCapRoster) {
+    rdcHeadTransferCarriesFullCapRoster(this);
+}
 TEST_F(RDCHelloTests, staleTransferDoesNotReforkClaimedUpstream) {
     rdcStaleTransferDoesNotReforkClaimedUpstream(this);
 }
@@ -1775,6 +1784,10 @@ TEST_F(ShootoutManagerTests, isHunterRestoredAfterTournament) { isHunterRestored
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }
+TEST_F(ShootoutManagerTests, bracketFanOutIsOneFrameBeyondPeerTable) { bracketFanOutIsOneFrameBeyondPeerTable(this); }
+TEST_F(ShootoutManagerTests, bracketRetryIsOneFramePerRound) { bracketRetryIsOneFramePerRound(this); }
+TEST_F(ShootoutManagerTests, foreignBracketIsNeitherAdoptedNorAcked) { foreignBracketIsNeitherAdoptedNorAcked(this); }
+TEST_F(ShootoutManagerTests, strayRingCommandsLeaveTournamentUntouched) { strayRingCommandsLeaveTournamentUntouched(this); }
 
 // ============================================
 // MAIN
