@@ -1583,6 +1583,9 @@ TEST(RDCHelloStandalone, chainTwoNodeRingCloses) {
 TEST(RDCHelloStandalone, chainDualLatchSettlesByLowerMac) {
     rdcChainDualLatchSettlesByLowerMac();
 }
+TEST(RDCHelloStandalone, oneWayCableTimesOutInsteadOfGhostChild) {
+    rdcHelloOneWayCableTimesOutInsteadOfGhostChild();
+}
 TEST_F(RDCHelloTests, chainRingYieldsToHigherHeadAfterEvidenceTimeout) {
     rdcChainRingYieldsToHigherHeadAfterEvidenceTimeout(this);
 }
