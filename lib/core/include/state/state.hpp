@@ -108,6 +108,12 @@ public:
 
     int getStateId() const { return name.id; }
 
+    /// The transition list in priority order — checkTransitions takes the first
+    /// whose condition holds, so position is behaviour. Reading it does not
+    /// evaluate the conditions, which is what lets a graph be inspected before
+    /// its managers exist.
+    const std::vector<StateTransition*>& getTransitions() const { return transitions; }
+
     virtual bool isTerminalState() { return false; }
 
     // --- Device*-typed user API ---

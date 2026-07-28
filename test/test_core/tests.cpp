@@ -13,6 +13,7 @@
 #include "match-manager-tests.hpp"
 #include "integration-tests.hpp"
 #include "quickdraw-tests.hpp"
+#include "quickdraw-state-graph-tests.hpp"
 #include "quickdraw-integration-tests.hpp"
 #include "hwm-tests.hpp"
 #include "rdc-tests.hpp"
@@ -1797,6 +1798,9 @@ TEST_F(ShootoutManagerTests, bracketFanOutIsOneFrameBeyondPeerTable) { bracketFa
 TEST_F(ShootoutManagerTests, bracketRetryIsOneFramePerRound) { bracketRetryIsOneFramePerRound(this); }
 TEST_F(ShootoutManagerTests, foreignBracketIsNeitherAdoptedNorAcked) { foreignBracketIsNeitherAdoptedNorAcked(this); }
 TEST_F(ShootoutManagerTests, strayRingCommandsLeaveTournamentUntouched) { strayRingCommandsLeaveTournamentUntouched(this); }
+
+TEST(QuickdrawStateGraph, registrationOrderIsPinned) { quickdrawGraphRegistrationOrderIsPinned(); }
+TEST(QuickdrawStateGraph, transitionOrderIsPinned) { quickdrawGraphTransitionOrderIsPinned(); }
 
 // ============================================
 // MAIN

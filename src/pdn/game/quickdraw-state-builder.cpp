@@ -58,8 +58,11 @@ struct DuelGraph {
 
 /// ShootoutProposal -> BracketReveal -> Spectator | Eliminated -> FinalStandings,
 /// plus the Aborted landing state. Nothing here adds an abort *edge* onto a
-/// duel-graph state: ShootoutAwareState::tickAbortGuard raises the abort and
-/// `CrossGraphTargets::phaseIsAborted` is the single predicate that observes it.
+/// duel-graph state — those belong to DuelGraph, where
+/// `CrossGraphTargets::phaseIsAborted` reads ShootoutManager's ABORTED phase
+/// directly. The four states above reach Aborted through their own per-state
+/// latch of that same phase, so the two paths observe one phase, not one
+/// predicate.
 struct ShootoutGraph {
     ShootoutProposal* proposal = nullptr;
     ShootoutBracketReveal* bracketReveal = nullptr;
