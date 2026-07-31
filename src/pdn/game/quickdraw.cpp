@@ -102,6 +102,14 @@ Quickdraw::Quickdraw(Player* player, Device* PDN, QuickdrawWirelessManager* quic
         onChainStateChanged();
     });
 
+    // A role edge is the one signal a head transfer or coordinator handoff always
+    // produces; the direct peers either side of this device can be unchanged
+    // across one, leaving a confirmed supporter registered with a champion that
+    // no longer runs the duel.
+    remoteDeviceCoordinator->setOnChainRoleChange([this](ChainRole) {
+        if (chainDuelManager) chainDuelManager->resendConfirm();
+    });
+
     remoteDeviceCoordinator->setPeerLostCallback([this](const uint8_t* lostMac) {
         if (shootoutManager && shootoutManager->active()) {
             shootoutManager->onLocalRDCDisconnect(lostMac);
@@ -181,6 +189,12 @@ void Quickdraw::onChainGameEventPacket(const uint8_t* fromMac, const uint8_t* da
 
     const ChainGameEventPayload* payload = reinterpret_cast<const ChainGameEventPayload*>(data);
 
+    // Ahead of the state dispatch and independent of it: a COUNTDOWN wipes the
+    // champion's roll call whether or not this device is watching for it, and a
+    // confirm still held here would then re-register a press for a round the
+    // supporter has not answered.
+    chainDuelManager->onChainGameEventReceived(payload->event_type);
+
     // Out-of-state events dropped silently; champion's retry machine bounds traffic cost.
     if (supporterReadyState != nullptr && currentState != nullptr
         && currentState->getStateId() == SUPPORTER_READY) {
@@ -205,6 +219,11 @@ void Quickdraw::onChainGameEventAckPacket(const uint8_t* fromMac, const uint8_t*
 void Quickdraw::onChainConfirmPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
     if (dataLen != sizeof(ChainConfirmPayload)) return;
     if (!chainDuelManager) return;
+    // Confirms relay hop by hop, so the sender must be a peer we can reach on
+    // the supporter side. originatorMac stays unvalidated on purpose — it names
+    // a device further up the chain that we have no direct link to — which is
+    // why the count intersects it against the roster rather than trusting it.
+    if (!chainDuelManager->isKnownConfirmRelay(fromMac)) return;
     const ChainConfirmPayload* payload = reinterpret_cast<const ChainConfirmPayload*>(data);
     chainDuelManager->onConfirmReceived(fromMac, payload->originatorMac, payload->seqId);
 }
@@ -293,6 +312,7 @@ Quickdraw::~Quickdraw() {
     // is deliberately absent: its ctx is the symbol manager, which outlives
     // Quickdraw, so clearing it here would deafen a live consumer.
     remoteDeviceCoordinator->setChainChangeCallback(nullptr);
+    remoteDeviceCoordinator->setOnChainRoleChange(nullptr);
     remoteDeviceCoordinator->setPeerLostCallback(nullptr);
     remoteDeviceCoordinator = nullptr;
     for (PktType handled : {PktType::kChainGameEvent, PktType::kChainGameEventAck,
