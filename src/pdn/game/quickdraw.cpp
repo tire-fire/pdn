@@ -56,6 +56,12 @@ Quickdraw::Quickdraw(Player* player, Device* PDN, QuickdrawWirelessManager* quic
         this
     );
     wirelessManager->setEspNowPacketHandler(
+        PktType::kChainJoin,
+        [](const uint8_t* macAddress, const uint8_t* data, const size_t dataLen, void* ctx) {
+            static_cast<Quickdraw*>(ctx)->onChainJoinPacket(macAddress, data, dataLen);
+        },
+        this);
+    wirelessManager->setEspNowPacketHandler(
         PktType::kRoleAnnounce,
         [](const uint8_t* macAddress, const uint8_t* data, const size_t dataLen, void* ctx) {
             static_cast<Quickdraw*>(ctx)->onRoleAnnouncePacket(macAddress, data, dataLen);
@@ -133,7 +139,7 @@ void Quickdraw::onChainStateChanged() {
         chainDuelManager->onChainStateChanged();
     }
     // Shootout disconnects flow through setPeerLostCallback, not chain-state
-    // diffs — daisy chain announcements bounce in normal operation.
+    // diffs, which fire on every jack edge either way.
 }
 
 void Quickdraw::onRoleAnnouncePacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
@@ -163,19 +169,14 @@ void Quickdraw::onStateLoop(Device* pdn) {
     if (!statsLogTimer.isRunning()) {
         statsLogTimer.setTimer(kStatsLogIntervalMs);
     } else if (statsLogTimer.expired()) {
-        if (remoteDeviceCoordinator != nullptr && chainDuelManager != nullptr) {
-            auto r = remoteDeviceCoordinator->getRetryStats();
+        if (chainDuelManager != nullptr) {
             auto c = chainDuelManager->getRetryStats();
-            unsigned long rMean = r.ackCount ? (r.ackLatencyMsSum / r.ackCount) : 0;
             unsigned long cMean = c.ackCount ? (c.ackLatencyMsSum / c.ackCount) : 0;
             // LOG_W (not LOG_I) because firmware builds with CORE_DEBUG_LEVEL=2
             // which strips info-level calls.
-            LOG_W("STATS",
-                "RDC s=%u r=%u ab=%u ack=%u/%lums | CDM s=%u r=%u ab=%u ack=%u/%lums",
-                (unsigned)r.sends, (unsigned)r.retries, (unsigned)r.abandons,
-                (unsigned)r.ackCount, rMean,
-                (unsigned)c.sends, (unsigned)c.retries, (unsigned)c.abandons,
-                (unsigned)c.ackCount, cMean);
+            LOG_W("STATS", "CDM s=%u r=%u ab=%u ack=%u/%lums",
+                  (unsigned)c.sends, (unsigned)c.retries, (unsigned)c.abandons,
+                  (unsigned)c.ackCount, cMean);
         }
         statsLogTimer.setTimer(kStatsLogIntervalMs);
     }
@@ -185,9 +186,12 @@ void Quickdraw::onStateLoop(Device* pdn) {
 
 void Quickdraw::onChainGameEventPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
     if (dataLen != sizeof(ChainGameEventPayload)) return;
-    if (!chainDuelManager || !chainDuelManager->isKnownGameEventSender(fromMac)) return;
+    if (!chainDuelManager) return;
 
     const ChainGameEventPayload* payload = reinterpret_cast<const ChainGameEventPayload*>(data);
+    // The frame is broadcast, so every chain in radio range hears it. The
+    // champion it names is the only thing that says whether it is ours.
+    if (!chainDuelManager->isEventFromOwnChampion(payload->championMac)) return;
 
     // Ahead of the state dispatch and independent of it: a COUNTDOWN wipes the
     // champion's roll call whether or not this device is watching for it, and a
@@ -219,13 +223,19 @@ void Quickdraw::onChainGameEventAckPacket(const uint8_t* fromMac, const uint8_t*
 void Quickdraw::onChainConfirmPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
     if (dataLen != sizeof(ChainConfirmPayload)) return;
     if (!chainDuelManager) return;
-    // Confirms relay hop by hop, so the sender must be a peer we can reach on
-    // the supporter side. originatorMac stays unvalidated on purpose — it names
-    // a device further up the chain that we have no direct link to — which is
-    // why the count intersects it against the roster rather than trusting it.
-    if (!chainDuelManager->isKnownConfirmRelay(fromMac)) return;
+    // Deliberately ungated on the sender: a confirm is unicast straight to the
+    // champion from any depth, so the sender is usually a device we share no
+    // cable with and no adjacency test can recognise it. Membership is decided
+    // against the join roster when the count is read, and a press whose join has
+    // not landed yet is held rather than dropped.
     const ChainConfirmPayload* payload = reinterpret_cast<const ChainConfirmPayload*>(data);
     chainDuelManager->onConfirmReceived(fromMac, payload->originatorMac, payload->seqId);
+}
+
+void Quickdraw::onChainJoinPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
+    if (dataLen != sizeof(ChainJoinPayload) || !chainDuelManager) return;
+    const ChainJoinPayload* payload = reinterpret_cast<const ChainJoinPayload*>(data);
+    chainDuelManager->onChainJoinReceived(fromMac, payload->championMac);
 }
 
 void Quickdraw::onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
@@ -316,9 +326,9 @@ Quickdraw::~Quickdraw() {
     remoteDeviceCoordinator->setPeerLostCallback(nullptr);
     remoteDeviceCoordinator = nullptr;
     for (PktType handled : {PktType::kChainGameEvent, PktType::kChainGameEventAck,
-                            PktType::kChainConfirm, PktType::kRoleAnnounce,
-                            PktType::kRoleAnnounceAck, PktType::kShootoutCommand,
-                            PktType::kShootoutCommandAck}) {
+                            PktType::kChainConfirm, PktType::kChainJoin,
+                            PktType::kRoleAnnounce, PktType::kRoleAnnounceAck,
+                            PktType::kShootoutCommand, PktType::kShootoutCommandAck}) {
         wirelessManager->clearEspNowPacketHandler(handled);
     }
     if (quickdrawWirelessManager) {
@@ -349,7 +359,7 @@ void Quickdraw::populateStateMap() {
     ctx.symbolWirelessManager = symbolWirelessManager;
     ctx.wirelessManager = wirelessManager;
 
-    // Sub-state machines for player registration and handshake
+    // Sub-state machines for player registration
     PlayerRegistrationApp* playerRegistration = new PlayerRegistrationApp(player, wirelessManager, matchManager, remoteDebugManager);
     // Quickdraw gameplay states
     AwakenSequence* awakenSequence = new AwakenSequence(ctx);

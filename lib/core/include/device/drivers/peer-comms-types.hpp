@@ -7,9 +7,6 @@ enum class PktType : uint8_t {
     kPlayerInfoBroadcast = 0,
     kQuickdrawCommand = 1,
     kDebugPacket = 2,
-    kHandshakeCommand = 3,
-    kChainAnnouncement = 4,
-    kChainAnnouncementAck = 5,
     kChainGameEvent = 6,
     kChainConfirm = 7,
     kRoleAnnounce = 8,
@@ -24,6 +21,11 @@ enum class PktType : uint8_t {
     kConnectionAnnounce = 17,
     kDisconnectReport = 18,
     kHeadTransfer = 19,
+    // The lint runs only on lines a commit adds, so this new member trips the
+    // UPPER_CASE enum-constant rule its grandfathered siblings never see. It keeps
+    // their kFoo spelling rather than splitting the enum across two conventions.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    kChainJoin = 20,
     kNumPacketTypes  // Not a real packet type, DO NOT USE
 };
 
@@ -75,6 +77,16 @@ struct ChainConfirmPayload
 {
     uint8_t originatorMac[6];
     uint8_t seqId;
+} __attribute__((packed));
+
+// Sent by a supporter straight to the champion whose MAC reached it through the
+// role-announce cascade. The cascade only ever travels downstream, so this is
+// the sole evidence a champion gets that a device more than one cable away
+// follows it — and the only thing that lets that device's press count.
+// championMac is the champion the sender believes in, so a frame that arrives
+// by radio accident cannot enrol anyone in the wrong chain's roster.
+struct ChainJoinPayload {
+    uint8_t championMac[6];
 } __attribute__((packed));
 
 struct RoleAnnouncePayload
