@@ -13,6 +13,7 @@
 #include "match-manager-tests.hpp"
 #include "integration-tests.hpp"
 #include "quickdraw-tests.hpp"
+#include "quickdraw-state-graph-tests.hpp"
 #include "quickdraw-integration-tests.hpp"
 #include "rdc-hello-tests.hpp"
 #include "connect-state-callback-tests.hpp"
@@ -464,6 +465,173 @@ TEST_F(DeviceTestSuite, loopExecutesDriversBeforeAppLoop) {
     
     // Note: We can't directly test execDrivers() was called since
     // it's not mockable, but this documents the expected behavior
+}
+
+// ============================================
+// DEVICE TESTS - APP SWAPS
+// ============================================
+
+// An app is re-mounted on every swap back to it. Re-running populateStateMap
+// there appends a whole duplicate state set that nothing ever mounts and only
+// ~StateMachine frees, so a session's worth of swaps leaks one set per swap.
+TEST_F(AppSwapTestSuite, remountingAnAppDoesNotRepopulateItsStateMap) {
+    loadAllApps(APP_ONE);
+
+    ASSERT_EQ(appOne->populateCount, 1);
+    ASSERT_EQ(appOne->getStateMap().size(), 3u);
+
+    for (int swap = 0; swap < 3; swap++) {
+        device->setActiveApp(APP_TWO);
+        device->setActiveApp(APP_ONE);
+    }
+
+    ASSERT_EQ(appOne->populateCount, 1);
+    ASSERT_EQ(appOne->getStateMap().size(), 3u);
+    ASSERT_EQ(appTwo->populateCount, 1);
+    ASSERT_EQ(appTwo->getStateMap().size(), 3u);
+}
+
+// Entering an app part-way through is what a shootout's hand-off into a bracket
+// duel needs; restarting the target at its boot state would replay it.
+TEST_F(AppSwapTestSuite, setActiveAppEntersAtTheNamedState) {
+    loadAllApps(APP_ONE);
+    ASSERT_EQ(appOne->getCurrentState()->getStateId(), 0);
+
+    device->setActiveApp(APP_TWO, StateId(2));
+
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 2);
+}
+
+// A swap that names no entry state boots the target at its first state, which is
+// what all ten FDN app transitions ask for — none of them names one. The second
+// half also covers re-entering an app that a previous swap entered part-way:
+// setActiveApp writes the default over whatever that swap asked for.
+TEST_F(AppSwapTestSuite, setActiveAppWithoutAnEntryStateEntersTheBootState) {
+    loadAllApps(APP_ONE);
+
+    device->setActiveApp(APP_TWO, StateId(2));
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 2);
+
+    device->setActiveApp(APP_ONE);
+    device->setActiveApp(APP_TWO);
+
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 0);
+}
+
+// loadAppConfig states its entry rather than inheriting one. Production calls it
+// once per device before any swap, so this pins the invariant rather than closing a
+// reachable hole — but the invariant is what lets the default be trusted.
+TEST_F(AppSwapTestSuite, loadAppConfigEntersTheBootStateAfterAPartWaySwap) {
+    loadAllApps(APP_ONE);
+    device->setActiveApp(APP_TWO, StateId(2));
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 2);
+
+    loadAllApps(APP_TWO);
+
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 0);
+}
+
+// Reconfiguring dismounts whatever was mounted. Skipping that leaves the outgoing
+// app holding a live currentState that nothing can ever dismount, because the
+// config that reached it has been replaced.
+TEST_F(AppSwapTestSuite, loadAppConfigDismountsWhateverWasMounted) {
+    loadAllApps(APP_ONE);
+    device->setActiveApp(APP_TWO, StateId(2));
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 2);
+
+    loadAllApps(APP_ONE);
+
+    EXPECT_EQ(appTwo->getCurrentState(), nullptr);
+    EXPECT_EQ(appOne->getCurrentState()->getStateId(), 0);
+}
+
+// A loadAppConfig whose launch id is missing leaves currentAppId naming an app the
+// config does not hold. The next swap must not index the map with it: operator[]
+// would insert a null there and dereference it on the dismount.
+TEST_F(AppSwapTestSuite, swapAfterAFailedLoadDoesNotDereferenceAMissingApp) {
+    AppConfig config;
+    config[APP_ONE] = appOne;
+    device->loadAppConfig(std::move(config), APP_THREE);
+    ASSERT_EQ(device->getActiveApp(), nullptr);
+
+    device->setActiveApp(APP_ONE);
+
+    EXPECT_EQ(device->getActiveApp(), appOne);
+    EXPECT_EQ(appOne->getCurrentState()->getStateId(), 0);
+}
+
+// An id no state in the target carries: logged and landed on the boot state
+// rather than left mounting nothing.
+TEST_F(AppSwapTestSuite, unknownEntryStateFallsBackToBootState) {
+    loadAllApps(APP_ONE);
+
+    device->setActiveApp(APP_TWO, StateId(99));
+
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 0);
+}
+
+// App and intra-machine edges share one priority list. Checking every local edge
+// first would demote every hand-off below its own state's local edges — the
+// split's Idle depends on its shootout hand-off outranking the local edge into
+// SupporterReady.
+TEST_F(AppSwapTestSuite, appTransitionDeclaredFirstOutranksALocalEdge) {
+    loadAllApps(APP_THREE);
+
+    appThree->forkState()->takeAppEdge = true;
+    appThree->forkState()->takeLocalEdge = true;
+    device->loop();
+
+    ASSERT_EQ(device->getActiveApp(), appTwo);
+    ASSERT_EQ(appTwo->getCurrentState()->getStateId(), 2);
+}
+
+TEST_F(AppSwapTestSuite, localEdgeStillFiresWhenTheAppEdgeConditionIsFalse) {
+    loadAllApps(APP_THREE);
+
+    appThree->forkState()->takeLocalEdge = true;
+    device->loop();
+
+    ASSERT_EQ(device->getActiveApp(), appThree);
+    ASSERT_EQ(appThree->getCurrentState()->getStateId(), 1);
+}
+
+// Managers shared across apps are pumped from here. Only the mounted app gets an
+// onStateLoop, so driving them from inside a state stalls them on the next swap.
+TEST_F(AppSwapTestSuite, tickCallbackRunsWhicheverAppIsMounted) {
+    int ticks = 0;
+    device->setTickCallback([&ticks]() { ticks++; });
+    loadAllApps(APP_ONE);
+
+    device->loop();
+    device->loop();
+    ASSERT_EQ(ticks, 2);
+
+    device->setActiveApp(APP_TWO);
+    device->loop();
+    device->loop();
+
+    ASSERT_EQ(ticks, 4);
+    ASSERT_EQ(device->getActiveApp(), appTwo);
+}
+
+// ============================================
+// QUICKDRAW STATE GRAPH
+// ============================================
+
+TEST(QuickdrawStateGraph, appsRegisterStatesInDeclaredOrder) {
+    quickdrawAppsRegisterStatesInDeclaredOrder();
+}
+
+TEST(QuickdrawStateGraph, appEdgesMatchPreSplitGraph) {
+    quickdrawAppEdgesMatchPreSplitGraph();
+}
+
+TEST(QuickdrawStateGraph, crossAppEdgesAreAppTransitions) {
+    quickdrawCrossAppEdgesAreAppTransitions();
+}
+
+TEST(QuickdrawStateGraph, registrationHandsOffFromWelcomeMessage) {
+    registrationHandsOffFromWelcomeMessage();
 }
 
 // ============================================
@@ -1015,8 +1183,16 @@ TEST_F(StateCleanupTests, countdownFreezesDisconnectDebounceDuringShootout) {
 // QUICKDRAW STATE TESTS - CONNECTION SUCCESSFUL
 // ============================================
 
-TEST_F(QuickdrawLifecycleTests, ctorDtorDoesNotLeak) {
-    quickdrawCtorDtorDoesNotLeak(this);
+TEST_F(GameSessionLifecycleTests, ctorDtorDoesNotLeak) {
+    gameSessionCtorDtorDoesNotLeak(this);
+}
+
+TEST_F(GameSessionLifecycleTests, countdownVoidsStandingConfirm) {
+    gameSessionCountdownVoidsStandingConfirm(this);
+}
+
+TEST_F(GameSessionLifecycleTests, countdownArmsMountedSupporter) {
+    gameSessionCountdownArmsMountedSupporter(this);
 }
 
 // ============================================
@@ -1655,6 +1831,7 @@ TEST_F(ShootoutManagerTests, isHunterRestoredAfterTournament) { isHunterRestored
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }
+TEST_F(ShootoutManagerTests, abortRuleReachesEveryStateThatDeclaresIt) { abortRuleReachesEveryStateThatDeclaresIt(this); }
 TEST_F(ShootoutManagerTests, bracketFanOutIsOneFrameBeyondPeerTable) { bracketFanOutIsOneFrameBeyondPeerTable(this); }
 TEST_F(ShootoutManagerTests, bracketRetryIsOneFramePerRound) { bracketRetryIsOneFramePerRound(this); }
 TEST_F(ShootoutManagerTests, foreignBracketIsNeitherAdoptedNorAcked) { foreignBracketIsNeitherAdoptedNorAcked(this); }

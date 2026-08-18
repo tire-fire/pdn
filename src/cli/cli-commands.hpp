@@ -251,7 +251,7 @@ private:
         }
         if (targetDevice >= 0 && targetDevice < static_cast<int>(devices.size())) {
             auto& dev = devices[targetDevice];
-            State* currentState = dev.game->getCurrentState();
+            State* currentState = dev.getCurrentState();
             int stateId = currentState ? currentState->getStateId() : -1;
             result.message = dev.deviceId + ": " + getStateName(stateId);
         } else {
@@ -547,9 +547,7 @@ private:
         dev.stateHistory.clear();
         dev.lastStateId = -1;
 
-        // skipToState(1) calls onStateDismounted on current state,
-        // then onStateMounted on FetchUserData — same as initial boot
-        dev.game->skipToState(dev.pdn, 1);
+        dev.pdn->setActiveApp(StateId(PLAYER_REGISTRATION_APP_ID), StateId(FETCH_USER_DATA));
 
         result.message = "Rebooted " + dev.deviceId + " -> FetchUserData";
         return result;

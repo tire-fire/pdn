@@ -20,7 +20,9 @@
 #include "game/player.hpp"
 #include "state/state-machine.hpp"
 #include "device/pdn.hpp"
-#include "game/quickdraw.hpp"
+#include "game/game-session.hpp"
+#include "game/quickdraw-apps.hpp"
+#include "apps/player-registration/player-registration.hpp"
 #include "id-generator.hpp"
 #include "wireless/remote-player-manager.hpp"
 #include "game/match-manager.hpp"
@@ -64,8 +66,13 @@ Esp32S3PrefsDriver* storageDriver = nullptr;
 Device* pdn = nullptr;
 Player* player = nullptr;
 
-// Game instance
-Quickdraw* game = nullptr;
+// Shared game managers, and the apps the device swaps between
+GameSession* gameSession = nullptr;
+PlayerRegistrationApp* playerRegistrationApp = nullptr;
+HubApp* hubApp = nullptr;
+DuelApp* duelApp = nullptr;
+ShootoutApp* shootoutApp = nullptr;
+SymbolApp* symbolApp = nullptr;
 
 // Remote player management
 QuickdrawWirelessManager* quickdrawWirelessManager = nullptr;
@@ -170,9 +177,16 @@ void setup() {
     
     // Register ESP-NOW packet handlers
     setupEspNow(quickdrawWirelessManager, remoteDebugManager, symbolWirelessManager, peerCommsDriver);
-    
-    game = new Quickdraw(player, pdn, quickdrawWirelessManager, remoteDebugManager, symbolWirelessManager);
-    
+
+    gameSession = new GameSession(player, pdn, quickdrawWirelessManager, symbolWirelessManager);
+
+    GameContext gameContext = gameSession->getContext();
+    playerRegistrationApp = new PlayerRegistrationApp(player, pdn->getWirelessManager(), gameContext.matchManager, remoteDebugManager);
+    hubApp = new HubApp(gameContext);
+    duelApp = new DuelApp(gameContext);
+    shootoutApp = new ShootoutApp(gameContext);
+    symbolApp = new SymbolApp(gameContext);
+
     pdn->getDisplay()->
     invalidateScreen()->
         drawImage(getImageForAllegiance(Allegiance::ALLEYCAT, ImageType::LOGO_LEFT))->
@@ -180,11 +194,15 @@ void setup() {
         render();
     delay(3000);
 
-    // Register state machines with the device and launch Quickdraw
+    // Register the swappable state machines and boot into registration
     AppConfig apps = {
-        {StateId(QUICKDRAW_APP_ID), game}
+        {StateId(PLAYER_REGISTRATION_APP_ID), playerRegistrationApp},
+        {StateId(HUB_APP_ID), hubApp},
+        {StateId(DUEL_APP_ID), duelApp},
+        {StateId(SHOOTOUT_APP_ID), shootoutApp},
+        {StateId(SYMBOL_APP_ID), symbolApp},
     };
-    pdn->loadAppConfig(apps, StateId(QUICKDRAW_APP_ID));
+    pdn->loadAppConfig(apps, StateId(PLAYER_REGISTRATION_APP_ID));
 }
 
 void loop() {

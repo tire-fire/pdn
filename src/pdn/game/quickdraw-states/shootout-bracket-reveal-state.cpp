@@ -18,7 +18,6 @@ void ShootoutBracketReveal::onStateMounted(PDN* pdn) {
 }
 
 void ShootoutBracketReveal::onStateLoop(PDN* pdn) {
-    shootoutManager->sync();
     tickAbortGuard();
     ShootoutManager::Phase p = shootoutManager->getPhase();
     if (p == ShootoutManager::Phase::MATCH_IN_PROGRESS) {
@@ -28,16 +27,13 @@ void ShootoutBracketReveal::onStateLoop(PDN* pdn) {
             shouldGoToSpectator_ = true;
         }
     }
-    if (p == ShootoutManager::Phase::ABORTED) shouldGoToAborted_ = true;
 }
 
 void ShootoutBracketReveal::onStateDismounted(PDN* pdn) {
     shouldGoToDuelCountdown_ = false;
     shouldGoToSpectator_ = false;
-    shouldGoToAborted_ = false;
     resetAbortGuard();
 }
 
 bool ShootoutBracketReveal::transitionToDuelCountdown() { return shouldGoToDuelCountdown_; }
 bool ShootoutBracketReveal::transitionToSpectator() { return shouldGoToSpectator_; }
-bool ShootoutBracketReveal::transitionToAborted() { return shouldGoToAborted_; }

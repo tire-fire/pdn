@@ -27,6 +27,16 @@ public:
         : condition(std::move(condition)), nextState(nextState) {
     }
 
+    /// An edge that leaves the state machine entirely: the device dismounts the
+    /// running app and mounts `targetAppId`, entering it at the state named by
+    /// `entryStateId`. An unset id means the app's boot state, which is what an
+    /// app transition that names no entry point gets.
+    StateTransition(std::function<bool()> condition, StateId targetAppId, StateId entryStateId)
+        : condition(std::move(condition))
+        , targetAppId(targetAppId)
+        , entryStateId(entryStateId) {
+    }
+
     // Method to check if the transition condition is met
     bool isConditionMet() const {
         return condition();
@@ -37,8 +47,24 @@ public:
         return nextState;
     };
 
+    /// The app this edge hands off to; id < 0 when the edge stays inside the
+    /// machine, in which case getNextState() carries the target instead.
+    StateId getTargetAppId() const {
+        return targetAppId;
+    };
+
+    /// The state in the target app the hand-off lands on, or an unset id for its
+    /// boot state. Meaningless on an intra-machine edge.
+    StateId getEntryStateId() const {
+        return entryStateId;
+    };
+
     std::function<bool()> condition; // Function pointer that returns true based on the global state
-    State *nextState; // Pointer to the next state
+    State* nextState = nullptr;      // Pointer to the next state, null on an app transition
+    /// Negative when this edge stays inside the machine.
+    StateId targetAppId = StateId(-1);
+    /// Negative to enter the target app at whichever state it registered first.
+    StateId entryStateId = StateId(-1);
 };
 
 /*
@@ -86,25 +112,38 @@ public:
         transitions.push_back(transition);
     }
 
-    void addAppTransition(std::function<bool()> condition, StateId targetAppId) {
-        appTransitions.push_back({std::move(condition), targetAppId});
+    /// Declares an edge to a sibling state in the same machine.
+    void addTransition(std::function<bool()> condition, State* nextState) {
+        transitions.push_back(new StateTransition(std::move(condition), nextState));
     }
 
-    StateId checkAppTransitions() const {
-        for (const auto& t : appTransitions) {
-            if (t.condition()) return t.targetAppId;
-        }
-        return StateId(-1);
+    /// Declares an edge out of this state's app, entering the target at the state
+    /// named by `entryStateId`. Omit it to enter at the target's boot state.
+    ///
+    /// App and intra-machine edges share one priority list, so an app transition
+    /// declared before a sibling outranks it: the alternative — checking every
+    /// intra edge first — would silently demote every hand-off below the local
+    /// edges of the state it leaves.
+    void addAppTransition(std::function<bool()> condition, StateId targetAppId,
+                          StateId entryStateId = StateId(-1)) {
+        transitions.push_back(new StateTransition(std::move(condition), targetAppId, entryStateId));
     }
 
-    State* checkTransitions() {
+    /// The first transition whose condition holds, or null when none do.
+    StateTransition* checkTransitions() {
         for (StateTransition* transition : transitions) {
             if (transition->isConditionMet()) {
-                return transition->getNextState();
+                return transition;
             }
         }
         return nullptr;
     }
+
+    /// The transition list in priority order — checkTransitions takes the first
+    /// whose condition holds, so position is behaviour. Reading it does not
+    /// evaluate the conditions, which is what lets a graph be inspected before
+    /// its managers exist.
+    const std::vector<StateTransition*>& getTransitions() const { return transitions; }
 
     int getStateId() const { return name.id; }
 
@@ -120,12 +159,6 @@ protected:
     std::vector<StateTransition*> transitions;
 
 private:
-    struct AppTransitionEntry {
-        std::function<bool()> condition;
-        StateId targetAppId;
-    };
-    std::vector<AppTransitionEntry> appTransitions;
-
     // StateLifecycle bridge — private so state subclasses cannot call or override
     // these entry points. StateMachine dispatches through StateLifecycle* to reach them.
     void mount(Device* device) override    { onStateMounted(device); }

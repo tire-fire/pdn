@@ -31,13 +31,11 @@ void ShootoutSpectator::onStateMounted(PDN* pdn) {
 }
 
 void ShootoutSpectator::onStateLoop(PDN* pdn) {
-    shootout_->sync();
     auto p = shootout_->getPhase();
     if (p == ShootoutManager::Phase::MATCH_IN_PROGRESS && shootout_->isLocalDuelist()) {
         shouldGoToDuelCountdown_ = true;
     }
     if (p == ShootoutManager::Phase::ENDED) shouldGoToFinalStandings_ = true;
-    if (p == ShootoutManager::Phase::ABORTED) shouldGoToAborted_ = true;
 
     auto pair = shootout_->getCurrentMatchPair();
     if (memcmp(pair.first.data(), lastDisplayedA_.data(), 6) != 0 ||
@@ -51,9 +49,7 @@ void ShootoutSpectator::onStateLoop(PDN* pdn) {
 void ShootoutSpectator::onStateDismounted(PDN* pdn) {
     shouldGoToDuelCountdown_ = false;
     shouldGoToFinalStandings_ = false;
-    shouldGoToAborted_ = false;
 }
 
 bool ShootoutSpectator::transitionToDuelCountdown() { return shouldGoToDuelCountdown_; }
 bool ShootoutSpectator::transitionToFinalStandings() { return shouldGoToFinalStandings_; }
-bool ShootoutSpectator::transitionToAborted() { return shouldGoToAborted_; }

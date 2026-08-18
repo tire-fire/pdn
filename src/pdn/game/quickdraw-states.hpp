@@ -23,8 +23,8 @@
 #include "game/shootout-manager.hpp"
 #include "game/shootout-aware-state.hpp"
 
-/// Bundle of the shared game-wide managers a state may need. Built once by
-/// Quickdraw::populateStateMap and handed to every state so a new manager is a
+/// Bundle of the shared game-wide managers a state may need. Built by the
+/// GameSession that owns them and handed to every state so a new manager is a
 /// one-line addition here rather than a constructor change across every state.
 /// All pointers are non-owning; states read only the fields they use.
 struct GameContext {
@@ -145,7 +145,7 @@ public:
     void onStateDismounted(PDN* pdn) override;
     bool transitionToIdle();
 
-    // Called by Quickdraw's chain-game-event packet handler.
+    // Called by GameSession's chain-game-event packet handler.
     void onChainGameEventReceived(uint8_t event_type, const uint8_t* senderMac);
 
 public:
@@ -421,11 +421,9 @@ public:
     void onStateDismounted(PDN* pdn) override;
 
     bool transitionToBracketReveal();
-    bool transitionToAborted();
 
 private:
     bool shouldGoToReveal_ = false;
-    bool shouldGoToAborted_ = false;
 };
 
 class ShootoutBracketReveal : public TypedState<PDN>, public ShootoutAwareState {
@@ -437,12 +435,10 @@ public:
 
     bool transitionToDuelCountdown();
     bool transitionToSpectator();
-    bool transitionToAborted();
 
 private:
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
-    bool shouldGoToAborted_ = false;
 };
 
 class ShootoutSpectator : public TypedState<PDN> {
@@ -454,13 +450,11 @@ public:
 
     bool transitionToDuelCountdown();
     bool transitionToFinalStandings();
-    bool transitionToAborted();
 
 private:
     ShootoutManager* shootout_;
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToFinalStandings_ = false;
-    bool shouldGoToAborted_ = false;
     std::array<uint8_t, 6> lastDisplayedA_{};
     std::array<uint8_t, 6> lastDisplayedB_{};
 };
@@ -473,12 +467,10 @@ public:
     void onStateDismounted(PDN* pdn) override;
 
     bool transitionToFinalStandings();
-    bool transitionToAborted();
 
 private:
     ShootoutManager* shootout_;
     bool shouldGoToFinalStandings_ = false;
-    bool shouldGoToAborted_ = false;
 };
 
 class ShootoutFinalStandings : public TypedState<PDN> {

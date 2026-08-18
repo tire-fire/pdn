@@ -57,13 +57,15 @@ void PlayerRegistrationApp::populateStateMap() {
             std::bind(&ChooseRoleState::transitionToWelcomeMessage, chooseRole),
             welcomeMessageState));
 
+    // Nothing checks a top-level app's own transition list, so registration's
+    // hand-off to gameplay lives on the state that triggers it.
+    welcomeMessageState->addAppTransition(
+        [welcomeMessageState]() { return welcomeMessageState->transitionToGameplay(); },
+        StateId(HUB_APP_ID));
+
     stateMap.push_back(playerRegistration);
     stateMap.push_back(fetchUserDataState);
     stateMap.push_back(confirmOffline);
     stateMap.push_back(chooseRole);
     stateMap.push_back(welcomeMessageState);
-}
-
-bool PlayerRegistrationApp::readyForGameplay() {
-    return (currentState->getStateId() == PlayerRegistrationStateId::WELCOME_MESSAGE && static_cast<WelcomeMessage*>(currentState)->transitionToGameplay());
 }

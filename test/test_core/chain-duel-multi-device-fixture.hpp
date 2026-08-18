@@ -132,7 +132,7 @@ public:
             wireChainEventHandlers(*node);
             wireShootoutHandlers(*node);
 
-            // Hook CDM to RDC chain-change notifications (what Quickdraw does).
+            // Hook CDM to RDC chain-change notifications (what GameSession does).
             ChainDuelManager* cdmRaw = node->cdm.get();
             node->rdc->setChainChangeCallback([cdmRaw]() {
                 cdmRaw->onChainStateChanged();
@@ -401,7 +401,7 @@ protected:
             });
     }
 
-    // Mirrors what Quickdraw::Quickdraw installs for the chain-duel packet
+    // Mirrors what the GameSession constructor installs for the chain-duel packet
     // types. CDM doesn't install these itself, so for a driver-less fixture
     // we register trampolines that deliver received packets into the CDM.
     void wireChainEventHandlers(MultiDeviceNode& n) {
@@ -445,18 +445,25 @@ protected:
             },
             cdm);
 
+        // GameSession fans this one to two consumers; only the manager half has a
+        // counterpart here, since the fixture stands up no states. Dropping it
+        // would leave a supporter's spent press standing into the next round.
+        // The champion gate has to be mirrored too: without it a foreign chain's
+        // broadcast clears confirmSent here where hardware discards the frame.
         n.device->wirelessManager->setEspNowPacketHandler(
             PktType::kChainGameEvent,
-            [](const uint8_t*, const uint8_t*, const size_t, void*) {
-                // No-op at fixture level — CDM doesn't consume this directly;
-                // Quickdraw routes it to SupporterReady. Tests that need it can
-                // register their own handler via the node's peerComms mock.
+            [](const uint8_t*, const uint8_t* data, const size_t dataLen, void* ctx) {
+                if (dataLen != sizeof(ChainGameEventPayload)) return;
+                const ChainGameEventPayload* p = reinterpret_cast<const ChainGameEventPayload*>(data);
+                ChainDuelManager* manager = static_cast<ChainDuelManager*>(ctx);
+                if (!manager->isEventFromOwnChampion(p->championMac)) return;
+                manager->onChainGameEventReceived(p->event_type);
             },
             cdm);
     }
 
     // Register Shootout command + ack handlers. Mirrors the dispatcher in
-    // Quickdraw::Quickdraw so every packet path exercised on hardware is
+    // the GameSession constructor so every packet path exercised on hardware is
     // exercised in the fixture too.
     void wireShootoutHandlers(MultiDeviceNode& n) {
         ShootoutManager* mgr = n.shootout.get();
@@ -525,6 +532,7 @@ protected:
                 switch (cmd) {
                     case ShootoutCmd::BRACKET:         m->onBracketAckReceived(fromMac, seqId); break;
                     case ShootoutCmd::MATCH_START:     m->onMatchStartAckReceived(fromMac, seqId); break;
+                    case ShootoutCmd::MATCH_RESULT: m->onMatchResultAckReceived(fromMac, seqId); break;
                     case ShootoutCmd::TOURNAMENT_END:  m->onTournamentEndAckReceived(fromMac, seqId); break;
                     default: break;
                 }
@@ -557,7 +565,7 @@ inline void cdmMultiDeviceChainFormsAndElectsChampion(ChainDuelMultiDeviceFixtur
 
     // Role election: device 0 has no OUTPUT-jack peer so isChampion() should be
     // true once it observes its supporter-jack peer. Drive onChainStateChanged
-    // explicitly to match what Quickdraw does.
+    // explicitly to match what GameSession does.
     d0.cdm->onChainStateChanged();
     d1.cdm->onChainStateChanged();
     d2.cdm->onChainStateChanged();
