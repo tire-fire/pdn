@@ -43,38 +43,12 @@ GameSession::GameSession(Player* player,
     });
     matchManager->setRemoteDeviceCoordinator(remoteDeviceCoordinator);
 
-    // A role edge is the one signal a head transfer or coordinator handoff always
-    // produces; the direct peers either side of this device can be unchanged
-    // across one, leaving a confirmed supporter registered with a champion that
-    // no longer runs the duel.
-    remoteDeviceCoordinator->setOnChainRoleChange([this](ChainRole) {
-        if (chainDuelManager) chainDuelManager->resendConfirm();
-    });
-
     quickdrawWirelessManager->setPacketReceivedCallback(
         [this](const QuickdrawCommand& command) { matchManager->listenForMatchEvents(command); });
 
     for (const PacketRoute& route : packetRoutes()) {
         wirelessManager->setEspNowPacketHandler(route.type, route.handler, this);
     }
-
-    // Clear boost/confirmed-supporters when the supporter chain drains to
-    // empty while a duel is still running. Without this, a champion keeps
-    // a boost from supporters that have since unplugged.
-    remoteDeviceCoordinator->setChainChangeCallback([this]() {
-        onChainStateChanged();
-    });
-
-    remoteDeviceCoordinator->setPeerLostCallback([this](const uint8_t* lostMac) {
-        if (shootoutManager && shootoutManager->active()) {
-            shootoutManager->onLocalRDCDisconnect(lostMac);
-        }
-    });
-
-    // Head-only, so whoever gets this call is the ring's coordinator.
-    remoteDeviceCoordinator->setOnRingClosed([this]() {
-        if (shootoutManager) shootoutManager->onRingClosed();
-    });
 
     // The Player is the authority on this device's identity; RDC only carries it.
     remoteDeviceCoordinator->setSelfProfileProvider([this]() -> PlayerProfile {
@@ -101,14 +75,8 @@ GameSession::~GameSession() {
     if (player) player->setOnRoleChanged(nullptr);
     if (remoteDeviceCoordinator) remoteDeviceCoordinator->setSelfProfileProvider(nullptr);
     player = nullptr;
-    // The coordinator and the wireless manager are device-owned and outlive this
-    // session, so every slot holding `this` has to be emptied here. setBoostProvider
-    // is the exception and needs no clear: it is destroyed with the matchManager it
-    // was installed on, two lines down.
-    remoteDeviceCoordinator->setChainChangeCallback(nullptr);
-    remoteDeviceCoordinator->setPeerLostCallback(nullptr);
-    remoteDeviceCoordinator->setOnChainRoleChange(nullptr);
-    remoteDeviceCoordinator->setOnRingClosed(nullptr);
+    // setBoostProvider is the one install with no clear: matchManager owns that slot
+    // and is deleted below.
     remoteDeviceCoordinator = nullptr;
     for (const PacketRoute& route : packetRoutes()) {
         wirelessManager->clearEspNowPacketHandler(route.type);
@@ -118,12 +86,15 @@ GameSession::~GameSession() {
     }
     quickdrawWirelessManager = nullptr;
     symbolWirelessManager = nullptr;
-    delete matchManager;
-    matchManager = nullptr;
+    // Managers before matchManager: each drops its coordinator subscriptions as it
+    // goes, so none of them is still reachable from a live edge when the object they
+    // can read through is freed.
     delete chainDuelManager;
     chainDuelManager = nullptr;
     delete shootoutManager;
     shootoutManager = nullptr;
+    delete matchManager;
+    matchManager = nullptr;
 }
 
 GameContext GameSession::getContext() {
@@ -183,14 +154,6 @@ void GameSession::logRetryStats() {
               (unsigned)c.ackCount, cMean);
     }
     statsLogTimer.setTimer(STATS_LOG_INTERVAL_MS);
-}
-
-void GameSession::onChainStateChanged() {
-    if (chainDuelManager) {
-        chainDuelManager->onChainStateChanged();
-    }
-    // Shootout disconnects flow through setPeerLostCallback, not chain-state
-    // diffs, which fire on every jack edge either way.
 }
 
 void GameSession::onRoleAnnouncePacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {

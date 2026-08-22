@@ -6,7 +6,21 @@
 ChainDuelManager::ChainDuelManager(Player* player, WirelessManager* wirelessManager, RemoteDeviceCoordinator* rdc)
     : player(player)
     , wirelessManager(wirelessManager)
-    , rdc(rdc) {}
+    , rdc(rdc) {
+    // Subscribed here rather than by whoever builds this manager: an owner that
+    // wires it is an owner every other caller has to imitate, and one that forgets
+    // gets a manager that compiles, runs, and silently never reacts.
+    rdc->setChainChangeCallback([this]() { onChainStateChanged(); });
+    // The ring latch moves with both cables still seated — applyUpstreamHead sets
+    // and clears it off the HELLO parse, no jack edge — so a standing confirm has
+    // to be re-sent from the role edge; no jack edge would carry it.
+    rdc->setOnChainRoleChange([this](ChainRole) { resendConfirm(); });
+}
+
+ChainDuelManager::~ChainDuelManager() {
+    rdc->setChainChangeCallback(nullptr);
+    rdc->setOnChainRoleChange(nullptr);
+}
 
 SerialIdentifier ChainDuelManager::opponentJack() const {
     return player->isHunter() ? SerialIdentifier::OUTPUT_JACK : SerialIdentifier::INPUT_JACK;

@@ -27,10 +27,15 @@ public:
         ABORTED = 6,
     };
 
+    /// Subscribes to the coordinator's peer-lost and ring-closed edges when given
+    /// one. One callback exists per edge, so at most one ShootoutManager per
+    /// coordinator: a second built on the same one takes both slots over, and
+    /// whichever is destroyed first empties them for both.
     ShootoutManager(Player* player,
                     WirelessManager* wirelessManager,
                     RemoteDeviceCoordinator* rdc);
-    ~ShootoutManager() = default;
+    /// Drops the coordinator subscriptions the constructor took, which hold `this`.
+    ~ShootoutManager();
 
     /// Optional MatchManager injection. When set, Shootout primes the
     /// MatchManager with the duelist pair on each MATCH_START so duel

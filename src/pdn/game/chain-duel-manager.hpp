@@ -35,8 +35,15 @@ struct ChainGameEventPayload {
 
 class ChainDuelManager {
 public:
+    /// Subscribes to the coordinator's chain-change and role-change edges, and
+    /// requires a live coordinator — the class dereferences it unguarded throughout.
+    /// One callback exists per edge, so at most one ChainDuelManager per coordinator:
+    /// a second built on the same one takes both slots over, and whichever is
+    /// destroyed first empties them for both. Several tests do this deliberately and
+    /// stay correct only because they drive no jack edge afterwards.
     ChainDuelManager(Player* player, WirelessManager* wirelessManager, RemoteDeviceCoordinator* rdc);
-    virtual ~ChainDuelManager() = default;
+    /// Drops the coordinator subscriptions the constructor took, which hold `this`.
+    virtual ~ChainDuelManager();
 
     bool isChampion() const;
     bool isSupporter() const;

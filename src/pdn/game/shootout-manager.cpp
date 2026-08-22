@@ -27,7 +27,19 @@ ShootoutManager::ShootoutManager(Player* player,
                                  RemoteDeviceCoordinator* rdc)
     : player(player)
     , wirelessManager(wirelessManager)
-    , rdc(rdc) {}
+    , rdc(rdc) {
+    if (rdc == nullptr) return;
+    // Subscribed here rather than by whoever builds this manager: see
+    // ChainDuelManager's constructor for the reasoning.
+    rdc->setPeerLostCallback([this](const uint8_t* lostMac) { onLocalRDCDisconnect(lostMac); });
+    rdc->setOnRingClosed([this]() { onRingClosed(); });
+}
+
+ShootoutManager::~ShootoutManager() {
+    if (rdc == nullptr) return;
+    rdc->setPeerLostCallback(nullptr);
+    rdc->setOnRingClosed(nullptr);
+}
 
 bool ShootoutManager::active() const {
     return phase != Phase::IDLE;
@@ -632,9 +644,12 @@ bool ShootoutManager::isActiveDuelist(const uint8_t* mac) const {
 }
 
 void ShootoutManager::onLocalRDCDisconnect(const uint8_t* lostMac) {
+    // Gate before the log: this now fires on every direct-peer link death, and
+    // outside a tournament that is ordinary chain-duel unplugging. LOG_W survives
+    // the release build, so logging first put a line on the wire per cable pull.
+    if (phase == Phase::IDLE || phase == Phase::ABORTED || phase == Phase::ENDED) return;
     LOG_W(TAG, "onLocalRDCDisconnect %s phase=%d",
           MacToString(lostMac), static_cast<int>(phase));
-    if (phase == Phase::IDLE || phase == Phase::ABORTED || phase == Phase::ENDED) return;
     if (rdc && rdc->canReachPeer(lostMac)) return;
     uint8_t packet[8];
     packet[0] = static_cast<uint8_t>(ShootoutCmd::PEER_LOST);
