@@ -10,6 +10,7 @@
 #include "rdc-hello-tests.hpp"
 #include "device/remote-device-coordinator.hpp"
 #include "game/shootout-manager.hpp"
+#include "game/match-manager.hpp"
 #include "game/chain-duel-manager.hpp"
 #include "game/quickdraw-states.hpp"
 #include "game/quickdraw-apps.hpp"
@@ -723,13 +724,13 @@ inline void nonCoordinatorReceivingMatchStartIdentifiesRole(ShootoutManagerTests
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
 
     // Self in the duelist pair -> isLocalDuelist + opponentMac populated.
-    suite->shootout->onMatchStartReceived(me.data(), coord.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), coord.data(), 0, 2);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
     EXPECT_TRUE(suite->shootout->isLocalDuelist());
     EXPECT_EQ(memcmp(suite->shootout->getOpponentMac().data(), coord.data(), 6), 0);
 
     // Different MATCH_START where self is NOT in the pair -> spectator.
-    suite->shootout->onMatchStartReceived(coord.data(), other.data(), 1, 3);
+    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), other.data(), 1, 3);
     EXPECT_FALSE(suite->shootout->isLocalDuelist());
 }
 
@@ -748,7 +749,7 @@ inline void winnerBroadcastsMatchResultAndAdvancesLocally(ShootoutManagerTests* 
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(opMac.data());
     suite->shootout->onBracketReceived(coord.data(), {me, opMac, coord}, 1);
-    suite->shootout->onMatchStartReceived(me.data(), opMac.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), opMac.data(), 0, 2);
 
     suite->shootout->reportLocalWin();
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
@@ -772,7 +773,7 @@ inline void matchResultReceivedAdvancesLocalBracket(ShootoutManagerTests* suite)
         suite->shootout->onConfirmReceived(m.data());
     }
     suite->shootout->onBracketReceived(coord.data(), {aMac, bMac, coord, me}, 1);
-    suite->shootout->onMatchStartReceived(aMac.data(), bMac.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), aMac.data(), bMac.data(), 0, 2);
     suite->shootout->onMatchResultReceived(aMac.data(), bMac.data(), 0, 3, aMac.data());
     EXPECT_TRUE(suite->shootout->isEliminated(bMac.data()));
     EXPECT_FALSE(suite->shootout->isEliminated(aMac.data()));
@@ -800,7 +801,7 @@ inline void eachBoutGetsItsOwnResultRetry(ShootoutManagerTests* suite) {
         suite->shootout->onConfirmReceived(m.data());
     suite->shootout->onBracketReceived(coord.data(), {coord, me, other, fourth}, 1);
 
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     suite->shootout->reportLocalWin();
     const uint8_t firstSeq = suite->shootout->getLastMatchResultSeqId();
     suite->runRetryRounds(Resender::MAX_RETRIES + 1);
@@ -808,7 +809,7 @@ inline void eachBoutGetsItsOwnResultRetry(ShootoutManagerTests* suite) {
         << "first bout was not recovered at all";
 
     // A later bout on the same device. Its attempt must not have been spent.
-    suite->shootout->onMatchStartReceived(me.data(), fourth.data(), 1, 3);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), fourth.data(), 1, 3);
     suite->shootout->reportLocalWin();
     const uint8_t secondSeq = suite->shootout->getLastMatchResultSeqId();
     suite->runRetryRounds(Resender::MAX_RETRIES + 1);
@@ -842,7 +843,7 @@ inline void staleResultDoesNotEndTheCurrentBout(ShootoutManagerTests* suite) {
     suite->shootout->onBracketReceived(coord.data(), {coord, me, other, fourth}, 1);
 
     // Missed bout 0's result, now mid-duel in bout 1.
-    suite->shootout->onMatchStartReceived(me.data(), fourth.data(), 1, 5);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), fourth.data(), 1, 5);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
     // Bout 0's winner re-sends after the coordinator missed it.
@@ -878,7 +879,7 @@ inline void coordinatorMissingOurResultIsRecoveredBySender(ShootoutManagerTests*
     suite->shootout->onConfirmReceived(other.data());
     suite->shootout->onBracketReceived(coord.data(), {coord, me, other}, 1);
 
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
     suite->shootout->reportLocalWin();
     // Count the frame, not the retransmits: a retry re-sends the SAME seqId, so
@@ -1021,14 +1022,14 @@ inline void reAnnouncedMatchDoesNotReplayAFinishedBout(ShootoutManagerTests* sui
     // This device fights match 0 and wins it. Reported the way a real winner
     // reports — the quickdraw outcome, not a result arriving from elsewhere —
     // because that is what leaves this device holding the record.
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
     suite->shootout->reportLocalWin();
     ASSERT_TRUE(suite->shootout->isEliminated(other.data()));
     ASSERT_NE(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
     // The coordinator never saw that result and re-announces match 0.
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 9);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 9);
 
     EXPECT_NE(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
         << "dragged back into a bout it had already won";
@@ -1053,7 +1054,7 @@ inline void abortDoesNotTearDownAFinishedTournament(ShootoutManagerTests* suite)
     suite->shootout->setLoopMembersForTest({coord, me});
     suite->shootout->startProposal();
     suite->shootout->onBracketReceived(coord.data(), {coord, me}, 1);
-    suite->shootout->onTournamentEndReceived(me.data(), 40);
+    suite->shootout->onTournamentEndReceived(coord.data(), me.data(), 40);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
 
     suite->shootout->abortTournament();
@@ -1162,7 +1163,7 @@ inline void peerLostCoordinatorAborts(ShootoutManagerTests* suite) {
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(other.data());
     suite->shootout->onBracketReceived(coord.data(), {me, other, coord}, 1);
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     suite->shootout->onPeerLostReceived(coord.data());
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 }
@@ -1182,7 +1183,7 @@ inline void peerLostActiveDuelistAborts(ShootoutManagerTests* suite) {
     suite->shootout->onConfirmReceived(me.data());
     suite->shootout->onConfirmReceived(other.data());
     suite->shootout->onBracketReceived(coord.data(), {me, other, coord}, 1);
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     suite->shootout->onPeerLostReceived(other.data());
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 }
@@ -1481,14 +1482,13 @@ inline void matchResultRetriesUntilAcked(ShootoutManagerTests* suite) {
     EXPECT_EQ(suite->shootout->getPendingAckCount(suite->shootout->getLastMatchResultSeqId()), 0u);
 }
 
-inline void isHunterRestoredAfterTournament(ShootoutManagerTests* suite) {
-    // primeMatchManagerForMatch overrides player_->isHunter() based on MAC
-    // ordering during Shootout. resetToIdle must restore the pre-tournament
-    // snapshot captured in startProposal — both as a direct call (clean exit)
-    // and via the abort path (ShootoutAborted::onStateDismounted → resetToIdle).
+inline void shootoutLeavesStandingRoleAlone(ShootoutManagerTests* suite) {
+    // The draw slot a bracket match assigns belongs to that bout. Writing it to
+    // the Player instead made the restore at the next match boundary land on a
+    // duel that was still running, and the loser then read the winner's slot.
     uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> me    = {0x05, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};  // < self → forces flip
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};  // < self -> bounty slot
     std::array<uint8_t, 6> third = {0x07, 0, 0, 0, 0, 0};
     ON_CALL(*suite->device.mockPeerComms, getMacAddress())
         .WillByDefault(testing::Return(selfMac));
@@ -1496,31 +1496,128 @@ inline void isHunterRestoredAfterTournament(ShootoutManagerTests* suite) {
         sendData(testing::_, testing::_, testing::_, testing::_))
         .WillByDefault(testing::Return(1));
 
-    bool originalIsHunter = suite->player.isHunter();
+    MockStorage storage;
+    FakeQuickdrawWirelessManager quickdrawWirelessManager;
+    MatchManager matchManager;
+    matchManager.initialize(&suite->player, &storage, &quickdrawWirelessManager);
+    suite->shootout->setMatchManager(&matchManager);
 
-    // Path 1: direct resetToIdle. The unit-test fixture doesn't wire a
-    // MatchManager (primeMatchManagerForMatch's nullptr early-return skips
-    // setIsHunter), so we mutate directly to exercise the restore.
-    suite->shootout->setLoopMembersForTest({me, opMac});
-    suite->shootout->startProposal();
-    suite->player.setIsHunter(!originalIsHunter);
-    suite->shootout->resetToIdle();
-    EXPECT_EQ(suite->player.isHunter(), originalIsHunter);
+    suite->player.setIsHunter(true);
 
-    // Path 2: via abort (coord lost during a match). ShootoutAborted's
-    // onStateDismounted calls resetToIdle on real hardware.
     suite->shootout->setLoopMembersForTest({me, opMac, third});
     suite->shootout->startProposal();
-    suite->shootout->onConfirmReceived(me.data());
-    suite->shootout->onConfirmReceived(opMac.data());
-    suite->shootout->onConfirmReceived(third.data());
+    for (const std::array<uint8_t, 6>& m : {me, opMac, third})
+        suite->shootout->onConfirmReceived(m.data());
     suite->shootout->onBracketReceived(opMac.data(), {me, opMac, third}, 1);
-    suite->shootout->onMatchStartReceived(me.data(), opMac.data(), 0, 2);
-    suite->player.setIsHunter(!originalIsHunter);
-    suite->shootout->onPeerLostReceived(opMac.data());
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
-    suite->shootout->resetToIdle();
-    EXPECT_EQ(suite->player.isHunter(), originalIsHunter);
+    suite->shootout->onMatchStartReceived(opMac.data(), me.data(), opMac.data(), 0, 2);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+
+    EXPECT_FALSE(matchManager.isLocalHunter())
+        << "the bout's draw slot did not come from MAC ordering";
+    EXPECT_TRUE(suite->player.isHunter())
+        << "the tournament overwrote the standing role with a per-match slot";
+
+    // And it stays put across the match boundary that used to restore it.
+    suite->shootout->onMatchResultReceived(opMac.data(), me.data(), 0, 3, opMac.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+    EXPECT_TRUE(suite->player.isHunter());
+    EXPECT_FALSE(matchManager.isLocalHunter())
+        << "the bout's draw slot was rewritten underneath a live duel";
+
+    matchManager.clearCurrentMatch();
+    suite->shootout->setMatchManager(nullptr);
+}
+
+// A bracket with nobody left cannot name a winner, and a TOURNAMENT_END naming
+// the all-zero MAC is refused by every receiver without an ack — the coordinator
+// then retries to exhaustion while the ring sits in BETWEEN_MATCHES. Reaching
+// zero survivors takes a stale result: one tagged with an index that is no
+// longer current is recorded without ending the bout, so it can take a finalist
+// out while the survivor scan is still gated.
+inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
+    ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};  // coord
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> b = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> c = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> d = {0x04, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->driveToFirstMatch({me, b, c, d});
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+
+    std::pair<std::array<uint8_t, 6>, std::array<uint8_t, 6>> round1a =
+        suite->shootout->getCurrentMatchPair();
+    suite->shootout->onMatchResultReceived(round1a.first.data(), round1a.second.data(),
+                                           0, 20, round1a.first.data());
+    ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), 1);
+
+    std::pair<std::array<uint8_t, 6>, std::array<uint8_t, 6>> round1b =
+        suite->shootout->getCurrentMatchPair();
+    suite->shootout->onMatchResultReceived(round1b.second.data(), round1b.first.data(),
+                                           1, 21, round1b.second.data());
+    ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), 0)
+        << "the round never advanced to the final";
+
+    // Match 0's loser insists it won, tagged with match 1's index — so it is
+    // recorded but does not end the final this device is watching.
+    suite->shootout->onMatchResultReceived(round1a.second.data(), round1a.first.data(),
+                                           1, 22, round1a.second.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+    ASSERT_TRUE(suite->shootout->isEliminated(round1a.first.data()));
+
+    // The final's own result takes the other finalist out. Nobody is left.
+    suite->shootout->onMatchResultReceived(round1a.first.data(), round1b.second.data(),
+                                           0, 23, round1a.first.data());
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a tournament with no survivor did not end with a reason";
+    std::array<uint8_t, 6> noWinner{};
+    EXPECT_EQ(memcmp(suite->shootout->getTournamentWinner().data(), noWinner.data(), 6), 0)
+        << "an all-zero winner was published as a result";
+}
+
+// Admission is the sender's, not the payload's. A frame from our coordinator is
+// ours however its content reads, so a content fault is logged and still acked —
+// dropping the ack leaves the coordinator retrying until it gives up.
+inline void admittedFrameWithBadContentIsStillAcked(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> stranger = {0xA1, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->shootout->setLoopMembersForTest({coord, me, other});
+    suite->shootout->startProposal();
+    for (const std::array<uint8_t, 6>& m : {coord, me, other})
+        suite->shootout->onConfirmReceived(m.data());
+    suite->shootout->onBracketReceived(coord.data(), {me, other, coord}, 1);
+
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .Times(3)
+        .WillRepeatedly(testing::Return(1));
+
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), stranger.data(), 0, 2);
+    EXPECT_EQ(suite->shootout->getCurrentMatchIndex(), -1)
+        << "a pair naming a device outside the bracket started a match";
+
+    suite->shootout->onMatchResultReceived(stranger.data(), other.data(), 0, 3, coord.data());
+    EXPECT_FALSE(suite->shootout->isEliminated(other.data()))
+        << "a result naming a device outside the bracket eliminated somebody";
+
+    suite->shootout->onTournamentEndReceived(coord.data(), stranger.data(), 4);
+    EXPECT_NE(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
+        << "a winner outside the bracket ended the tournament";
 }
 
 // onLocalRDCDisconnect is idempotent: when the same MAC is reported lost twice
@@ -1787,11 +1884,11 @@ inline void strayRingCommandsLeaveTournamentUntouched(ShootoutManagerTests* suit
     for (auto& m : {coord, me, other})
         suite->shootout->onConfirmReceived(m.data());
     suite->shootout->onBracketReceived(coord.data(), {me, other, coord}, 1);
-    suite->shootout->onMatchStartReceived(me.data(), other.data(), 0, 2);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
     ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), 0);
 
-    suite->shootout->onMatchStartReceived(alienA.data(), alienB.data(), 5, 3);
+    suite->shootout->onMatchStartReceived(alienA.data(), alienA.data(), alienB.data(), 5, 3);
     EXPECT_EQ(suite->shootout->getCurrentMatchIndex(), 0);
     EXPECT_TRUE(suite->shootout->isLocalDuelist());
 
@@ -1802,7 +1899,7 @@ inline void strayRingCommandsLeaveTournamentUntouched(ShootoutManagerTests* suit
     suite->shootout->onPeerLostReceived(alienA.data());
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
-    suite->shootout->onTournamentEndReceived(alienA.data(), 5);
+    suite->shootout->onTournamentEndReceived(alienA.data(), alienA.data(), 5);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
     suite->shootout->onAbortReceived(alienA.data());

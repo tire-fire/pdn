@@ -226,6 +226,26 @@ inline void matchManagerTracksDuelState(MatchManager* mm, Player* player) {
     EXPECT_TRUE(mm->matchResultsAreIn());
 }
 
+// A Shootout hands out the hunter/bounty slots per bout by MAC ordering, and
+// the standing role is left alone — so the two disagree routinely. The bout's
+// slot is what decides the duel.
+inline void matchManagerShootoutDrawSlotDecidesTheWinner(MatchManager* mm, Player* player) {
+    player->setIsHunter(true);
+    uint8_t opponentMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    mm->initializeShootoutMatch("SHT-00000000000000000000000000000", opponentMac,
+                                /*localIsHunter=*/false);
+    ASSERT_TRUE(mm->getCurrentMatch().has_value());
+    ASSERT_FALSE(mm->isLocalHunter());
+
+    mm->setBountyDrawTime(400);  // this device
+    mm->setHunterDrawTime(100);  // the opponent
+    mm->setReceivedButtonPush();
+    mm->setReceivedDrawResult();
+
+    EXPECT_FALSE(mm->didWin())
+        << "the standing role, not the bout's draw slot, decided the duel";
+}
+
 // ============================================
 // Spoof rejection — packet-source authentication on duel commands
 // ============================================

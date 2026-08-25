@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <vector>
 #include "game/player.hpp"
 #include "device/remote-device-coordinator.hpp"
@@ -103,7 +102,11 @@ public:
     void onBracketReceived(const uint8_t* fromMac,
                            const std::vector<std::array<uint8_t, 6>>& offeredBracket,
                            uint8_t seqId);
-    void onMatchStartReceived(const uint8_t* duelistA, const uint8_t* duelistB,
+    /// Inbound MATCH_START. Admitted on `fromMac` being our coordinator, which
+    /// is the authority BRACKET propagated; the duelist pair is game content and
+    /// cannot answer whether a broadcast frame is ours.
+    void onMatchStartReceived(const uint8_t* fromMac,
+                              const uint8_t* duelistA, const uint8_t* duelistB,
                               uint8_t matchIndex, uint8_t seqId);
     bool isLocalDuelist() const;
     std::array<uint8_t, 6> getOpponentMac() const;
@@ -125,7 +128,10 @@ public:
     void onPeerLostReceived(const uint8_t* lostMac);
     uint8_t getLastMatchStartSeqId() const;
 
-    void onTournamentEndReceived(const uint8_t* winner, uint8_t seqId);
+    /// Inbound TOURNAMENT_END, admitted on `fromMac` for the same reason as
+    /// onMatchStartReceived.
+    void onTournamentEndReceived(const uint8_t* fromMac, const uint8_t* winner,
+                                 uint8_t seqId);
     /// seqId of the TOURNAMENT_END this device most recently sent.
     uint8_t getLastTournamentEndSeqId() const { return lastTournamentEndSeqId; }
     /// Tears down on a peer's ABORT. fromMac identifies the sending ring: the
@@ -171,6 +177,8 @@ private:
     uint8_t nextSeqId();
     static bool containsMac(const std::vector<std::array<uint8_t, 6>>& set,
                             const uint8_t* mac);
+    /// True when `mac` is the coordinator this device is following.
+    bool isFromCoordinator(const uint8_t* mac) const;
     // Any of the three, because which set knows the ring depends on the phase:
     // the bracket after reveal, the confirmed set during the proposal, the
     // physical loop before either exists. A follower's bracket is not a subset
@@ -280,10 +288,6 @@ private:
     std::array<uint8_t, 6> tournamentWinner{};
     uint8_t lastTournamentEndSeqId = 0;
 
-    // Snapshot of player->isHunter() at tournament entry: primeMatchManagerForMatch
-    // overrides isHunter by MAC ordering, and without restore the override leaks
-    // into the post-tournament duel.
-    std::optional<bool> originalIsHunter;
     void sendTournamentEndToPeers(const uint8_t* winner);
     std::array<uint8_t, 6> findLastRemaining() const;
 };

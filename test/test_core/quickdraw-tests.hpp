@@ -33,6 +33,33 @@ inline void wireFixtureRdcForMatchManager(MockDevice& device, MatchManager* mm) 
 
 static const uint8_t kTestMacBytes[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 
+// Stands a ShootoutManager up to MATCH_IN_PROGRESS with this device as a duelist
+// against the coordinator, and lets it prime `matchManager` the way MATCH_START
+// does on hardware. `selfMac` sorts above the coordinator's, which puts the local
+// side in the BOUNTY draw slot — the opposite of the fixtures' standing hunter
+// role, so a reader consulting the wrong one of the two is visible. Returns the
+// opponent's MAC.
+inline std::array<uint8_t, 6> mountShootoutBoutWithBountySlot(
+    ShootoutManager& shootout, MockDevice& device, MatchManager* matchManager,
+    uint8_t* selfMac) {
+    std::array<uint8_t, 6> me{};
+    memcpy(me.data(), selfMac, 6);
+    std::array<uint8_t, 6> coordinator = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> spectator = {0x07, 0, 0, 0, 0, 0};
+    ON_CALL(*device.mockPeerComms, getMacAddress()).WillByDefault(Return(selfMac));
+    ON_CALL(*device.mockPeerComms, sendData(_, _, _, _)).WillByDefault(Return(1));
+
+    shootout.setMatchManager(matchManager);
+    shootout.setLoopMembersForTest({me, coordinator, spectator});
+    shootout.startProposal();
+    for (const std::array<uint8_t, 6>& m : {me, coordinator, spectator}) {
+        shootout.onConfirmReceived(m.data());
+    }
+    shootout.onBracketReceived(coordinator.data(), {me, coordinator, spectator}, 1);
+    shootout.onMatchStartReceived(coordinator.data(), me.data(), coordinator.data(), 0, 2);
+    return coordinator;
+}
+
 // ============================================
 // Idle State Tests
 // ============================================
@@ -429,6 +456,40 @@ public:
     GameContext ctx;
     FakePlatformClock* fakeClock;
 };
+
+// The shootout duel timeout forfeits the bout's HUNTER. Which side that is comes
+// from the bout's draw slot: a match result for this bout can restore the
+// standing role before the timeout fires, and reading it there sent the wrong
+// device to reportLocalWin.
+inline void duelShootoutTimeoutForfeitsTheBoutHunter(DuelStateTests* suite) {
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _))
+        .Times(testing::AnyNumber());
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _))
+        .Times(testing::AnyNumber());
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+
+    suite->matchManager->clearCurrentMatch();
+    uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
+    ShootoutManager shootout(suite->player, suite->device.wirelessManager,
+                             &suite->device.fakeRemoteDeviceCoordinator);
+    std::array<uint8_t, 6> opponent = mountShootoutBoutWithBountySlot(
+        shootout, suite->device, suite->matchManager, selfMac);
+    suite->ctx.shootoutManager = &shootout;
+    ASSERT_TRUE(suite->player->isHunter()) << "the standing role should be the opposite";
+    ASSERT_FALSE(suite->matchManager->isLocalHunter());
+
+    Duel duelState(suite->ctx);
+    duelState.onStateMounted(&suite->device);
+    suite->fakeClock->advance(5000);  // past Duel::DUEL_TIMEOUT
+    duelState.onStateLoop(&suite->device);
+
+    EXPECT_TRUE(duelState.transitionToShootoutSpectator())
+        << "the bout's bounty did not take the forfeit win";
+    EXPECT_FALSE(duelState.transitionToShootoutEliminated());
+    EXPECT_TRUE(shootout.isEliminated(opponent.data()));
+
+    suite->ctx.shootoutManager = nullptr;
+}
 
 // ============================================
 // Scenario 1: DUT presses button first, then receives result
@@ -963,6 +1024,44 @@ inline void resultMatchFinalizedOnResult(DuelResultTests* suite) {
     // Match should be finalized (saved to storage)
     // We verify this by checking the mock was called
     SUCCEED();
+}
+
+// The ordinary press-and-lose path, with no timeout involved. The winner's
+// MATCH_RESULT lands while this device's duel is still running — on hardware
+// that is the whole race — and DuelResult mounts after it. Resolving the outcome
+// from the standing role there put the loser on the winner branch, so one bout
+// produced two eliminations and a two-player final could eliminate both
+// finalists.
+inline void resultShootoutLoserDoesNotClaimTheWin(DuelResultTests* suite) {
+    uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
+    ShootoutManager shootout(suite->player, suite->device.wirelessManager,
+                             &suite->device.fakeRemoteDeviceCoordinator);
+    std::array<uint8_t, 6> opponent = mountShootoutBoutWithBountySlot(
+        shootout, suite->device, suite->matchManager, selfMac);
+    suite->ctx.shootoutManager = &shootout;
+    ASSERT_TRUE(suite->matchManager->getCurrentMatch().has_value());
+    ASSERT_TRUE(suite->player->isHunter()) << "the standing role should be the opposite";
+    ASSERT_FALSE(suite->matchManager->isLocalHunter());
+
+    // Both draw times in: this device, in the bounty slot, was slower.
+    suite->matchManager->setBountyDrawTime(400);
+    suite->matchManager->setHunterDrawTime(100);
+    suite->matchManager->setReceivedButtonPush();
+    suite->matchManager->setReceivedDrawResult();
+
+    shootout.onMatchResultReceived(opponent.data(), selfMac, 0, 9, opponent.data());
+    ASSERT_EQ(shootout.getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+
+    DuelResult resultState(suite->ctx);
+    resultState.onStateMounted(&suite->device);
+
+    EXPECT_FALSE(resultState.transitionToShootoutSpectator())
+        << "the loser took the winner branch";
+    EXPECT_TRUE(resultState.transitionToShootoutEliminated());
+    EXPECT_FALSE(shootout.isEliminated(opponent.data()))
+        << "one bout produced two eliminations";
+
+    suite->ctx.shootoutManager = nullptr;
 }
 
 // ============================================

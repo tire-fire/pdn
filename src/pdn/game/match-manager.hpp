@@ -33,6 +33,11 @@ struct LastMatchDisplay {
 
 struct ActiveDuelState {
     bool matchIsReady = false;
+    // Which draw slot this device fills for THIS bout. Usually the player's
+    // standing hunter/bounty role, but a Shootout assigns it per match from MAC
+    // ordering, and the standing role can be restored while the bout is still
+    // live — so every duel-path read of "am I the hunter" resolves here.
+    bool localIsHunter = false;
     bool hasReceivedDrawResult = false;
     bool hasPressedButton = false;
     bool gracePeriodExpiredNoResult = false;
@@ -67,11 +72,11 @@ public:
      */
     void receiveMatch(const char* matchId, const char* opponentId, bool isHunter, uint8_t* opponentMac);
 
-    // Shootout mode: prime a match without the SEND_MATCH_ID handshake.
-    // Both duelists call this independently on MATCH_START with the same
-    // derived match ID. Assumes hunter-vs-bounty pairing (same-role
-    // Shootout matches are out of MVP scope).
-    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac);
+    /// Shootout mode: primes a match without the SEND_MATCH_ID handshake. Both
+    /// duelists call this independently on MATCH_START with the same derived
+    /// match ID and opposite `localIsHunter`, so each writes exactly one of the
+    /// match's two draw-time slots.
+    void initializeShootoutMatch(const char* matchId, uint8_t* opponentMac, bool localIsHunter);
 
     bool isMatchReady();
 
@@ -87,6 +92,10 @@ public:
     void setDuelLocalStartTime(unsigned long local_start_time_ms);
 
     bool didWin();
+
+    /// The draw slot this device fills for the active bout. Meaningful only
+    /// while a match exists.
+    bool isLocalHunter() const { return activeDuelState.localIsHunter; }
 
     unsigned long getDuelLocalStartTime();
 
@@ -122,7 +131,9 @@ public:
 
     void setBoostProvider(std::function<unsigned long()> provider);
 
-    const LastMatchDisplay& getLastMatchDisplay() const { return lastMatchDisplay_; }
+    /// Draw times and boost from the most recently finalized match, kept for the
+    /// result screen after the match itself is cleared.
+    const LastMatchDisplay& getLastMatchDisplay() const { return lastMatchDisplay; }
 
     // Required for SEND_MATCH_ID to be accepted: sender MAC must match one
     // of the RDC's direct-peer MACs (cable-established neighbor). If unset,
@@ -161,7 +172,7 @@ private:
     ShootoutManager* shootoutManager_ = nullptr;
 
     ActiveDuelState activeDuelState;
-    LastMatchDisplay lastMatchDisplay_;
+    LastMatchDisplay lastMatchDisplay;
 
     parameterizedCallbackFunction duelButtonPush;
     parameterizedCallbackFunction buttonMasher;
@@ -200,9 +211,9 @@ private:
     void sendMatchId();
     void sendMatchRoleMismatch(const QuickdrawCommand& incoming);
 
-    // Emplace match with given id/opponent. Common path for both the
+    // Emplace match with given id/opponent/draw slot. Common path for both the
     // cable-handshake init and the Shootout MATCH_START init.
-    void primeMatch(const char* matchId, const uint8_t* opponentMac);
+    void primeMatch(const char* matchId, const uint8_t* opponentMac, bool localIsHunter);
 };
 
 

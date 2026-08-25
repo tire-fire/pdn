@@ -103,6 +103,11 @@ bool ShootoutManager::containsMac(const std::vector<std::array<uint8_t, 6>>& set
     return false;
 }
 
+bool ShootoutManager::isFromCoordinator(const uint8_t* mac) const {
+    // An all-zero anchor (no ring closed yet) matches no real sender.
+    return mac != nullptr && memcmp(mac, coordinatorMac.data(), 6) == 0;
+}
+
 bool ShootoutManager::isRingMember(const uint8_t* mac) const {
     if (containsMac(bracket, mac)) return true;
     if (containsMac(confirmedSet, mac)) return true;
@@ -255,10 +260,6 @@ void ShootoutManager::resetTournamentState() {
     memset(opponentMac.data(), 0, 6);
     memset(currentDuelistA.data(), 0, 6);
     memset(currentDuelistB.data(), 0, 6);
-    if (originalIsHunter && player) {
-        player->setIsHunter(*originalIsHunter);
-    }
-    originalIsHunter.reset();
 }
 
 void ShootoutManager::startProposal() {
@@ -275,9 +276,6 @@ void ShootoutManager::startProposal() {
             LOG_W(TAG, "ring still closed; re-claiming members=%zu", ringMembers.size());
             sendRingClosed();
         }
-    }
-    if (player) {
-        originalIsHunter = player->isHunter();
     }
     phase = Phase::PROPOSAL;
 }
@@ -462,17 +460,18 @@ void ShootoutManager::primeMatchManagerForMatch() {
 
     // Role-for-this-match from MAC ordering: both sides compute the same
     // ordering so the hunter_draw_time and bounty_time slots in MatchManager
-    // are written by exactly one duelist each.
+    // are written by exactly one duelist each. It goes to the bout, never to the
+    // Player: the standing role outlives the bout and answers other questions.
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     bool localIsHunterForMatch = selfMac != nullptr &&
                                  memcmp(selfMac, opponentMac.data(), 6) < 0;
-    if (player) player->setIsHunter(localIsHunterForMatch);
 
     char matchId[IdGenerator::UUID_BUFFER_SIZE];
     deriveShootoutMatchId(currentMatchIndex, matchId, sizeof(matchId));
     LOG_W(TAG, "primeMatchManagerForMatch matchIndex=%d localHunter=%d",
           currentMatchIndex, localIsHunterForMatch);
-    matchManager->initializeShootoutMatch(matchId, opponentMac.data());
+    matchManager->initializeShootoutMatch(matchId, opponentMac.data(),
+                                          localIsHunterForMatch);
 }
 
 void ShootoutManager::advanceToBracketReveal() {
@@ -735,12 +734,18 @@ void ShootoutManager::onBracketReceived(
 }
 
 void ShootoutManager::onMatchStartReceived(
-    const uint8_t* duelistA, const uint8_t* duelistB,
+    const uint8_t* fromMac, const uint8_t* duelistA, const uint8_t* duelistB,
     uint8_t matchIndex, uint8_t seqId) {
     if (isCoordinator()) return;
-    // Both duelists come from our own bracket, so a pair naming anyone outside
-    // it belongs to another ring's broadcast.
-    if (!containsMac(bracket, duelistA) || !containsMac(bracket, duelistB)) return;
+    // The sender decides whether the frame is ours. Past this line the ack is
+    // owed however the payload reads, so a bad pair is a fault we log and answer
+    // rather than silence that leaves the coordinator retrying to exhaustion.
+    if (!isFromCoordinator(fromMac)) return;
+    if (!containsMac(bracket, duelistA) || !containsMac(bracket, duelistB)) {
+        LOG_E(TAG, "MATCH_START from coordinator names a duelist outside our bracket");
+        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
+        return;
+    }
     if (seqId != 0 && seqId == lastObservedMatchStartSeqId) {
         sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
         return;
@@ -795,12 +800,6 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
         eliminated.push_back(mac);
     }
     if (!endsCurrentBout) return;
-    // Restore pre-tournament role at each match boundary. primeMatchManagerForMatch
-    // re-applies the per-match override on the next match start if this device is a
-    // duelist again. Prevents role from staying flipped when the tournament ends.
-    if (originalIsHunter && player) {
-        player->setIsHunter(*originalIsHunter);
-    }
     phase = Phase::BETWEEN_MATCHES;
 }
 
@@ -843,12 +842,16 @@ void ShootoutManager::reportLocalWin() {
 void ShootoutManager::onMatchResultReceived(
     const uint8_t* winner, const uint8_t* loser,
     uint8_t matchIndex, uint8_t seqId, const uint8_t* fromMac) {
-    // Winner and loser are both drawn from our own bracket, so a result naming
-    // anyone outside it came from another ring's broadcast — and must not be
-    // acked, or that ring's sender stops retrying to its real audience.
-    if (!containsMac(bracket, winner) || !containsMac(bracket, loser)) return;
+    // A result is fanned out by whichever duelist won it, so the sender being in
+    // our bracket is what says the frame is ours. A result from another ring must
+    // not be acked, or that ring's sender stops retrying to its real audience.
+    if (!containsMac(bracket, fromMac)) return;
     // Always ack so the sender stops retrying, even when this is a duplicate.
     sendShootoutAck(ShootoutCmd::MATCH_RESULT, seqId, fromMac);
+    if (!containsMac(bracket, winner) || !containsMac(bracket, loser)) {
+        LOG_E(TAG, "MATCH_RESULT from ring member names a device outside our bracket");
+        return;
+    }
     // Dedup by loser-MAC rather than seqId: non-coord senders have independent
     // seq counters, but each loser is eliminated exactly once per tournament.
     if (isEliminated(loser)) {
@@ -875,6 +878,16 @@ std::array<uint8_t, 6> ShootoutManager::findLastRemaining() const {
 }
 
 void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
+    // Nobody left standing: findLastRemaining() answers with the all-zero MAC,
+    // which names no bracket member, so every receiver would refuse the frame and
+    // the fan-out would retry to exhaustion while the ring sat in BETWEEN_MATCHES.
+    // A tournament with no winner is over for a reason ABORT already expresses.
+    const std::array<uint8_t, 6> noWinner{};
+    if (memcmp(winner, noWinner.data(), 6) == 0) {
+        LOG_E(TAG, "tournament ended with no surviving player; aborting");
+        abortTournament();
+        return;
+    }
     LOG_W(TAG, "tournamentEnd winner=%s", MacToString(winner));
     lastTournamentEndSeqId = nextSeqId();
     uint8_t packet[8];
@@ -888,10 +901,14 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     phase = Phase::ENDED;
 }
 
-void ShootoutManager::onTournamentEndReceived(const uint8_t* winner, uint8_t seqId) {
-    // The winner is a member of our bracket; anyone else won another ring's
-    // tournament and must not end ours.
-    if (!containsMac(bracket, winner)) return;
+void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
+                                              const uint8_t* winner, uint8_t seqId) {
+    if (!isFromCoordinator(fromMac)) return;
+    if (!containsMac(bracket, winner)) {
+        LOG_E(TAG, "TOURNAMENT_END from coordinator names a winner outside our bracket");
+        sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
+        return;
+    }
     if (seqId != 0 && seqId == lastObservedTournamentEndSeqId) {
         auto coord = getCoordinatorMac();
         sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coord.data());

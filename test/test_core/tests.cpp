@@ -858,6 +858,10 @@ TEST_F(MatchManagerTestSuite, graceExpiredAloneFinalizes) {
     matchManagerGraceExpiredAloneFinalizes(matchManager, player);
 }
 
+TEST_F(MatchManagerTestSuite, shootoutDrawSlotDecidesTheWinner) {
+    matchManagerShootoutDrawSlotDecidesTheWinner(matchManager, player);
+}
+
 TEST_F(MatchManagerTestSuite, rejectsNeverPressedFromStranger) {
     matchManagerRejectsNeverPressedFromStranger(matchManager, player);
 }
@@ -1007,6 +1011,10 @@ TEST_F(DuelCountdownTests, cleansUpOnDismount) {
 // ============================================
 
 // Scenario 1: DUT presses button first
+TEST_F(DuelStateTests, shootoutTimeoutForfeitsTheBoutHunter) {
+    duelShootoutTimeoutForfeitsTheBoutHunter(this);
+}
+
 TEST_F(DuelStateTests, buttonPressTransitionsToDuelPushed) {
     duelButtonPressTransitionsToDuelPushed(this);
 }
@@ -1093,6 +1101,10 @@ TEST_F(DuelResultTests, opponentTimeoutMeansAutoWin) {
 
 TEST_F(DuelResultTests, winTransitionsToWinState) {
     resultWinTransitionsToWinState(this);
+}
+
+TEST_F(DuelResultTests, shootoutLoserDoesNotClaimTheWin) {
+    resultShootoutLoserDoesNotClaimTheWin(this);
 }
 
 TEST_F(DuelResultTests, loseTransitionsToLoseState) {
@@ -1874,7 +1886,9 @@ TEST_F(ShootoutManagerTests, tournamentEndRetriesUntilAcked) { tournamentEndRetr
 TEST_F(ShootoutManagerTests, matchResultRetriesUntilAcked) { matchResultRetriesUntilAcked(this); }
 TEST_F(ShootoutManagerTests, duplicateMatchResultDoesNotDoubleAdvance) { duplicateMatchResultDoesNotDoubleAdvance(this); }
 TEST_F(ShootoutManagerTests, confirmRecordsPeerName) { confirmRecordsPeerName(this); }
-TEST_F(ShootoutManagerTests, isHunterRestoredAfterTournament) { isHunterRestoredAfterTournament(this); }
+TEST_F(ShootoutManagerTests, shootoutLeavesStandingRoleAlone) { shootoutLeavesStandingRoleAlone(this); }
+TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody) { tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(this); }
+TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }
