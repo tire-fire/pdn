@@ -13,7 +13,8 @@ ReliableTransport::ReliableTransport(WirelessManager* wm)
     : wirelessManager(wm)
     , resender(wm) {
     resender.setAbandonCallback(
-        [this](PktType type, uint8_t seqId, const uint8_t* targetMac) {
+        [this](PktType type, uint8_t seqId, const uint8_t* targetMac,
+               const uint8_t*, size_t) {
             onResenderAbandon(type, seqId, targetMac);
         });
 }
@@ -24,43 +25,9 @@ ReliableTransport::~ReliableTransport() {
         entry.second = nullptr;
     }
     registry.clear();
-    // Unregister the driver callbacks before freeing their ctx cells: each
-    // ReceiveBinding is the void* ctx held by the driver's per-type receive and
-    // send-status handlers, so a packet arriving after this dtor would otherwise
-    // dispatch into freed memory.
-    for (ReceiveBinding*& binding : receiveBindings) {
-        if (wirelessManager != nullptr) {
-            wirelessManager->clearEspNowPacketHandler(binding->type);
-            wirelessManager->clearEspNowSendStatusHandler(binding->type);
-        }
-        delete binding;
-        binding = nullptr;
-    }
-    receiveBindings.clear();
-}
-
-void ReliableTransport::ensurePacketCallback(PktType type) {
-    // Only ever called on a channel's first claim of `type` (channel() returns
-    // early on a re-claim), so the binding is always new — no dedup needed.
-    receiveBindings.push_back(new ReceiveBinding{this, type});
-    ReceiveBinding* binding = receiveBindings.back();
-    if (wirelessManager == nullptr) return;
-    wirelessManager->setEspNowPacketHandler(
-        type,
-        [](const uint8_t* src, const uint8_t* data, const size_t len,
-           void* ctx) {
-            ReceiveBinding* b = static_cast<ReceiveBinding*>(ctx);
-            b->transport->deliverIncoming(b->type, src, data, len);
-        },
-        binding);
-    wirelessManager->setEspNowSendStatusHandler(
-        type,
-        [](const uint8_t* dst, const uint8_t* data, const size_t len,
-           bool success, void* ctx) {
-            ReceiveBinding* b = static_cast<ReceiveBinding*>(ctx);
-            b->transport->onSendResult(b->type, dst, data, len, success);
-        },
-        binding);
+    // No driver callbacks to unregister here: each channel installs and drops
+    // its own receive and send-status handlers, and every channel is deleted
+    // above, so both slots are already free.
 }
 
 void ReliableTransport::onSendResult(PktType type, const uint8_t* toMac,

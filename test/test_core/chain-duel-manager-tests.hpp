@@ -30,6 +30,12 @@ public:
                 setPacketHandler(testing::Eq(PktType::kPdnConnectionContext), _, _))
             .WillByDefault(testing::DoAll(testing::SaveArg<1>(&contextHandler),
                                           testing::SaveArg<2>(&contextCtx)));
+        // Role announces have no reply packet: the radio's send result is the
+        // delivery signal, so tests drive it through this captured handler.
+        ON_CALL(*device.mockPeerComms,
+                setSendStatusHandler(testing::Eq(PktType::kRoleAnnounce), _, _))
+            .WillByDefault(testing::DoAll(testing::SaveArg<1>(&roleAnnounceSendStatus),
+                                          testing::SaveArg<2>(&roleAnnounceSendStatusCtx)));
 
         rdc.setExternalConnectivityTask(true);
         rdc.initialize(device.wirelessManager, device.serialManager, &device);
@@ -110,8 +116,20 @@ public:
     FakePlatformClock* fakeClock;
     Player player;
 
+    /// Replays a radio send result for a role announce, the way the driver
+    /// would after the frame goes out. success=false is SEND_FAIL.
+    void deliverRoleAnnounceSendResult(const uint8_t* toMac, uint8_t seqId, bool success) {
+        if (roleAnnounceSendStatus == nullptr) return;
+        RoleAnnouncePayload echoed{};
+        echoed.seqId = seqId;
+        roleAnnounceSendStatus(toMac, reinterpret_cast<const uint8_t*>(&echoed),
+                               sizeof(echoed), success, roleAnnounceSendStatusCtx);
+    }
+
     PeerCommsInterface::PacketCallback contextHandler = nullptr;
     void* contextCtx = nullptr;
+    PeerCommsInterface::SendStatusCallback roleAnnounceSendStatus = nullptr;
+    void* roleAnnounceSendStatusCtx = nullptr;
     uint8_t contextSeqId = 0;
     uint8_t localMac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     uint8_t opponentMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
@@ -261,8 +279,6 @@ inline void cdmSendConfirmTargetsChampionMac(ChainDuelManagerTests* suite) {
     // Seed championMac via announce.
     uint8_t champion[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     cdm.onRoleAnnounceReceived(suite->opponentMac, 1, champion, 1);
@@ -288,8 +304,6 @@ inline void cdmSendConfirmIncrementsSeqId(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     uint8_t champion[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
@@ -406,9 +420,6 @@ inline void cdmConfirmResentWhenChampionChanges(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _))
-        .WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _))
         .WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
@@ -442,9 +453,6 @@ inline void cdmConfirmResentWhenChampionChanges(ChainDuelManagerTests* suite) {
 inline void cdmCountdownVoidsStandingConfirm(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _))
-        .WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _))
         .WillRepeatedly(Return(1));
@@ -553,9 +561,6 @@ inline void cdmChampionChangeWithoutPressSendsNoConfirm(ChainDuelManagerTests* s
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _))
-        .WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _))
         .WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
@@ -578,18 +583,7 @@ inline void cdmRoleAnnounceUpdatesChampionMac(ChainDuelManagerTests* suite) {
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     uint8_t championMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 
-    bool ackSent = false;
     bool peerRegistered = false;
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, sizeof(RoleAnnounceAckPayload)))
-        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t* data, const size_t) {
-            ackSent = true;
-            EXPECT_EQ(memcmp(mac, suite->opponentMac, 6), 0);
-            RoleAnnounceAckPayload p;
-            memcpy(&p, data, sizeof(p));
-            EXPECT_EQ(p.seqId, 7u);
-            return 1;
-        });
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_))
         .WillRepeatedly([&](const uint8_t* m) {
             if (memcmp(m, championMac, 6) == 0) peerRegistered = true;
@@ -602,7 +596,6 @@ inline void cdmRoleAnnounceUpdatesChampionMac(ChainDuelManagerTests* suite) {
 
     ASSERT_NE(cdm.getChampionMac(), nullptr);
     EXPECT_EQ(memcmp(cdm.getChampionMac(), championMac, 6), 0);
-    EXPECT_TRUE(ackSent);
     EXPECT_TRUE(peerRegistered);
 }
 
@@ -612,8 +605,6 @@ inline void cdmRoleAnnounceNoCascadeIfChampionUnchanged(ChainDuelManagerTests* s
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     uint8_t championMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     // First receive triggers a cascade broadcast (championMac is new); may send to
     // both jacks so we allow any number >= 1.
@@ -643,8 +634,6 @@ inline void cdmBroadcastRoleAndChampionSends(ChainDuelManagerTests* suite) {
     // Force championMac by receiving an announce.
     uint8_t champion[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     // Allow implicit broadcast triggered inside onRoleAnnounceReceived.
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
@@ -674,6 +663,298 @@ inline void cdmBroadcastRoleAndChampionSends(ChainDuelManagerTests* suite) {
     EXPECT_EQ(memcmp(capturedFromSupporter.championMac, champion, 6), 0);
 }
 
+// A supporter's screen shows the latest terminal result, so a newer WIN/LOSS must
+// obsolete the previous one for the whole chain at once. Two live fan-outs would
+// let the older one's retransmit land after the newer and flip the screen back —
+// the hazard SendMode::SUPERSEDE_PER_TARGET exists to prevent for unicast.
+inline void cdmNewTerminalEventSupersedesThePrevious(ChainDuelManagerTests* suite) {
+    suite->setupHunterChampion();
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    suite->applyHunterChampionRoles(cdm);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, _))
+        .WillRepeatedly(Return(1));
+
+    int eventFrames = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kChainGameEvent, _, _))
+        .WillRepeatedly([&](const uint8_t*, PktType, const uint8_t*, const size_t) {
+            eventFrames++;
+            return 1;
+        });
+
+    // Two terminal events inside one retry budget, neither acked.
+    cdm.sendGameEventToSupporters(ChainGameEventType::WIN);
+    cdm.sendGameEventToSupporters(ChainGameEventType::LOSS);
+    const int afterSends = eventFrames;
+    ASSERT_EQ(afterSends, 2);
+
+    // One round must put ONE frame on the air: only the newer event is live.
+    suite->fakeClock->advance(Resender::backoffMs(Resender::MAX_RETRIES) + 1);
+    cdm.sync();
+    EXPECT_EQ(eventFrames, afterSends + 1)
+        << "the superseded event is still retransmitting alongside the current one";
+}
+
+// The opponent announce is the only thing that tells the other end of the duel
+// cable what role we hold, and their canInitiateMatch refuses to start a match
+// until they know it. Nothing else repairs a lost one — their announce to us
+// populates our view of them, not theirs of us — so it has to retry.
+inline void cdmOpponentAnnounceRetriesUntilDelivered(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToOpponent = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->opponentMac, 6) == 0) announcesToOpponent++;
+            return 1;
+        });
+
+    suite->connectOutputPort();
+    ASSERT_EQ(announcesToOpponent, 1) << "no announce when the duel cable came up";
+
+    // The radio never reports it delivered, so it keeps trying.
+    suite->fakeClock->advance(Resender::backoffMs(0) + 1);
+    cdm.sync();
+    EXPECT_GT(announcesToOpponent, 1)
+        << "a lost role announce leaves the opponent unable to start a duel, forever";
+}
+
+// The same half-open gate as the supporter side, and it is reached by plugging
+// the two cables in quick succession: the supporter jack coming up fires the
+// cascade, which announces to BOTH jacks, while the opponent jack still holds a
+// peer MAC off one inbound frame and nothing proving that peer can hear us.
+inline void cdmOpponentAnnounceWaitsForConnected(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToOpponent = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->opponentMac, 6) == 0) announcesToOpponent++;
+            return 1;
+        });
+
+    // Opponent cable in, its context not back yet.
+    suite->beginConnectJackTo(suite->outJack, suite->opponentMac);
+    ASSERT_NE(suite->rdc.getPeerMac(SerialIdentifier::OUTPUT_JACK), nullptr);
+    ASSERT_NE(suite->rdc.getPortStatus(SerialIdentifier::OUTPUT_JACK), PortStatus::CONNECTED);
+
+    // Supporter cable in. Its connect drives the cascade, which reaches the
+    // opponent-jack announce while that link is still unproven.
+    suite->connectInputPort();
+    EXPECT_EQ(announcesToOpponent, 0) << "announced across a link that is not proven";
+
+    // The opponent's context lands; now it can be told.
+    suite->deliverPdnContext(suite->opponentMac);
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getPortStatus(SerialIdentifier::OUTPUT_JACK), PortStatus::CONNECTED);
+    EXPECT_GT(announcesToOpponent, 0) << "announce was suppressed rather than deferred";
+}
+
+// A jiggled cable is a link death and a reconnect to the same MAC. The champion
+// must announce again: the supporter's own state went with the link, so it no
+// longer knows who its champion is. Recording the announce against the peer MAC
+// alone would match on the way back and skip it, orphaning that whole sub-chain.
+inline void cdmReannouncesAfterSameMacReconnect(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*suite->device.mockPeerComms, removeEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToSupporter = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->supporterMac, 6) == 0) announcesToSupporter++;
+            return 1;
+        });
+
+    // No manual cascade drives below this point: the manager is subscribed to
+    // the coordinator, and whether the reconnect re-announces depends entirely
+    // on which chain-change events the coordinator actually fires.
+    suite->connectOutputPort();
+    suite->connectInputPort();
+    ASSERT_GT(announcesToSupporter, 0) << "no announce to begin with";
+    const int afterFirst = announcesToSupporter;
+
+    // Cable out: the HELLO heartbeat lapses and the link dies.
+    suite->fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
+    suite->rdc.sync(&suite->device);
+    ASSERT_NE(suite->rdc.getPortStatus(SerialIdentifier::INPUT_JACK), PortStatus::CONNECTED);
+
+    // Same device back on the same jack.
+    suite->connectInputPort();
+    EXPECT_GT(announcesToSupporter, afterFirst)
+        << "reconnected supporter was never told who its champion is";
+}
+
+// A champion change must reach the supporter jack even though the cable did not
+// move. Gating the announce on the peer MAC alone suppresses exactly the case
+// that matters: the head above us goes away, this device promotes itself, and
+// the supporter below is never told — it keeps addressing joins and confirms to
+// a device that is no longer champion, and drops this one's game events as
+// coming from a stranger, so it contributes no boost for the rest of the round.
+inline void cdmChampionChangeReachesAToldSupporter(ChainDuelManagerTests* suite) {
+    suite->setupHunterChampion();
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    suite->applyHunterChampionRoles(cdm);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    uint8_t seqId = 0;
+    std::array<uint8_t, 6> announcedChampion{};
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t* data, const size_t) {
+            if (memcmp(mac, suite->supporterMac, 6) == 0) {
+                RoleAnnouncePayload p;
+                memcpy(&p, data, sizeof(p));
+                seqId = p.seqId;
+                memcpy(announcedChampion.data(), p.championMac, 6);
+            }
+            return 1;
+        });
+
+    // The supporter is told about champion C1, and the radio confirms it.
+    uint8_t c1[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    cdm.onRoleAnnounceReceived(suite->opponentMac, 1, c1, 1);
+    ASSERT_NE(seqId, 0u);
+    suite->deliverRoleAnnounceSendResult(suite->supporterMac, seqId, /*success=*/true);
+    ASSERT_EQ(memcmp(announcedChampion.data(), c1, 6), 0);
+
+    // The champion above changes. Same cable, same peer MAC, new fact.
+    uint8_t c2[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x77};
+    cdm.onRoleAnnounceReceived(suite->opponentMac, 1, c2, 2);
+
+    EXPECT_EQ(memcmp(announcedChampion.data(), c2, 6), 0)
+        << "the supporter was never told the new champion, so it still follows the old one";
+}
+
+// The supporter direction needs the same repair as the opponent one. A supporter
+// that never learns its champion never joins the chain and never confirms, so it
+// and everything below it contribute no boost for the whole round. The cascade
+// would re-offer it — an undelivered announce leaves this peer reading as untold
+// — but a settled chain raises no chain-state events at all, so the cascade never
+// runs and the backstop is the only thing left.
+inline void cdmUndeliveredSupporterAnnounceIsRetriedByBackstop(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*suite->device.mockPeerComms, removeEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToSupporter = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->supporterMac, 6) == 0) announcesToSupporter++;
+            return 1;
+        });
+
+    suite->connectOutputPort();
+    suite->connectInputPort();
+    ASSERT_GT(announcesToSupporter, 0) << "no supporter announce to begin with";
+
+    // The radio never confirms delivery, so the announce burns its whole budget
+    // and is given up on. The supporter is still on the jack, still untold.
+    for (int i = 0; i < Resender::MAX_RETRIES + 1; ++i) {
+        suite->fakeClock->advance(Resender::backoffMs(Resender::MAX_RETRIES) + 1);
+        cdm.sync();
+    }
+    const int afterAbandon = announcesToSupporter;
+
+    // A full backstop interval later it is offered again.
+    suite->fakeClock->advance(ChainDuelManager::ROLE_ANNOUNCE_BACKSTOP_MS + 1);
+    cdm.sync();
+    EXPECT_GT(announcesToSupporter, afterAbandon)
+        << "supporter announce was abandoned and never re-offered; that supporter "
+           "contributes no boost for the rest of the round";
+}
+
+// An opponent announce that exhausts its retry budget has to be offered again.
+// Nothing else would: a settled chain raises no chain-state events, so the
+// cascade never runs, and the opponent would never learn this device's role —
+// its canInitiateMatch refuses that cable a duel for the rest of the round,
+// recoverable only by re-seating it.
+inline void cdmUndeliveredOpponentAnnounceIsRetriedByBackstop(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*suite->device.mockPeerComms, removeEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToOpponent = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->opponentMac, 6) == 0) announcesToOpponent++;
+            return 1;
+        });
+
+    suite->connectOutputPort();
+    suite->connectInputPort();
+    ASSERT_GT(announcesToOpponent, 0) << "no opponent announce to begin with";
+
+    // The radio never confirms delivery, so the announce burns its whole budget
+    // and is given up on. This is the case the stamp must not record as told.
+    for (int i = 0; i < Resender::MAX_RETRIES + 1; ++i) {
+        suite->fakeClock->advance(Resender::backoffMs(Resender::MAX_RETRIES) + 1);
+        cdm.sync();
+    }
+    const int afterAbandon = announcesToOpponent;
+
+    // A full backstop interval later, the undelivered announce is re-offered.
+    suite->fakeClock->advance(ChainDuelManager::ROLE_ANNOUNCE_BACKSTOP_MS + 1);
+    cdm.sync();
+    EXPECT_GT(announcesToOpponent, afterAbandon)
+        << "an announce that was never delivered was recorded as delivered, so "
+           "the opponent is never told this device's role";
+}
+
+// The announce must wait for a proven link. A supporter drops announces from a MAC
+// it has not yet recorded as a direct peer, and the radio reports the frame sent
+// anyway, so one offered at Connecting clears its own retry and is lost. Connected
+// is the evidence the supporter already holds us. The second half is driven only
+// by rdc.sync(), because the deferral is worthless unless the Connected
+// transition itself re-fires the cascade.
+inline void cdmAnnounceWaitsForConnectedSupporterJack(ChainDuelManagerTests* suite) {
+    suite->player.setIsHunter(true);
+    ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
+
+    int announcesToSupporter = 0;
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
+            if (memcmp(mac, suite->supporterMac, 6) == 0) announcesToSupporter++;
+            return 1;
+        });
+
+    // A champion: an opponent-jack peer, and nobody of our own role beyond it.
+    suite->connectOutputPort();
+    cdm.onChainStateChanged();
+
+    // The supporter plugs in. Our jack holds its MAC off one HELLO, but its
+    // context has not come back, so it has not necessarily recorded us.
+    suite->beginConnectJackTo(suite->inJack, suite->supporterMac);
+    ASSERT_NE(suite->rdc.getPeerMac(SerialIdentifier::INPUT_JACK), nullptr);
+    ASSERT_NE(suite->rdc.getPortStatus(SerialIdentifier::INPUT_JACK), PortStatus::CONNECTED);
+    cdm.onChainStateChanged();
+    EXPECT_EQ(announcesToSupporter, 0)
+        << "announced to a supporter that cannot accept it yet";
+
+    // Its context lands. The link is proven and the deferred announce goes.
+    suite->deliverPdnContext(suite->supporterMac);
+    suite->rdc.sync(&suite->device);
+    ASSERT_EQ(suite->rdc.getPortStatus(SerialIdentifier::INPUT_JACK), PortStatus::CONNECTED);
+    EXPECT_GT(announcesToSupporter, 0)
+        << "announce was suppressed rather than deferred";
+}
+
 // Ack with matching seqId clears pending; subsequent sync does not retransmit.
 inline void cdmAckClearsPending(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
@@ -681,14 +962,12 @@ inline void cdmAckClearsPending(ChainDuelManagerTests* suite) {
     suite->applyHunterChampionRoles(cdm);
     uint8_t champion[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     // Allow implicit broadcast triggered inside onRoleAnnounceReceived.
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     cdm.onRoleAnnounceReceived(suite->opponentMac, 1, champion, 1);
 
-    // Capture the seqId from the supporter-jack send (that's what pendingRoleAnnounce tracks).
+    // Capture the seqId from the supporter-jack send (that's what the role-announce entry tracks).
     uint8_t seqId = 0;
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
@@ -702,8 +981,9 @@ inline void cdmAckClearsPending(ChainDuelManagerTests* suite) {
     cdm.broadcastRoleAndChampion();
     ASSERT_NE(seqId, 0u);
 
-    // Ack with matching seqId clears pending.
-    cdm.onRoleAnnounceAckReceived(suite->supporterMac, seqId);
+    // The radio reporting the frame delivered clears the retry; there is no
+    // reply packet on this channel.
+    suite->deliverRoleAnnounceSendResult(suite->supporterMac, seqId, /*success=*/true);
 
     // Subsequent sync() after timeout must not emit any further role announces.
     EXPECT_CALL(*suite->device.mockPeerComms,
@@ -720,8 +1000,6 @@ inline void cdmAckFromWrongMacIgnored(ChainDuelManagerTests* suite) {
     uint8_t champion[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     cdm.onRoleAnnounceReceived(suite->opponentMac, 1, champion, 1);
 
@@ -738,9 +1016,11 @@ inline void cdmAckFromWrongMacIgnored(ChainDuelManagerTests* suite) {
     cdm.broadcastRoleAndChampion();
     ASSERT_NE(seqId, 0u);
 
-    // Forged ack: right seqId, wrong source MAC. Must be ignored.
-    uint8_t forgedMac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00};
-    cdm.onRoleAnnounceAckReceived(forgedMac, seqId);
+    // A delivery report for a different destination clears nothing here: the
+    // commit is matched on seqId AND MAC, so a stranger's report cannot mark
+    // this peer as told.
+    uint8_t otherMac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00};
+    suite->deliverRoleAnnounceSendResult(otherMac, seqId, /*success=*/true);
 
     // sync() after timeout must still retransmit to supporterMac.
     int retransmits = 0;
@@ -755,15 +1035,13 @@ inline void cdmAckFromWrongMacIgnored(ChainDuelManagerTests* suite) {
     EXPECT_EQ(retransmits, 1);
 }
 
-// Retransmit abandons after kMaxRetries with no ack.
+// Retransmit abandons after Resender::MAX_RETRIES with no ack.
 inline void cdmRetransmitAbandonsAfterMax(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
     suite->applyHunterChampionRoles(cdm);
     uint8_t champion[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     // Allow implicit broadcast triggered inside onRoleAnnounceReceived.
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
@@ -773,12 +1051,12 @@ inline void cdmRetransmitAbandonsAfterMax(ChainDuelManagerTests* suite) {
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
         .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
-            // Count sends to the supporter-jack peer (the one that goes into pendingRoleAnnounce).
+            // Count sends to the supporter-jack peer (the one that goes into the role-announce entry).
             if (memcmp(mac, suite->supporterMac, 6) == 0) supporterSends++;
             return 1;
         });
 
-    cdm.broadcastRoleAndChampion();  // initial: 1 to supporter + 1 fire-and-forget to opponent
+    cdm.broadcastRoleAndChampion();  // one announce, to the supporter jack
     ASSERT_EQ(supporterSends, 1);
 
     // Advance clock + sync 3 times → 3 retransmits (supporter only, pending path).
@@ -804,8 +1082,6 @@ inline void cdmRetryStatsRecordsLifecycle(ChainDuelManagerTests* suite) {
     suite->applyHunterChampionRoles(cdm);
     uint8_t champion[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
 
     uint8_t seqId = 0;
     EXPECT_CALL(*suite->device.mockPeerComms,
@@ -822,7 +1098,7 @@ inline void cdmRetryStatsRecordsLifecycle(ChainDuelManagerTests* suite) {
     cdm.onRoleAnnounceReceived(suite->opponentMac, 1, champion, 1);
     ASSERT_NE(seqId, 0u);
     suite->fakeClock->advance(50);
-    cdm.onRoleAnnounceAckReceived(suite->supporterMac, seqId);
+    suite->deliverRoleAnnounceSendResult(suite->supporterMac, seqId, /*success=*/true);
 
     auto s1 = cdm.getRetryStats();
     EXPECT_GE(s1.sends, 1u);
@@ -830,11 +1106,16 @@ inline void cdmRetryStatsRecordsLifecycle(ChainDuelManagerTests* suite) {
     EXPECT_GE(s1.ackCount, 1u);
     EXPECT_GT(s1.ackLatencyMsSum, 0u);
 
-    // Force a retransmit then exhaust retries → abandons increments.
-    // Advance generously per iter to cover exponential backoff (max 1600ms).
-    cdm.broadcastRoleAndChampion();
-    for (int i = 0; i < 7; i++) {
-        suite->fakeClock->advance(2000);
+    // A NEW champion is new content, so it goes out rather than being suppressed
+    // as already-told. Nobody reports it delivered, so it exhausts its retries.
+    uint8_t champion2[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x77};
+    cdm.onRoleAnnounceReceived(suite->opponentMac, 1, champion2, 2);
+    // Tick at the cadence the platform loop actually uses. Sampling only once
+    // per backstop interval would let the re-offer land in the same call as the
+    // retry round and supersede the entry before its budget ever completes —
+    // an artefact of the test's clock, not of the schedule.
+    for (int i = 0; i < 19; i++) {
+        suite->fakeClock->advance(100);
         cdm.sync();
     }
     auto s2 = cdm.getRetryStats();
@@ -865,8 +1146,6 @@ inline void cdmSupporterKeepsUpstreamChampionMacAfterTransition(ChainDuelManager
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
 
     uint8_t champion[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
@@ -893,10 +1172,16 @@ inline void cdmOnChainStateNewSupporterTriggersBroadcast(ChainDuelManagerTests* 
     // First call: device is champion (self-assign), supporter-jack peer present →
     // should broadcast exactly once to supporter-jack.
     int firstCallSends = 0;
+    uint8_t seqId = 0;
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
-        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t*, const size_t) {
-            if (memcmp(mac, suite->supporterMac, 6) == 0) firstCallSends++;
+        .WillRepeatedly([&](const uint8_t* mac, PktType, const uint8_t* data, const size_t) {
+            if (memcmp(mac, suite->supporterMac, 6) == 0) {
+                firstCallSends++;
+                RoleAnnouncePayload p;
+                memcpy(&p, data, sizeof(p));
+                seqId = p.seqId;
+            }
             return 1;
         });
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
@@ -905,7 +1190,14 @@ inline void cdmOnChainStateNewSupporterTriggersBroadcast(ChainDuelManagerTests* 
     ASSERT_NE(cdm.getChampionMac(), nullptr);
     EXPECT_EQ(firstCallSends, 1);
 
-    // Second call: supporter-jack peer unchanged — must NOT re-broadcast.
+    // The peer counts as told only once the radio confirms the frame reached it;
+    // until then it is still owed an announce and the cascade is right to keep
+    // offering one. Drive the delivery a real link would report.
+    ASSERT_NE(seqId, 0u);
+    suite->deliverRoleAnnounceSendResult(suite->supporterMac, seqId, /*success=*/true);
+
+    // Second call: supporter-jack peer unchanged and now told — must NOT
+    // re-broadcast.
     int secondCallSends = 0;
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
@@ -933,8 +1225,6 @@ inline void chainDuelThreeDeviceConfirm(ChainDuelManagerTests* suite) {
 
     std::vector<std::array<uint8_t, 6>> s1Cascade;
     RoleAnnouncePayload s1CascadePayload{};
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, sizeof(RoleAnnouncePayload)))
@@ -1006,8 +1296,6 @@ inline void cdmBroadcastToOpponentJackPopulatesRemoteRole(ChainDuelManagerTests*
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
 
     // Capture any kRoleAnnounce sent to the opponent-jack direct peer (opponentMac).
     bool sentToOpponent = false;
@@ -1070,8 +1358,6 @@ inline void cdmRoleAnnounceFromSupporterJackIgnoresChampionMac(ChainDuelManagerT
     uint8_t realChampion[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
     cdm.onRoleAnnounceReceived(suite->opponentMac, 1, realChampion, 1);
     ASSERT_NE(cdm.getChampionMac(), nullptr);
@@ -1098,9 +1384,8 @@ inline void cdmRoleAnnounceFromOppositeRoleOpponentIgnoresChampionMac(ChainDuelM
     // Seed championMac to self via onChainStateChanged (champion self-assign).
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _)).WillRepeatedly(Return(1));
+                sendData(_, PktType::kRoleAnnounce, _, _))
+        .WillRepeatedly(Return(1));
     cdm.onChainStateChanged();
     ASSERT_NE(cdm.getChampionMac(), nullptr);
     EXPECT_EQ(memcmp(cdm.getChampionMac(), selfMacArr, 6), 0);
@@ -1126,9 +1411,6 @@ inline void chainDuelReconfigRecovers(ChainDuelManagerTests* suite) {
     s1.setPeerRole(SerialIdentifier::OUTPUT_JACK, true);
     s1.setPeerRole(SerialIdentifier::INPUT_JACK, true);
 
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(_, PktType::kRoleAnnounceAck, _, _))
-        .WillRepeatedly(Return(1));
     EXPECT_CALL(*suite->device.mockPeerComms, addEspNowPeer(_)).WillRepeatedly(Return(0));
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(_, PktType::kRoleAnnounce, _, _)).WillRepeatedly(Return(1));
@@ -1245,7 +1527,7 @@ inline void cdmGameEventAckClearsPending(ChainDuelManagerTests* suite) {
     cdm.sync();
 }
 
-// After kMaxRetries with no ACK, pending is abandoned — no further sends.
+// After Resender::MAX_RETRIES with no ACK, pending is abandoned — no further sends.
 inline void cdmGameEventAbandonsAfterMax(ChainDuelManagerTests* suite) {
     suite->setupHunterChampion();
     ChainDuelManager cdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
@@ -1262,7 +1544,7 @@ inline void cdmGameEventAbandonsAfterMax(ChainDuelManagerTests* suite) {
     cdm.sendGameEventToSupporters(ChainGameEventType::WIN);
     ASSERT_EQ(supporterSends, 1);
 
-    // kMaxRetries = 3. Advance past each exponential backoff window (100, 200,
+    // Resender::MAX_RETRIES = 3. Advance past each exponential backoff window (100, 200,
     // 400, 800ms). Use 1000ms to cover the largest.
     for (int i = 0; i < 3; i++) {
         suite->fakeClock->advance(1000);

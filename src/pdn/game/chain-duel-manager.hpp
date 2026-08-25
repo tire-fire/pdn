@@ -11,6 +11,8 @@
 #include "device/wireless-manager.hpp"
 #include "device/drivers/peer-comms-types.hpp"
 #include "device/drivers/serial-wrapper.hpp"
+#include "wireless/resender.hpp"
+#include "wireless/reliable-channel.hpp"
 
 enum class ChainGameEventType : uint8_t {
     COUNTDOWN = 0,
@@ -39,8 +41,8 @@ public:
     /// requires a live coordinator — the class dereferences it unguarded throughout.
     /// One callback exists per edge, so at most one ChainDuelManager per coordinator:
     /// a second built on the same one takes both slots over, and whichever is
-    /// destroyed first empties them for both. Several tests do this deliberately and
-    /// stay correct only because they drive no jack edge afterwards.
+    /// destroyed first empties them for both. A test does this deliberately and
+    /// stays correct only because it drives no jack edge afterwards.
     ChainDuelManager(Player* player, WirelessManager* wirelessManager, RemoteDeviceCoordinator* rdc);
     /// Drops the coordinator subscriptions the constructor took, which hold `this`.
     virtual ~ChainDuelManager();
@@ -105,15 +107,28 @@ public:
         uint8_t role,
         const uint8_t* championMac,
         uint8_t seqId);
-    void onRoleAnnounceAckReceived(const uint8_t* fromMac, uint8_t seqId);
+
+    /// Announces this device's role and champion to the supporter-jack peer.
+    /// Silent when the link is not proven yet.
     void broadcastRoleAndChampion();
+    /// Announces this device's role to the opponent-jack peer, unless that peer
+    /// has already been told or is still being told. With no peer it forgets
+    /// whoever was last told, so a cable returning on the same MAC is announced
+    /// to again.
     void sendRoleToOpponentJack();
+
     void sync();
 
     static constexpr unsigned long BOOST_PER_SUPPORTER_MS = 15;
+    /// How often an undelivered role announce is re-offered, in either
+    /// direction. A settled chain raises no events, so nothing else would.
+    ///
+    /// Longer than the retry span on purpose: a tick landing inside that window
+    /// supersedes the live entry and restarts its budget, so the announce would
+    /// retransmit forever instead of going quiet between offers.
+    static constexpr unsigned long ROLE_ANNOUNCE_BACKSTOP_MS = Resender::staleAfterMs();
 
-    // Retry observability for the role-announce channel. Mirrors
-    // RemoteDeviceCoordinator::RetryStats semantics.
+    // Retry observability for this manager's two channels.
     struct RetryStats {
         uint32_t sends = 0;
         uint32_t retries = 0;
@@ -121,12 +136,24 @@ public:
         uint32_t ackLatencyMsSum = 0;
         uint32_t ackCount = 0;
     };
-    /// Cumulative retry counters for the role-announce and game-event channels:
-    /// ackLatencyMsSum / ackCount is mean RTT, abandons / (sends + retries) is loss.
-    RetryStats getRetryStats() const { return retryStats; }
+    /// Cumulative retry counters for the role-announce and game-event channels.
+    /// ackLatencyMsSum / ackCount is a mean delivery time, mixing two kinds of
+    /// sample: the role announce measures to the radio's SEND_SUCCESS, the game
+    /// event to a reply packet. Sends and retries are
+    /// counted in frames, abandons in recipients, so the three do not divide into
+    /// one another: on a fan-out one frame can be given up on by many members.
+    /// Latency is measured here because the Resender does not stamp a send time;
+    /// it holds the retry schedule, not a record of when a frame first went out.
+    RetryStats getRetryStats() const {
+        const Resender::Stats& carried = resender.getStats();
+        return {carried.sends, carried.retries, carried.abandons,
+                ackLatencyMsSum, ackCount};
+    }
 
 private:
-    RetryStats retryStats;
+    // Delivery-time samples only; the retry counts live on the Resender.
+    uint32_t ackLatencyMsSum = 0;
+    uint32_t ackCount = 0;
     Player* player;
     WirelessManager* wirelessManager;
     RemoteDeviceCoordinator* rdc;
@@ -196,34 +223,51 @@ private:
     std::array<std::optional<bool>, 2> peerRoleByPort;
 
     std::optional<std::array<uint8_t, 6>> championMac;
-    std::optional<std::array<uint8_t, 6>> lastAnnouncedSupporterJackMac;
-    std::optional<std::array<uint8_t, 6>> lastAnnouncedOpponentJackMac;
 
-    struct PendingRoleAnnounce {
-        bool active = false;
+    // What a jack's peer has been told, and whether the radio confirmed it.
+    // Keyed on the CONTENT, not just the peer: a champion change leaves the
+    // cable untouched, so a stamp holding only the MAC suppresses exactly the
+    // announce that has to go out. `delivered` is the radio's send report, not
+    // proof the peer's app took the frame — that is what the half-open gate in
+    // each send function is for. What it proves is the negative: an announce
+    // that spent its budget was never MAC-acked, whether it was refused before
+    // it left or went out and came back SEND_FAIL. Either way it did not land,
+    // and re-offering it is the only repair there is.
+    struct RoleAnnounceState {
+        std::array<uint8_t, 6> peer{};
+        uint8_t role = 0;
+        std::array<uint8_t, 6> champion{};
         uint8_t seqId = 0;
-        uint8_t retries = 0;
-        std::array<uint8_t, 6> championMac;
-        uint8_t role;
-        std::array<uint8_t, 6> targetMac;
-        SimpleTimer timer;
+        bool delivered = false;
+
+        /// True when this records a delivered announce of exactly `content`.
+        bool told(const RoleAnnounceState& content) const {
+            return delivered && peer == content.peer && role == content.role &&
+                   champion == content.champion;
+        }
     };
-    PendingRoleAnnounce pendingRoleAnnounce;
-    static constexpr unsigned long kAckTimeoutMs = 100;
-    static constexpr uint8_t kMaxRetries = 3;
-
-    uint8_t nextRoleAnnounceSeqId = 1;
-
-    // Champion-side WIN/LOSS in flight. One broadcast frame carries the event to
-    // the whole chain, so there is one seqId and one retry schedule; the MACs are
-    // only the tally of who still owes an ack. A second event supersedes the
-    // first for every supporter at once, so a single slot is the whole state.
-    MacSlots pendingEventAcks{};
-    size_t pendingEventAckCount = 0;
-    uint8_t pendingEventSeqId = 0;
-    uint8_t pendingEventType = 0;
-    uint8_t pendingEventRetries = 0;
-    SimpleTimer pendingEventTimer;
+    std::optional<RoleAnnounceState> supporterAnnounce;
+    std::optional<RoleAnnounceState> opponentAnnounce;
 
     uint8_t nextGameEventSeqId = 1;
+
+    // Owned here, not shared with the coordinator's: a fan-out armed by this
+    // manager must not outlive it and keep broadcasting for an object that is
+    // gone. Both announces ride the channel below it.
+    Resender resender;
+
+    // In a 2-node ring both jacks face one peer, so the second announce can
+    // supersede the first. Harmless: when both fire they carry the same role and
+    // championMac, and addGroup transmits before superseding, so each still gets
+    // its own delivery report.
+    ReliableChannel<RoleAnnouncePayload> roleAnnounceChannel;
+
+    void recordAnnounceDelivered(uint8_t seqId, const uint8_t* mac);
+
+    // Time from a frame going out to the radio reporting it delivered. Not a
+    // round trip — this channel has no reply packet — and approximate when both
+    // announces are in flight, since they share the one timer.
+    SimpleTimer roleAnnounceSentTimer;
+    SimpleTimer gameEventSentTimer;
+    SimpleTimer roleAnnounceBackstopTimer;
 };

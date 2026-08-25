@@ -12,13 +12,22 @@
 // A ReliableChannel is a typed, reliable pipe for exactly one PktType: game
 // code sends a packed payload struct and receives decoded structs back, and
 // the channel supplies everything reliability needs underneath — seqId
-// stamping, retry-until-ack via the shared Resender, ack emission on receipt,
-// duplicate suppression, and an abandon callback when a peer stays
-// unreachable past the retry budget. The struct itself is the wire format
-// (packed, memcpy'd); both ends run the same firmware, so field layout is the
-// protocol. ReliableChannelBase holds the untyped mechanics; the
-// ReliableChannel<P> template below binds them to a payload type. Channels
-// are created and owned by ReliableTransport, one per PktType.
+// stamping, retry-until-delivered via a Resender, duplicate suppression on
+// receipt, and an abandon callback when a peer stays unreachable past the retry
+// budget. The struct itself is the wire format (packed, memcpy'd); both ends run
+// the same firmware, so field layout is the protocol. ReliableChannelBase holds
+// the untyped mechanics; the ReliableChannel<P> template below binds them to a
+// payload type.
+//
+// No ack packet is sent or expected: a send is cleared by the radio's own
+// SEND_SUCCESS, which is why deliver() emits nothing on receipt. Dedup still
+// earns its place, because a sender that missed SEND_SUCCESS retransmits.
+//
+// Most channels are created and owned by a ReliableTransport, one per PktType.
+// Not all: ChainDuelManager binds one straight to its own Resender, which is
+// what a caller outside the coordinator has to do, the transport being private
+// to it. Such an owner can route abandonment itself by setting the callback on
+// the Resender it holds; ChainDuelManager does not.
 class ReliableChannelBase {
 public:
     using OnAbandon = std::function<void(uint8_t seqId, const uint8_t* targetMac)>;
@@ -30,14 +39,12 @@ public:
                         PktType type,
                         OnAbandon onAbandon,
                         Resender::SendMode sendMode = Resender::SendMode::SUPERSEDE_PER_TARGET);
-    /// Virtual: channels are owned and deleted through the base pointer.
-    virtual ~ReliableChannelBase() = default;
+    /// Virtual: channels are owned and deleted through the base pointer. Drops
+    /// both driver registrations the constructor installed.
+    virtual ~ReliableChannelBase();
 
     /// The PktType this channel claims.
     PktType type() const { return packetType; }
-
-    /// Routes an ack for this channel's PktType into the Resender.
-    void onAck(uint8_t seqId, const uint8_t* fromMac);
 
     /// Relays a Resender abandonment to this channel's OnAbandon callback.
     void onResenderAbandon(uint8_t seqId, const uint8_t* targetMac);
@@ -71,15 +78,13 @@ protected:
     uint8_t nextSeqId();
     // nullptr in probe-style unit tests; every use is null-tolerant.
     WirelessManager* getWirelessManager() const { return wirelessManager; }
-    void sendOnceBytes(const uint8_t* mac, const uint8_t* data, size_t len);
     // Defined in the .cpp so the logger stays out of this template header.
     static void logLengthMismatch(PktType type, size_t got, size_t want);
     // Suppress re-dispatch of a duplicate reliable delivery from the same
     // sender, the expected consequence of a lost ack on a resent packet.
     // seqId==0 is the unsequenced/sendOnce sentinel (see nextSeqId) and is
     // never deduped here; those payloads dedup by domain identity at the
-    // caller. Returns true if (fromMac,seqId) was already delivered. Call only
-    // AFTER acking, so a duplicate still silences the sender's resends.
+    // caller. Returns true if (fromMac,seqId) was already delivered.
     bool isDuplicateReliableRx(const uint8_t* fromMac, uint8_t seqId);
 
     Resender* resender;
@@ -87,10 +92,23 @@ protected:
     WirelessManager* wirelessManager;
     Resender::SendMode sendMode;
 
+    // How long a seqId stays claimed by the frame that used it. seqIds restart at
+    // 1 on a fresh channel, so without an expiring claim the first frame after a
+    // peer reboots carries the seqId the receiver already holds — on a channel
+    // that sends one frame per peer, that is every reboot, not a rare collision.
+    //
+    // Derived so raising MAX_RETRIES moves it too. Only bounds an EVERY_ROUND
+    // sender: a TRANSMITTED_ONLY entry parked behind a shut send path can
+    // retransmit arbitrarily later and be re-delivered, so handlers on those
+    // channels must tolerate running twice.
+    static constexpr unsigned long RX_SEQ_CLAIM_MS = Resender::staleAfterMs();
+
 private:
     struct RxSeqRecord {
         std::array<uint8_t, 6> mac;
         uint8_t lastSeqId;
+        // Re-armed whenever this sender's cursor moves; see RX_SEQ_CLAIM_MS.
+        SimpleTimer claim;
     };
     OnAbandon onAbandon;
     uint8_t lastSentSeqId = 0;
@@ -121,11 +139,6 @@ public:
         resender->send(mac, packetType, p.seqId,
                        reinterpret_cast<const uint8_t*>(&p), sizeof(P), sendMode);
         return p.seqId;
-    }
-
-    /// Fire-and-forget send: seqId 0, no retry, no ack expected.
-    void sendOnce(const uint8_t* mac, P p) {
-        sendOnceBytes(mac, reinterpret_cast<const uint8_t*>(&p), sizeof(P));
     }
 
     /// Decode + dispatch one inbound packet: dedup, then the onReceive

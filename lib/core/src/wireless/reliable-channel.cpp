@@ -21,10 +21,37 @@ ReliableChannelBase::ReliableChannelBase(WirelessManager* wirelessManager,
     , packetType(type)
     , wirelessManager(wirelessManager)
     , sendMode(sendMode)
-    , onAbandon(std::move(onAbandon)) {}
+    , onAbandon(std::move(onAbandon)) {
+    // Owning the PktType is the whole registration. This channel already holds
+    // both things the wiring needs, and a channel whose send results never
+    // arrive retries to exhaustion in silence — so leaving the install to
+    // whoever constructs it makes a second, undeclared step that every caller
+    // has to imitate and any caller can forget.
+    if (this->wirelessManager == nullptr) return;
+    this->wirelessManager->setEspNowPacketHandler(
+        type,
+        [](const uint8_t* src, const uint8_t* data, const size_t len, void* ctx) {
+            static_cast<ReliableChannelBase*>(ctx)->deliverBytes(src, data, len);
+        },
+        this);
+    this->wirelessManager->setEspNowSendStatusHandler(
+        type,
+        [](const uint8_t* dst, const uint8_t* data, const size_t len,
+           bool success, void* ctx) {
+            static_cast<ReliableChannelBase*>(ctx)->onSendResult(dst, data, len, success);
+        },
+        this);
+}
 
-void ReliableChannelBase::onAck(uint8_t seqId, const uint8_t* fromMac) {
-    resender->onAck(packetType, seqId, fromMac);
+ReliableChannelBase::~ReliableChannelBase() {
+    // A base destructor runs AFTER the derived one, so between the two the slot
+    // still points at an object whose deliverBytes is pure virtual again. What
+    // makes that safe is not the ordering here: the driver queues both receive
+    // and send-result and drains them from exec() on the main loop, which is
+    // also where channels are destroyed, so no dispatch can land mid-teardown.
+    if (wirelessManager == nullptr) return;
+    wirelessManager->clearEspNowPacketHandler(packetType);
+    wirelessManager->clearEspNowSendStatusHandler(packetType);
 }
 
 void ReliableChannelBase::onResenderAbandon(uint8_t seqId, const uint8_t* targetMac) {
@@ -49,14 +76,19 @@ bool ReliableChannelBase::isDuplicateReliableRx(const uint8_t* fromMac, uint8_t 
     if (seqId == 0 || fromMac == nullptr) return false;
     for (RxSeqRecord& r : rxSeq) {
         if (std::memcmp(r.mac.data(), fromMac, 6) == 0) {
-            if (r.lastSeqId == seqId) return true;
+            // Same seqId AND still inside the window this sender could still be
+            // retransmitting in. Past it, an identical seqId is a fresh frame
+            // from a sender whose counter restarted, not a repeat.
+            if (r.lastSeqId == seqId && !r.claim.expired()) return true;
             r.lastSeqId = seqId;
+            r.claim.setTimer(RX_SEQ_CLAIM_MS);
             return false;
         }
     }
     RxSeqRecord rec;
     std::memcpy(rec.mac.data(), fromMac, 6);
     rec.lastSeqId = seqId;
+    rec.claim.setTimer(RX_SEQ_CLAIM_MS);
     if (rxSeq.size() >= MAX_RX_SENDERS) {
         rxSeq.erase(rxSeq.begin());
     }
@@ -67,13 +99,4 @@ bool ReliableChannelBase::isDuplicateReliableRx(const uint8_t* fromMac, uint8_t 
 void ReliableChannelBase::logLengthMismatch(PktType type, size_t got, size_t want) {
     LOG_W(RELIABLE_CHANNEL_TAG, "reliable rx len mismatch type=%u got=%zu want=%zu",
           (unsigned)type, got, want);
-}
-
-void ReliableChannelBase::sendOnceBytes(const uint8_t* mac, const uint8_t* data, size_t len) {
-    WirelessManager* wm = getWirelessManager();
-    if (wm == nullptr) {
-        LOG_E(RELIABLE_CHANNEL_TAG, "sendOnceBytes called with null WirelessManager");
-        return;
-    }
-    wm->sendEspNowData(mac, packetType, data, len);
 }

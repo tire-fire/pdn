@@ -55,8 +55,8 @@ struct MultiDeviceNode {
     void* contextCtx = nullptr;
     PeerCommsInterface::PacketCallback roleAnnounceHandler = nullptr;
     void* roleAnnounceCtx = nullptr;
-    PeerCommsInterface::PacketCallback roleAnnounceAckHandler = nullptr;
-    void* roleAnnounceAckCtx = nullptr;
+    PeerCommsInterface::SendStatusCallback roleAnnounceSendStatus = nullptr;
+    void* roleAnnounceSendStatusCtx = nullptr;
     PeerCommsInterface::PacketCallback chainConfirmHandler = nullptr;
     void* chainConfirmCtx = nullptr;
     PeerCommsInterface::PacketCallback chainJoinHandler = nullptr;
@@ -316,8 +316,10 @@ protected:
                 handler = target.contextHandler;
                 ctx = target.contextCtx;
                 break;
-            case PktType::kRoleAnnounce:         handler = target.roleAnnounceHandler;     ctx = target.roleAnnounceCtx; break;
-            case PktType::kRoleAnnounceAck:      handler = target.roleAnnounceAckHandler;  ctx = target.roleAnnounceAckCtx; break;
+            case PktType::kRoleAnnounce:
+                handler = target.roleAnnounceHandler;
+                ctx = target.roleAnnounceCtx;
+                break;
             case PktType::kChainConfirm:         handler = target.chainConfirmHandler;     ctx = target.chainConfirmCtx; break;
             case PktType::kChainJoin:
                 handler = target.chainJoinHandler;
@@ -330,6 +332,22 @@ protected:
         }
         if (!handler) return;
         handler(source.mac, p.data.data(), p.data.size(), ctx);
+
+        // Report delivery back to the sender: on channels with no reply packet
+        // that report IS the delivery signal, and a fixture that routed the frame
+        // without it would make every send look undelivered and burn its budget.
+        //
+        // Friendlier than the real radio, deliberately. This sits after the
+        // no-handler return, so delivery is reported only when the receiver had a
+        // handler and it ran — whereas a real SEND_SUCCESS is a MAC-layer verdict
+        // that says nothing about the application. The case the production code
+        // worries about, the radio acking while the peer is deaf, therefore
+        // cannot be reproduced here; it needs a test that drives onSendResult by
+        // hand.
+        if (p.type == PktType::kRoleAnnounce && source.roleAnnounceSendStatus) {
+            source.roleAnnounceSendStatus(p.toMac.data(), p.data.data(), p.data.size(),
+                                          /*success=*/true, source.roleAnnounceSendStatusCtx);
+        }
     }
 
     void wirePeerCommsMock(MultiDeviceNode& n) {
@@ -365,9 +383,10 @@ protected:
             .WillByDefault([&n](PktType, PeerCommsInterface::PacketCallback cb, void* ctx) {
                 n.roleAnnounceHandler = cb; n.roleAnnounceCtx = ctx;
             });
-        ON_CALL(*pc, setPacketHandler(testing::Eq(PktType::kRoleAnnounceAck), _, _))
-            .WillByDefault([&n](PktType, PeerCommsInterface::PacketCallback cb, void* ctx) {
-                n.roleAnnounceAckHandler = cb; n.roleAnnounceAckCtx = ctx;
+        ON_CALL(*pc, setSendStatusHandler(testing::Eq(PktType::kRoleAnnounce), _, _))
+            .WillByDefault([&n](PktType, PeerCommsInterface::SendStatusCallback cb, void* ctx) {
+                n.roleAnnounceSendStatus = cb;
+                n.roleAnnounceSendStatusCtx = ctx;
             });
         ON_CALL(*pc, setPacketHandler(testing::Eq(PktType::kChainConfirm), _, _))
             .WillByDefault([&n](PktType, PeerCommsInterface::PacketCallback cb, void* ctx) {
@@ -393,29 +412,13 @@ protected:
     }
 
     // Mirrors what the GameSession constructor installs for the chain-duel packet
-    // types. CDM doesn't install these itself, so for a driver-less fixture
-    // we register trampolines that deliver received packets into the CDM.
+    // types that no channel claims. Deliberately NOT kRoleAnnounce: the CDM's
+    // ReliableChannel claims that slot in its own constructor, and registering
+    // over it here would replace the channel with a trampoline that skips the
+    // length check, the decode and the duplicate suppression — leaving the
+    // production receive path untested by every chain and tournament case here.
     void wireChainEventHandlers(MultiDeviceNode& n) {
         ChainDuelManager* cdm = n.cdm.get();
-
-        n.device->wirelessManager->setEspNowPacketHandler(
-            PktType::kRoleAnnounce,
-            [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
-                if (dataLen != sizeof(RoleAnnouncePayload)) return;
-                const RoleAnnouncePayload* p = reinterpret_cast<const RoleAnnouncePayload*>(data);
-                static_cast<ChainDuelManager*>(ctx)->onRoleAnnounceReceived(
-                    fromMac, p->role, p->championMac, p->seqId);
-            },
-            cdm);
-
-        n.device->wirelessManager->setEspNowPacketHandler(
-            PktType::kRoleAnnounceAck,
-            [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
-                if (dataLen != sizeof(RoleAnnounceAckPayload)) return;
-                const RoleAnnounceAckPayload* p = reinterpret_cast<const RoleAnnounceAckPayload*>(data);
-                static_cast<ChainDuelManager*>(ctx)->onRoleAnnounceAckReceived(fromMac, p->seqId);
-            },
-            cdm);
 
         n.device->wirelessManager->setEspNowPacketHandler(
             PktType::kChainConfirm,
@@ -516,17 +519,13 @@ protected:
         n.device->wirelessManager->setEspNowPacketHandler(
             PktType::kShootoutCommandAck,
             [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
+                // Same routing as GameSession::onShootoutCommandAckPacket: the
+                // seqId alone names the frame, so the command byte is only
+                // range-checked, never dispatched on.
                 auto* m = static_cast<ShootoutManager*>(ctx);
                 if (dataLen < 2) return;
-                ShootoutCmd cmd = static_cast<ShootoutCmd>(data[0]);
-                uint8_t seqId = data[1];
-                switch (cmd) {
-                    case ShootoutCmd::BRACKET:         m->onBracketAckReceived(fromMac, seqId); break;
-                    case ShootoutCmd::MATCH_START:     m->onMatchStartAckReceived(fromMac, seqId); break;
-                    case ShootoutCmd::MATCH_RESULT: m->onMatchResultAckReceived(fromMac, seqId); break;
-                    case ShootoutCmd::TOURNAMENT_END:  m->onTournamentEndAckReceived(fromMac, seqId); break;
-                    default: break;
-                }
+                if (data[0] > static_cast<uint8_t>(ShootoutCmd::ABORT)) return;
+                m->onCommandAckReceived(fromMac, data[1]);
             },
             mgr);
     }

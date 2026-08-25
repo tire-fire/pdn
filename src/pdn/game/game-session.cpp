@@ -5,14 +5,15 @@
 #include <array>
 #include <cstring>
 
-const std::array<GameSession::PacketRoute, 8>& GameSession::packetRoutes() {
-    static const std::array<PacketRoute, 8> ROUTES = {{
+const std::array<GameSession::PacketRoute, 6>& GameSession::packetRoutes() {
+    // kRoleAnnounce is absent deliberately: ChainDuelManager's ReliableChannel
+    // claims that slot itself. Installing it here too would clobber the channel,
+    // since this loop runs after the managers are constructed.
+    static const std::array<PacketRoute, 6> ROUTES = {{
         {PktType::kChainGameEvent, dispatchTo<&GameSession::onChainGameEventPacket>},
         {PktType::kChainGameEventAck, dispatchTo<&GameSession::onChainGameEventAckPacket>},
         {PktType::kChainConfirm, dispatchTo<&GameSession::onChainConfirmPacket>},
         {PktType::kChainJoin, dispatchTo<&GameSession::onChainJoinPacket>},
-        {PktType::kRoleAnnounce, dispatchTo<&GameSession::onRoleAnnouncePacket>},
-        {PktType::kRoleAnnounceAck, dispatchTo<&GameSession::onRoleAnnounceAckPacket>},
         {PktType::kShootoutCommand, dispatchTo<&GameSession::onShootoutCommandPacket>},
         {PktType::kShootoutCommandAck, dispatchTo<&GameSession::onShootoutCommandAckPacket>},
     }};
@@ -86,9 +87,8 @@ GameSession::~GameSession() {
     }
     quickdrawWirelessManager = nullptr;
     symbolWirelessManager = nullptr;
-    // Managers before matchManager: each drops its coordinator subscriptions as it
-    // goes, so none of them is still reachable from a live edge when the object they
-    // can read through is freed.
+    // Managers before matchManager: shootoutManager holds a raw MatchManager*
+    // and dereferences it when priming a bracket match.
     delete chainDuelManager;
     chainDuelManager = nullptr;
     delete shootoutManager;
@@ -144,29 +144,23 @@ void GameSession::logRetryStats() {
     }
     if (!statsLogTimer.expired()) return;
 
+    // LOG_W (not LOG_I) because firmware builds with CORE_DEBUG_LEVEL=2, which
+    // strips info-level calls. Both managers are reported: a venue reading one
+    // line to judge radio health would otherwise be shown the chain duel's
+    // retries and told nothing about the tournament's.
     if (chainDuelManager != nullptr) {
         ChainDuelManager::RetryStats c = chainDuelManager->getRetryStats();
         unsigned long cMean = c.ackCount ? (c.ackLatencyMsSum / c.ackCount) : 0;
-        // LOG_W (not LOG_I) because firmware builds with CORE_DEBUG_LEVEL=2
-        // which strips info-level calls.
         LOG_W("STATS", "CDM s=%u r=%u ab=%u ack=%u/%lums",
               (unsigned)c.sends, (unsigned)c.retries, (unsigned)c.abandons,
               (unsigned)c.ackCount, cMean);
     }
+    if (shootoutManager != nullptr) {
+        const Resender::Stats& s = shootoutManager->getRetryStats();
+        LOG_W("STATS", "SHT s=%u r=%u ab=%u",
+              (unsigned)s.sends, (unsigned)s.retries, (unsigned)s.abandons);
+    }
     statsLogTimer.setTimer(STATS_LOG_INTERVAL_MS);
-}
-
-void GameSession::onRoleAnnouncePacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
-    if (dataLen != sizeof(RoleAnnouncePayload) || !chainDuelManager) return;
-    const RoleAnnouncePayload* payload = reinterpret_cast<const RoleAnnouncePayload*>(data);
-    chainDuelManager->onRoleAnnounceReceived(
-        fromMac, payload->role, payload->championMac, payload->seqId);
-}
-
-void GameSession::onRoleAnnounceAckPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
-    if (dataLen != sizeof(RoleAnnounceAckPayload) || !chainDuelManager) return;
-    const RoleAnnounceAckPayload* payload = reinterpret_cast<const RoleAnnounceAckPayload*>(data);
-    chainDuelManager->onRoleAnnounceAckReceived(fromMac, payload->seqId);
 }
 
 void GameSession::onChainGameEventPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
@@ -292,22 +286,5 @@ void GameSession::onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t*
 void GameSession::onShootoutCommandAckPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
     if (!shootoutManager || dataLen < 2) return;
     if (data[0] > static_cast<uint8_t>(ShootoutCmd::ABORT)) return;
-    ShootoutCmd cmd = static_cast<ShootoutCmd>(data[0]);
-    uint8_t seqId = data[1];
-    switch (cmd) {
-        case ShootoutCmd::BRACKET:
-            shootoutManager->onBracketAckReceived(fromMac, seqId);
-            break;
-        case ShootoutCmd::MATCH_START:
-            shootoutManager->onMatchStartAckReceived(fromMac, seqId);
-            break;
-        case ShootoutCmd::MATCH_RESULT:
-            shootoutManager->onMatchResultAckReceived(fromMac, seqId);
-            break;
-        case ShootoutCmd::TOURNAMENT_END:
-            shootoutManager->onTournamentEndAckReceived(fromMac, seqId);
-            break;
-        default:
-            break;
-    }
+    shootoutManager->onCommandAckReceived(fromMac, data[1]);
 }

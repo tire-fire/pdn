@@ -6,7 +6,26 @@
 ChainDuelManager::ChainDuelManager(Player* player, WirelessManager* wirelessManager, RemoteDeviceCoordinator* rdc)
     : player(player)
     , wirelessManager(wirelessManager)
-    , rdc(rdc) {
+    , rdc(rdc)
+    , resender(wirelessManager, Resender::BudgetPolicy::EVERY_ROUND)
+    // No abandon handler: a role announce that runs out of retries is repaired by
+    // the backstop in sync(), not by a callback.
+    , roleAnnounceChannel(wirelessManager, &resender, PktType::kRoleAnnounce, nullptr) {
+    // The radio's delivery report is this channel's ack; there is no reply
+    // packet. Latency is read here because the channel reports delivery but does
+    // not time it, and the peer is recorded as told here for the same reason:
+    // this is the first moment it is true.
+    // Receive rides the channel too, so the length check, the decode and the
+    // duplicate suppression are the channel's rather than a second copy of them
+    // in whoever routes the packet.
+    roleAnnounceChannel.onReceive([this](const uint8_t* fromMac, const RoleAnnouncePayload& p) {
+        onRoleAnnounceReceived(fromMac, p.role, p.championMac, p.seqId);
+    });
+    roleAnnounceChannel.setOnDelivered([this](uint8_t seqId, const uint8_t* mac) {
+        ackLatencyMsSum += roleAnnounceSentTimer.getElapsedTime();
+        ackCount++;
+        recordAnnounceDelivered(seqId, mac);
+    });
     // Subscribed here rather than by whoever builds this manager: an owner that
     // wires it is an owner every other caller has to imitate, and one that forgets
     // gets a manager that compiles, runs, and silently never reacts.
@@ -15,6 +34,9 @@ ChainDuelManager::ChainDuelManager(Player* player, WirelessManager* wirelessMana
     // and clears it off the HELLO parse, no jack edge — so a standing confirm has
     // to be re-sent from the role edge; no jack edge would carry it.
     rdc->setOnChainRoleChange([this](ChainRole) { resendConfirm(); });
+    // Armed here because SimpleTimer::expired() is false while unarmed, so an
+    // unarmed backstop never fires at all.
+    roleAnnounceBackstopTimer.setTimer(ROLE_ANNOUNCE_BACKSTOP_MS);
 }
 
 ChainDuelManager::~ChainDuelManager() {
@@ -141,28 +163,26 @@ void ChainDuelManager::sendGameEventToSupporters(ChainGameEventType eventType) {
     if (eventType == ChainGameEventType::WIN || eventType == ChainGameEventType::LOSS) {
         payload.seqId = nextGameEventSeqId++;
         if (nextGameEventSeqId == 0) nextGameEventSeqId = 1;
-        pendingEventSeqId = payload.seqId;
-        pendingEventType = payload.event_type;
-        pendingEventRetries = 0;
-        pendingEventAckCount = 0;
-        for (const std::array<uint8_t, 6>& peerMac : peers) {
-            if (pendingEventAckCount >= MAX_CHAIN_SUPPORTERS) break;
-            pendingEventAcks[pendingEventAckCount++] = peerMac;
-        }
-        pendingEventTimer.setTimer(kAckTimeoutMs);
-        retryStats.sends++;
+        gameEventSentTimer.setTimer(0);
+        // A newer terminal event obsoletes the previous one for every supporter
+        // at once: the supporter's screen shows the latest result, so an older
+        // retransmit landing afterwards would flip it back. Dropping the prior
+        // fan-out is what SendMode::SUPERSEDE_PER_TARGET does for unicast.
+        resender.cancelAll(PktType::kChainGameEvent);
+        resender.sendBroadcast(peers, PktType::kChainGameEvent, payload.seqId,
+                               reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
+    } else {
+        // Fire-and-forget: no seqId, no ack owed, so it goes straight out. One
+        // broadcast frame either way — addressing a supporter three cables away
+        // by unicast costs a peer-table slot per device in the chain and the
+        // table holds 20. Supporters keep only the events whose championMac
+        // matches the champion they follow.
+        wirelessManager->sendEspNowData(
+            wirelessManager->getBroadcastAddress(),
+            PktType::kChainGameEvent,
+            reinterpret_cast<const uint8_t*>(&payload),
+            sizeof(payload));
     }
-
-    // One broadcast frame, never one unicast per supporter. Addressing a
-    // supporter three cables away by unicast costs a peer-table slot for every
-    // device in the chain, and the table holds 20; the broadcast slot is
-    // registered once at radio init. Supporters keep only the events whose
-    // championMac matches the champion they follow.
-    wirelessManager->sendEspNowData(
-        wirelessManager->getBroadcastAddress(),
-        PktType::kChainGameEvent,
-        reinterpret_cast<const uint8_t*>(&payload),
-        sizeof(payload));
 
     // After the send, never before: the recipients above are the join roster and
     // not this roll call, but wiping first is one edit away from dropping every
@@ -183,14 +203,11 @@ void ChainDuelManager::sendGameEventAck(const uint8_t* toMac, uint8_t seqId) {
 
 void ChainDuelManager::onChainGameEventAckReceived(const uint8_t* fromMac, uint8_t seqId) {
     if (fromMac == nullptr || seqId == 0) return;
-    if (seqId != pendingEventSeqId) return;
-    for (size_t i = 0; i < pendingEventAckCount; i++) {
-        if (memcmp(pendingEventAcks[i].data(), fromMac, 6) != 0) continue;
-        retryStats.ackLatencyMsSum += pendingEventTimer.getElapsedTime();
-        retryStats.ackCount++;
-        pendingEventAcks[i] = pendingEventAcks[pendingEventAckCount - 1];
-        pendingEventAckCount--;
-        return;
+    // A broadcast carries no per-member delivery evidence from the radio, so
+    // this reply is the only thing that clears a supporter's slot.
+    if (resender.onAck(PktType::kChainGameEvent, seqId, fromMac)) {
+        ackLatencyMsSum += gameEventSentTimer.getElapsedTime();
+        ackCount++;
     }
 }
 
@@ -303,23 +320,7 @@ void ChainDuelManager::applyChainStateChange() {
             if (!championMac.has_value() || *championMac != selfArr) {
                 championMac = selfArr;
                 broadcastRoleAndChampion();
-                // Track that we just announced to our current supporter-jack peer.
-                const uint8_t* supporterPeer = rdc->getPeerMac(supporterJack());
-                if (supporterPeer != nullptr) {
-                    std::array<uint8_t, 6> cur;
-                    memcpy(cur.data(), supporterPeer, 6);
-                    lastAnnouncedSupporterJackMac = cur;
-                }
-                // Announce role to opponent-jack peer if new.
-                const uint8_t* opponentPeer = rdc->getPeerMac(opponentJack());
-                if (opponentPeer != nullptr) {
-                    std::array<uint8_t, 6> cur;
-                    memcpy(cur.data(), opponentPeer, 6);
-                    if (!lastAnnouncedOpponentJackMac.has_value() || *lastAnnouncedOpponentJackMac != cur) {
-                        lastAnnouncedOpponentJackMac = cur;
-                        sendRoleToOpponentJack();
-                    }
-                }
+                sendRoleToOpponentJack();
                 return;
             }
         }
@@ -335,34 +336,9 @@ void ChainDuelManager::applyChainStateChange() {
         }
     }
 
-    // If a new supporter-jack direct peer has appeared since our last announce,
-    // broadcast the current championMac to it. Guard against re-firing on every
-    // chain-state event (which would cause packet storms and destabilize the
-    // serial heartbeat timing).
-    const uint8_t* supporterPeer = rdc->getPeerMac(supporterJack());
-    if (championMac.has_value() && supporterPeer != nullptr) {
-        std::array<uint8_t, 6> cur;
-        memcpy(cur.data(), supporterPeer, 6);
-        if (!lastAnnouncedSupporterJackMac.has_value() || *lastAnnouncedSupporterJackMac != cur) {
-            lastAnnouncedSupporterJackMac = cur;
-            broadcastRoleAndChampion();
-        }
-    } else if (supporterPeer == nullptr) {
-        lastAnnouncedSupporterJackMac.reset();
-    }
+    broadcastRoleAndChampion();
 
-    // Announce our role to the opponent-jack peer if it has changed.
-    const uint8_t* opponentPeer = rdc->getPeerMac(opponentJack());
-    if (opponentPeer != nullptr) {
-        std::array<uint8_t, 6> cur;
-        memcpy(cur.data(), opponentPeer, 6);
-        if (!lastAnnouncedOpponentJackMac.has_value() || *lastAnnouncedOpponentJackMac != cur) {
-            lastAnnouncedOpponentJackMac = cur;
-            sendRoleToOpponentJack();
-        }
-    } else {
-        lastAnnouncedOpponentJackMac.reset();
-    }
+    sendRoleToOpponentJack();
 
     // Re-offered on every topology event, not only when the champion changes: the
     // join is unacknowledged, and a dropped one costs this device's press for the
@@ -426,15 +402,9 @@ void ChainDuelManager::onRoleAnnounceReceived(
         }
     }
 
-    // 2. Only ACK known direct peers. Strangers in radio range must not be
-    //    able to probe device liveness by eliciting an ACK.
+    // 2. Only act on announces from known direct peers. A stranger in radio
+    //    range must not be able to move this device's champion.
     if (!fromKnownDirectPeer) return;
-
-    RoleAnnounceAckPayload ack{};
-    ack.seqId = seqId;
-    wirelessManager->sendEspNowData(
-        fromMac, PktType::kRoleAnnounceAck,
-        reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
 
     // 3 & 4. Only same-role opponent-jack announces authoritatively update
     // championMac. Opposite-role senders are dueling opponents, not chain
@@ -478,127 +448,103 @@ void ChainDuelManager::onRoleAnnounceReceived(
     }
 }
 
+void ChainDuelManager::recordAnnounceDelivered(uint8_t seqId, const uint8_t* mac) {
+    if (mac == nullptr) return;
+    // Commit the record this delivery answers, matched on seqId so a stale
+    // report cannot mark newer content as told. In a 2-node ring both jacks
+    // face one peer and both frames go out; each carries its own seqId, so a
+    // report commits only the record it answers.
+    for (std::optional<RoleAnnounceState>* slot : {&supporterAnnounce, &opponentAnnounce}) {
+        if (!slot->has_value()) continue;
+        RoleAnnounceState& state = **slot;
+        if (state.seqId != seqId || memcmp(state.peer.data(), mac, 6) != 0) continue;
+        state.delivered = true;
+    }
+}
+
 void ChainDuelManager::broadcastRoleAndChampion() {
+    const uint8_t* supporterPeer = rdc->getPeerMac(supporterJack());
+    if (supporterPeer == nullptr) {
+        // Forget who was told before the champion check, not after: a link that
+        // dies while this device holds no champion would otherwise keep a stamp
+        // naming the departed peer, and a cable returning on that MAC would
+        // match it and never be announced to.
+        supporterAnnounce.reset();
+        return;
+    }
     if (!championMac.has_value()) return;
 
-    const uint8_t* supporterPeer = rdc->getPeerMac(supporterJack());
-    if (supporterPeer == nullptr) return;
+    RoleAnnounceState content;
+    memcpy(content.peer.data(), supporterPeer, 6);
+    content.role = player->isHunter() ? 1 : 0;
+    content.champion = *championMac;
+    if (supporterAnnounce.has_value() && supporterAnnounce->told(content)) return;
 
-    uint8_t seqId = nextRoleAnnounceSeqId++;
-    if (nextRoleAnnounceSeqId == 0) nextRoleAnnounceSeqId = 1;
+    // Half-open gate, same reasoning as canInitiateMatch. A jack at Connecting has
+    // a peer MAC off one inbound serial frame; the supporter has not necessarily
+    // parsed ours yet, and it drops announces from a MAC it does not yet hold as a
+    // direct peer. The radio would still report the frame delivered, so the retry
+    // clears and the announce is simply lost. Connected means its context came back
+    // over the radio, which it could only send having already recorded us.
+    if (rdc->getPortStatus(supporterJack()) != PortStatus::CONNECTED) return;
 
     RoleAnnouncePayload payload{};
-    payload.role = player->isHunter() ? 1 : 0;
-    memcpy(payload.championMac, championMac->data(), 6);
-    payload.seqId = seqId;
+    payload.role = content.role;
+    memcpy(payload.championMac, content.champion.data(), 6);
 
-    memcpy(pendingRoleAnnounce.targetMac.data(), supporterPeer, 6);
-    pendingRoleAnnounce.championMac = *championMac;
-    pendingRoleAnnounce.role = payload.role;
-    pendingRoleAnnounce.seqId = seqId;
-    pendingRoleAnnounce.retries = 0;
-    pendingRoleAnnounce.active = true;
-    pendingRoleAnnounce.timer.setTimer(kAckTimeoutMs);
-    retryStats.sends++;
-
-    wirelessManager->sendEspNowData(
-        supporterPeer, PktType::kRoleAnnounce,
-        reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
+    roleAnnounceSentTimer.setTimer(0);
+    content.seqId = roleAnnounceChannel.sendReliable(supporterPeer, payload);
+    supporterAnnounce = content;
 }
 
-// Fire-and-forget, asymmetric with broadcastRoleAndChampion which has
-// ACK+retry on the supporter-jack direction. Rationale: losing this packet
-// leaves the opponent momentarily uncertain of our role, but their own
-// onChainStateChanged will fire whenever their topology shifts (including
-// our link coming up) and trigger a fresh broadcast toward us. So the
-// system is self-healing on any real topology change. Adding ACK+retry here
-// would double the airtime cost of every chain change; the relaxed model is
-// acceptable given the healing path.
+// The only thing that tells the opponent what role we hold; their
+// canInitiateMatch refuses a duel until they know it. Their announce to us
+// populates our view of them, not theirs of us, so nothing else repairs a lost
+// one — hence the retry, off the radio's delivery report.
 void ChainDuelManager::sendRoleToOpponentJack() {
     const uint8_t* opponentPeer = rdc->getPeerMac(opponentJack());
-    if (opponentPeer == nullptr) return;
+    if (opponentPeer == nullptr) {
+        opponentAnnounce.reset();
+        return;
+    }
+    RoleAnnounceState content;
+    memcpy(content.peer.data(), opponentPeer, 6);
+    content.role = player->isHunter() ? 1 : 0;
+    // championMac rides along as a placeholder no peer this call can reach will
+    // read: an opposite-role peer fails the role check, and a same-role peer
+    // receives it on its SUPPORTER jack and fails the fromOpponentJack gate
+    // first. It is still part of the content key, so a champion change re-offers
+    // here — carrying nothing new, and the price of one shared key for both
+    // directions.
+    if (championMac.has_value()) content.champion = *championMac;
+    if (opponentAnnounce.has_value() && opponentAnnounce->told(content)) return;
 
-    uint8_t seqId = nextRoleAnnounceSeqId++;
-    if (nextRoleAnnounceSeqId == 0) nextRoleAnnounceSeqId = 1;
+    // Same half-open gate as the supporter side: a jack at Connecting has a peer
+    // MAC off one inbound frame, and the peer drops announces from a MAC it has
+    // not yet recorded.
+    if (rdc->getPortStatus(opponentJack()) != PortStatus::CONNECTED) return;
 
     RoleAnnouncePayload payload{};
-    payload.role = player->isHunter() ? 1 : 0;
-    // championMac is a placeholder — receiver ignores unless same-role peer.
-    if (championMac.has_value()) {
-        memcpy(payload.championMac, championMac->data(), 6);
-    }
-    payload.seqId = seqId;
+    payload.role = content.role;
+    memcpy(payload.championMac, content.champion.data(), 6);
 
-    wirelessManager->sendEspNowData(
-        opponentPeer, PktType::kRoleAnnounce,
-        reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
-}
-
-void ChainDuelManager::onRoleAnnounceAckReceived(const uint8_t* fromMac, uint8_t seqId) {
-    if (!pendingRoleAnnounce.active || pendingRoleAnnounce.seqId != seqId) return;
-    if (memcmp(fromMac, pendingRoleAnnounce.targetMac.data(), 6) != 0) return;
-    retryStats.ackLatencyMsSum += pendingRoleAnnounce.timer.getElapsedTime();
-    retryStats.ackCount++;
-    pendingRoleAnnounce.active = false;
+    roleAnnounceSentTimer.setTimer(0);
+    content.seqId = roleAnnounceChannel.sendReliable(opponentPeer, payload);
+    opponentAnnounce = content;
 }
 
 void ChainDuelManager::sync() {
-    // 1) Role-announce retry (single-slot, supporter-jack direction).
-    if (pendingRoleAnnounce.active && pendingRoleAnnounce.timer.expired()) {
-        if (pendingRoleAnnounce.retries >= kMaxRetries) {
-            const uint8_t* t = pendingRoleAnnounce.targetMac.data();
-            LOG_W(TAG,
-                  "kRoleAnnounce abandoned after %u retries: target=%02X:%02X:%02X:%02X:%02X:%02X seqId=%u",
-                  (unsigned)kMaxRetries,
-                  t[0], t[1], t[2], t[3], t[4], t[5],
-                  (unsigned)pendingRoleAnnounce.seqId);
-            retryStats.abandons++;
-            pendingRoleAnnounce.active = false;
-        } else {
-            pendingRoleAnnounce.retries++;
-            retryStats.retries++;
-            RoleAnnouncePayload payload{};
-            payload.role = pendingRoleAnnounce.role;
-            memcpy(payload.championMac, pendingRoleAnnounce.championMac.data(), 6);
-            payload.seqId = pendingRoleAnnounce.seqId;
-            wirelessManager->sendEspNowData(
-                pendingRoleAnnounce.targetMac.data(), PktType::kRoleAnnounce,
-                reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
-            // Exponential backoff between retransmits: 200, 400, 800ms
-            // (kMaxRetries=3). See RDC sync() for rationale (async driver
-            // queue needs drain time between retries).
-            pendingRoleAnnounce.timer.setTimer(kAckTimeoutMs << pendingRoleAnnounce.retries);
-        }
+    // The role announce clears on SEND_SUCCESS; the WIN/LOSS fan-out clears one
+    // supporter at a time, since a broadcast carries no per-member evidence.
+    resender.sync();
+
+    // Backstop for both announces. A settled chain raises no chain-state events,
+    // so one that spent its budget has no other way back — and losing either is
+    // terminal for the round: the opponent refuses the duel, the supporter never
+    // learns its champion. Cheap once delivered; each side's stamp gates it.
+    if (roleAnnounceBackstopTimer.expired()) {
+        roleAnnounceBackstopTimer.setTimer(ROLE_ANNOUNCE_BACKSTOP_MS);
+        broadcastRoleAndChampion();
+        sendRoleToOpponentJack();
     }
-
-    // 2) WIN/LOSS retransmit. Champion-side only, and one rebroadcast covers
-    //    every supporter still owing an ack — a per-supporter unicast retry
-    //    would need a peer-table slot each.
-    if (pendingEventAckCount == 0 || !pendingEventTimer.expired()) return;
-
-    if (pendingEventRetries >= kMaxRetries) {
-        LOG_W(TAG, "kChainGameEvent abandoned after %u retries: %u supporters silent seqId=%u event=%u",
-              (unsigned)kMaxRetries, (unsigned)pendingEventAckCount,
-              (unsigned)pendingEventSeqId, (unsigned)pendingEventType);
-        retryStats.abandons++;
-        pendingEventAckCount = 0;
-        return;
-    }
-
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
-    if (selfMac == nullptr) {
-        LOG_E(TAG, "kChainGameEvent retry dropped: no local MAC");
-        return;
-    }
-
-    pendingEventRetries++;
-    retryStats.retries++;
-    ChainGameEventPayload payload{};
-    payload.event_type = pendingEventType;
-    payload.seqId = pendingEventSeqId;
-    memcpy(payload.championMac, selfMac, 6);
-    wirelessManager->sendEspNowData(
-        wirelessManager->getBroadcastAddress(), PktType::kChainGameEvent,
-        reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
-    pendingEventTimer.setTimer(kAckTimeoutMs << pendingEventRetries);
 }

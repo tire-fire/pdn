@@ -11,31 +11,29 @@
 
 class WirelessManager;
 
-// Owns one Resender. Vends typed channels, one per PktType.
-// All channels share the single Resender; abandon callbacks fire inline
-// during sync() and must be cheap.
+// Owns one Resender. Vends typed channels, one per PktType, all sharing it.
 //
 // Lifecycle of a reliable packet:
 //   send: manager -> channel->sendReliable (serialize, stamp seqId) ->
 //     Resender pending entry -> WirelessManager::sendEspNowData -> driver
 //     (which itself retries a failed MAC-layer send). The platform loop's
-//     transport->sync() retransmits on the RetryPolicy backoff until the ack
+//     transport->sync() retransmits on the Resender's backoff until the radio
 //     lands or retries exhaust -> the channel's abandon callback. Abandonment
 //     is a game-level signal (void a match, abort a tournament), not a log
 //     line; channel->cancel() drops pending sends WITHOUT it.
-//   receive: driver rx -> per-PktType handler (installed here: the ack type at
-//     construction, data types when their first channel is claimed) ->
-//     deliverIncoming, which acks BEFORE dedup (a retransmit means our first
-//     ack was lost: re-ack, then drop the duplicate) and dispatches the
-//     decoded payload to the owning channel's onReceive. Claiming a channel
-//     is sufficient to make its receive path live.
+//   receive: driver rx -> the owning channel's own per-PktType handler, installed
+//     by its constructor, straight into deliver, which dedups and dispatches the
+//     decoded payload to onReceive. The transport is not on that path. No ack is
+//     emitted anywhere on it either: a send is cleared by the radio's
+//     SEND_SUCCESS, not a reply. Claiming a channel is sufficient to make its
+//     receive path live.
 class ReliableTransport {
 public:
-    /// Installs the ack-packet handler on construction; wm may be nullptr in
-    /// unit tests (channels then run without a radio).
+    /// Routes Resender abandonment back to the owning channel; wm may be nullptr
+    /// in unit tests (channels then run without a radio).
     explicit ReliableTransport(WirelessManager* wm);
 
-    /// Deletes every vended channel and rx binding.
+    /// Deletes every vended channel; each drops its own driver handlers as it goes.
     ~ReliableTransport();
 
     /// Get-or-create the channel owning a PktType. A first claim creates and
@@ -61,20 +59,19 @@ public:
         ReliableChannel<P>* raw = new ReliableChannel<P>(
             wirelessManager, &resender, type, std::move(onAbandon), sendMode);
         registry.insert({type, raw});
-        ensurePacketCallback(type);
         return raw;
     }
 
-    /// Routes a radio send-result (SEND_SUCCESS/FAIL for one outbound packet)
-    /// to the channel claiming its PktType. On success the channel reads the
-    /// stamped seqId back out of `data` and clears its pending entry; this is
-    /// what replaces the old ack round-trip. Public so unit tests can drive it
-    /// directly without a radio.
+    /// Test seam: drives a radio send-result into the channel claiming this
+    /// PktType, for a caller holding a type rather than a channel handle.
+    /// Not on the driver's path — each channel installs its own send-status
+    /// handler and the driver calls it directly.
     void onSendResult(PktType type, const uint8_t* toMac,
                       const uint8_t* data, size_t len, bool success);
 
-    /// Dispatches an inbound data packet to the channel claiming its PktType.
-    /// Returns false if no channel is registered.
+    /// Test seam, paired with onSendResult: dispatches an inbound packet to the
+    /// channel claiming this PktType. Returns false if no channel is registered.
+    /// Not on the driver's path — see the receive note above.
     bool deliverIncoming(PktType type, const uint8_t* fromMac,
                          const uint8_t* data, size_t len);
 
@@ -82,19 +79,7 @@ public:
     /// tick by the platform loop only.
     void sync();
 
-    /// nullptr in unit tests without a radio.
-    WirelessManager* getWirelessManager() { return wirelessManager; }
-
 private:
-    // Installs the driver's per-PktType receive handler the first time a channel
-    // claims that PktType. The driver callback carries only a void* ctx, so
-    // each binding is a stable heap cell pairing this transport with the type.
-    struct ReceiveBinding {
-        ReliableTransport* transport;
-        PktType type;
-    };
-    void ensurePacketCallback(PktType type);
-
     // Logs a PktType claimed by two different payload types (a wiring bug).
     static void logChannelTypeCollision(PktType type, size_t got, size_t have);
 
@@ -104,5 +89,4 @@ private:
     WirelessManager* wirelessManager;
     Resender resender;
     std::map<PktType, ReliableChannelBase*> registry;
-    std::vector<ReceiveBinding*> receiveBindings;
 };
