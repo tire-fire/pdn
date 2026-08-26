@@ -938,12 +938,17 @@ inline void resetCancelsInFlightFanOuts(ShootoutManagerTests* suite) {
     ON_CALL(*suite->device.mockPeerComms, getMacAddress())
         .WillByDefault(testing::Return(selfMac));
 
-    int shootoutFrames = 0;
+    int abortFrames = 0;
+    int tournamentFrames = 0;
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
         .WillByDefault(testing::Invoke(
-            [&shootoutFrames](const uint8_t*, PktType, const uint8_t*, const size_t) {
-                shootoutFrames++;
+            [&abortFrames, &tournamentFrames](const uint8_t*, PktType,
+                                              const uint8_t* data, const size_t len) {
+                if (len > 0 && data[0] == static_cast<uint8_t>(ShootoutCmd::ABORT))
+                    abortFrames++;
+                else
+                    tournamentFrames++;
                 return 1;
             }));
 
@@ -954,10 +959,16 @@ inline void resetCancelsInFlightFanOuts(ShootoutManagerTests* suite) {
     suite->shootout->abortTournament();
     EXPECT_EQ(suite->shootout->getPendingAckCount(suite->shootout->getLastMatchStartSeqId()), 0u);
 
-    // Nothing left armed, so nothing more goes out for the dead tournament.
-    const int framesAtAbort = shootoutFrames;
+    // The dead tournament's fan-outs are cancelled and stay cancelled; the ABORT
+    // that killed it is armed instead, and retrying is how a member that missed
+    // the first frame is told to stop.
+    const int tournamentAtAbort = tournamentFrames;
+    const int abortAtAbort = abortFrames;
     suite->runRetryRounds(Resender::MAX_RETRIES + 2);
-    EXPECT_EQ(shootoutFrames, framesAtAbort);
+    EXPECT_EQ(tournamentFrames, tournamentAtAbort)
+        << "a cancelled tournament fan-out kept transmitting";
+    EXPECT_GT(abortFrames, abortAtAbort)
+        << "the ABORT was not retried, so a member that missed it stays in the tournament";
 }
 
 // A fan-out is named by its seqId and nothing else. That is what lets an ack
@@ -1787,6 +1798,71 @@ inline void shootoutProposalDebouncesTransientLoopBreak(ShootoutManagerTests* su
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 }
 
+// A device that is out, or spectating, sits through the whole of
+// MATCH_IN_PROGRESS with nothing but the ABORT to move it — and a member two
+// hops from a cut gets no peer-loss edge, so without a guard here it waits on a
+// coordinator that has already reset. ShootoutSpectator carries the identical
+// call; it is driven from ShootoutEliminated because that one renders nothing
+// and so needs no display.
+inline void anOutPlayerAbortsOnASettledRingBreak(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    FakeChainDuelManager fakeCdm(&suite->player, suite->device.wirelessManager, &suite->rdc);
+    fakeCdm.setIsLoop(true);
+    suite->driveToFirstMatch({{0x01, 0, 0, 0, 0, 0}, {0x02, 0, 0, 0, 0, 0}});
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+
+    GameContext ctx;
+    ctx.shootoutManager = suite->shootout;
+    ctx.chainDuelManager = &fakeCdm;
+    ShootoutEliminated state(ctx);
+
+    // A nudge inside the window must not end a live bout.
+    fakeCdm.setIsLoop(false);
+    state.onStateLoop(nullptr);
+    fakeCdm.setIsLoop(true);
+    state.onStateLoop(nullptr);
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+
+    fakeCdm.setIsLoop(false);
+    state.onStateLoop(nullptr);
+    suite->fakeClock->advance(2000);
+    state.onStateLoop(nullptr);
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "an out player sat through a settled ring break";
+}
+
+// ABORT rides the Resender now, so a receiver owes it an answer — otherwise the
+// sender retries to exhaustion at a device that already stopped.
+inline void abortIsAckedByItsRecipient(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->shootout->setLoopMembersForTest({coord, me});
+    suite->shootout->startProposal();
+    suite->shootout->onConfirmReceived(coord.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
+
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .Times(1)
+        .WillRepeatedly(testing::Return(1));
+
+    suite->shootout->onAbortReceived(coord.data(), 7);
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+}
+
 // Same debounce contract on ShootoutBracketReveal (tournament state is more
 // expensive to wipe here — bracket and pendingAcks vanish too).
 inline void shootoutBracketRevealDebouncesTransientLoopBreak(ShootoutManagerTests* suite) {
@@ -1968,11 +2044,11 @@ inline void strayRingCommandsLeaveTournamentUntouched(ShootoutManagerTests* suit
     suite->shootout->onTournamentEndReceived(alienA.data(), alienA.data(), 5);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
-    suite->shootout->onAbortReceived(alienA.data());
+    suite->shootout->onAbortReceived(alienA.data(), 0);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
 
     // A ring member's ABORT still lands.
-    suite->shootout->onAbortReceived(coord.data());
+    suite->shootout->onAbortReceived(coord.data(), 0);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 }
 

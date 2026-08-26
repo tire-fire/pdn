@@ -1893,6 +1893,8 @@ TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobod
 TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonCoordinatorIsRefused(this); }
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
+TEST_F(ShootoutManagerTests, anOutPlayerAbortsOnASettledRingBreak) { anOutPlayerAbortsOnASettledRingBreak(this); }
+TEST_F(ShootoutManagerTests, abortIsAckedByItsRecipient) { abortIsAckedByItsRecipient(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, shootoutBracketRevealDebouncesTransientLoopBreak) { shootoutBracketRevealDebouncesTransientLoopBreak(this); }
 TEST_F(ShootoutManagerTests, abortRuleReachesEveryStateThatDeclaresIt) { abortRuleReachesEveryStateThatDeclaresIt(this); }

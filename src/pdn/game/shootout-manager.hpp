@@ -137,7 +137,7 @@ public:
     /// Tears down on a peer's ABORT. fromMac identifies the sending ring: the
     /// command carries no MACs of its own, and a broadcast reaches every ring
     /// in radio range.
-    void onAbortReceived(const uint8_t* fromMac);
+    void onAbortReceived(const uint8_t* fromMac, uint8_t seqId);
     std::array<uint8_t, 6> getTournamentWinner() const;
 
     // Reset all tournament state back to IDLE phase so a subsequent loop

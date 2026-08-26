@@ -441,7 +441,7 @@ private:
     bool shouldGoToSpectator_ = false;
 };
 
-class ShootoutSpectator : public TypedState<PDN> {
+class ShootoutSpectator : public TypedState<PDN>, public ShootoutAwareState {
 public:
     explicit ShootoutSpectator(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
@@ -459,7 +459,7 @@ private:
     std::array<uint8_t, 6> lastDisplayedB_{};
 };
 
-class ShootoutEliminated : public TypedState<PDN> {
+class ShootoutEliminated : public TypedState<PDN>, public ShootoutAwareState {
 public:
     explicit ShootoutEliminated(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;

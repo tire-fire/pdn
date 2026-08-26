@@ -5,6 +5,7 @@
 
 ShootoutSpectator::ShootoutSpectator(const GameContext& ctx)
     : TypedState<PDN>(SHOOTOUT_SPECTATOR)
+    , ShootoutAwareState(ctx.shootoutManager, ctx.chainDuelManager)
     , shootout_(ctx.shootoutManager) {}
 
 static void drawSpectatorScreen(PDN* pdn, ShootoutManager* shootout,
@@ -31,6 +32,11 @@ void ShootoutSpectator::onStateMounted(PDN* pdn) {
 }
 
 void ShootoutSpectator::onStateLoop(PDN* pdn) {
+    // A spectator sits here for the whole of MATCH_IN_PROGRESS, and the ABORT is
+    // the only thing that would otherwise move it. A member two hops from a cut
+    // gets no peer-loss edge, so without this it waits on a coordinator that has
+    // already reset.
+    tickAbortGuard();
     auto p = shootout_->getPhase();
     if (p == ShootoutManager::Phase::MATCH_IN_PROGRESS && shootout_->isLocalDuelist()) {
         shouldGoToDuelCountdown_ = true;
@@ -47,6 +53,7 @@ void ShootoutSpectator::onStateLoop(PDN* pdn) {
 }
 
 void ShootoutSpectator::onStateDismounted(PDN* pdn) {
+    resetAbortGuard();
     shouldGoToDuelCountdown_ = false;
     shouldGoToFinalStandings_ = false;
 }

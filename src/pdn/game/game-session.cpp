@@ -280,7 +280,7 @@ void GameSession::onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t*
             if (payloadLen >= 6) shootoutManager->onPeerLostReceived(payload);
             break;
         case ShootoutCmd::ABORT:
-            shootoutManager->onAbortReceived(fromMac);
+            shootoutManager->onAbortReceived(fromMac, seqId);
             break;
     }
 }

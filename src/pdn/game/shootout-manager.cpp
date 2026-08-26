@@ -522,15 +522,22 @@ void ShootoutManager::abortTournament() {
     if (phase == Phase::ENDED) return;
     LOG_W(TAG, "abortTournament from phase=%d", static_cast<int>(phase));
 
-    // Broadcast before resetToIdle clears bracket/confirmedSet.
-    uint8_t packet[2];
-    packet[0] = static_cast<uint8_t>(ShootoutCmd::ABORT);
-    packet[1] = 0;
-    const std::vector<std::array<uint8_t, 6>>& targets = bracket.empty() ? confirmedSet : bracket;
-    broadcastToRing(targets, packet, sizeof(packet));
+    // Copied before resetToIdle clears bracket and confirmedSet.
+    const std::vector<std::array<uint8_t, 6>> targets =
+        bracket.empty() ? confirmedSet : bracket;
 
     resetToIdle();
     phase = Phase::ABORTED;
+
+    // Armed after the reset, not before: resetTournamentState cancels every
+    // shootout fan-out in flight, which would include this one. ABORT was the
+    // only command family sent fire-and-forget, so a member that missed the
+    // single broadcast stayed in a tournament with nothing left to tell it.
+    if (targets.empty()) return;
+    uint8_t packet[2];
+    packet[0] = static_cast<uint8_t>(ShootoutCmd::ABORT);
+    packet[1] = nextSeqId();
+    sendReliablyToPeers(targets, packet[1], packet, sizeof(packet));
 }
 
 void ShootoutManager::sendLocalConfirm() {
@@ -922,10 +929,15 @@ void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
     phase = Phase::ENDED;
 }
 
-void ShootoutManager::onAbortReceived(const uint8_t* fromMac) {
+void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // Without this filter a neighbouring ring's abort would tear down every
     // tournament in radio range.
     if (!isRingMember(fromMac)) return;
+    // Admitted on the sender, so the ack is owed however our own phase reads: a
+    // member that already went idle still has to stop the sender retrying at it.
+    // Addressed to fromMac, because any ring member can abort, not just the
+    // coordinator. seqId 0 is the fire-and-forget sentinel and expects no answer.
+    if (seqId != 0) sendShootoutAck(ShootoutCmd::ABORT, seqId, fromMac);
     if (phase == Phase::ABORTED || phase == Phase::IDLE) return;
     // Same guard as abortTournament, and reachable: a member that missed
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the

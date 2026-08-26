@@ -511,7 +511,7 @@ protected:
                         if (payloadLen >= 6) m->onPeerLostReceived(payload);
                         break;
                     case ShootoutCmd::ABORT:
-                        m->onAbortReceived(fromMac);
+                        m->onAbortReceived(fromMac, 0);
                         break;
                 }
             },
