@@ -276,9 +276,6 @@ void GameSession::onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t*
             if (payloadLen >= 6)
                 shootoutManager->onTournamentEndReceived(fromMac, payload, seqId);
             break;
-        case ShootoutCmd::PEER_LOST:
-            if (payloadLen >= 6) shootoutManager->onPeerLostReceived(payload);
-            break;
         case ShootoutCmd::ABORT:
             shootoutManager->onAbortReceived(fromMac, seqId);
             break;

@@ -8,6 +8,7 @@
 #include "wireless/resender.hpp"
 #include "device/drivers/peer-comms-types.hpp"
 #include "device/wireless-manager.hpp"
+#include "utils/debounced-condition.hpp"
 #include "utils/simple-timer.hpp"
 
 class MatchManager;
@@ -122,10 +123,6 @@ public:
     uint8_t getLastMatchResultSeqId() const { return lastMatchResultSeqId; }
     bool isEliminated(const uint8_t* mac) const;
 
-    void onLocalRDCDisconnect(const uint8_t* lostMac);
-    /// Tears down on a peer's PEER_LOST, after checking the named MAC is one of
-    /// this device's ring members.
-    void onPeerLostReceived(const uint8_t* lostMac);
     uint8_t getLastMatchStartSeqId() const;
 
     /// Inbound TOURNAMENT_END, admitted on `fromMac` for the same reason as
@@ -145,10 +142,15 @@ public:
     // broken after TOURNAMENT_END or ABORTED.
     void resetToIdle();
 
-    /// Broadcast ABORT to the ring (bracket/confirmedSet), tear down, and land
-    /// in Phase::ABORTED. Idempotent: early-returns when already ABORTED.
+    /// Tears down, lands in Phase::ABORTED, and only then fans ABORT out to the
+    /// ring (bracket, or confirmedSet before a bracket exists) — the teardown
+    /// cancels every shootout fan-out in flight, so a frame armed before it would
+    /// be cancelled by it. Idempotent, and refuses ENDED as well as ABORTED.
     void abortTournament();
 
+    /// Ring-break debounce. A cable nudge flickers the loop for a tick or two on
+    /// real hardware; act only once the break has settled.
+    static constexpr unsigned long LOOP_BREAK_DEBOUNCE_MS = 500;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
     // Packet-validation clamp on an inbound BRACKET's member count. A ring can
@@ -200,6 +202,7 @@ private:
     // (the only device served a roster) and taken from its RING_CLOSED on every
     // other member. Non-empty is also the "a ring closed" latch.
     std::vector<std::array<uint8_t, 6>> ringMembers;
+    DebouncedCondition ringBreakDebounce;
     SimpleTimer ringClosedRebroadcastTimer;
     void sendRingClosed();
 
@@ -261,7 +264,6 @@ private:
     std::vector<std::array<uint8_t, 6>> eliminated;
     // Ends the tournament for a departed participant. Callers own the question of
     // whether the MAC is one of ours; a locally observed jack loss already is.
-    void applyPeerLoss(const uint8_t* lostMac);
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin = false;
     // The match whose result this device has already re-sent once, or -1. Keyed

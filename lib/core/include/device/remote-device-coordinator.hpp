@@ -271,10 +271,6 @@ public:
     /// setOnJackChange: it says the chain moved, not which jack or which way.
     void setChainChangeCallback(std::function<void()> callback);
 
-    /// Fires with the MAC of a direct peer whose link just died. Adjacent
-    /// losses only — nothing reports a departure further down the chain.
-    void setPeerLostCallback(std::function<void(const uint8_t*)> callback);
-
     /// Registers the MAC as an ESP-NOW peer slot.
     void registerPeer(const uint8_t* macAddress);
     /// Releases the MAC's ESP-NOW peer slot.
@@ -290,7 +286,6 @@ private:
     SerialManager* serialManager = nullptr;
     WirelessManager* wirelessManager_ = nullptr;
     std::function<void()> chainChangeCallback;
-    std::function<void(const uint8_t*)> peerLostCallback;
 
     // New-surface observers (#154); fired by the RDC internals as #155-#159 land.
     JackChangeCallback jackChangeCallback;

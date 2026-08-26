@@ -34,13 +34,11 @@ ShootoutManager::ShootoutManager(Player* player,
     if (rdc == nullptr) return;
     // Subscribed here rather than by whoever builds this manager: see
     // ChainDuelManager's constructor for the reasoning.
-    rdc->setPeerLostCallback([this](const uint8_t* lostMac) { onLocalRDCDisconnect(lostMac); });
     rdc->setOnRingClosed([this]() { onRingClosed(); });
 }
 
 ShootoutManager::~ShootoutManager() {
     if (rdc == nullptr) return;
-    rdc->setPeerLostCallback(nullptr);
     rdc->setOnRingClosed(nullptr);
 }
 
@@ -150,7 +148,7 @@ void ShootoutManager::sendReliablyToPeers(const std::vector<std::array<uint8_t, 
 
 void ShootoutManager::onCommandAckReceived(const uint8_t* fromMac, uint8_t seqId) {
     // seqId alone names the fan-out: nextSeqId() is the single allocator for all
-    // four command families, so no two frames in flight from this device share
+    // five command families, so no two frames in flight from this device share
     // one. Cross-checking the ack's command against a per-family cursor would
     // catch nothing — an ack echoes both fields out of the frame it answers —
     // and would refuse a valid ack for a still-armed frame that is no longer its
@@ -530,10 +528,9 @@ void ShootoutManager::abortTournament() {
     phase = Phase::ABORTED;
 
     // Armed after the reset, not before: resetTournamentState cancels every
-    // shootout fan-out in flight, which would include this one. ABORT was the
-    // only command family sent fire-and-forget, so a member that missed the
-    // single broadcast stayed in a tournament with nothing left to tell it.
-    if (targets.empty()) return;
+    // shootout fan-out in flight, which would include this one. RING_CLOSED and
+    // CONFIRM are unsequenced too but rebroadcast on a timer; ABORT had neither,
+    // so one dropped frame left that member in a tournament nothing would end.
     uint8_t packet[2];
     packet[0] = static_cast<uint8_t>(ShootoutCmd::ABORT);
     packet[1] = nextSeqId();
@@ -559,6 +556,25 @@ void ShootoutManager::sendLocalConfirm() {
 }
 
 void ShootoutManager::sync() {
+    // The ring opening is the one abort trigger no frame carries: in a two-device
+    // ring each device is the other's peer on both jacks, so a single cut leaves
+    // canReachPeer true and nothing fires peer-loss at all. Only the ring flag
+    // sees it.
+    //
+    // Driven here rather than from the shootout states because only the mounted
+    // app receives an onStateLoop, and a bracket duelist spends its whole match
+    // in the duel app — from there it could not see the break at all.
+    //
+    // The phase test sits inside the condition, not around the call: heldFor has
+    // to be sampled every tick, or its window ages while nobody is looking and
+    // fires stale the first time someone asks.
+    const bool ringBrokeDuringTournament = active() && phase != Phase::ENDED &&
+                                           phase != Phase::ABORTED &&
+                                           rdc != nullptr && !rdc->isInRing();
+    if (ringBreakDebounce.heldFor(ringBrokeDuringTournament, LOOP_BREAK_DEBOUNCE_MS)) {
+        abortTournament();
+    }
+
     // A member that missed the closure frame stays in Idle with nothing to poll,
     // while the coordinator waits on a confirm it will never get. No ack needed:
     // a repeat is a no-op once the member is out of Phase::IDLE.
@@ -628,39 +644,6 @@ void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
 
 bool ShootoutManager::isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const {
     return matchIndex == currentMatchIndex && phase == Phase::MATCH_IN_PROGRESS && memcmp(currentDuelistA.data(), a, 6) == 0 && memcmp(currentDuelistB.data(), b, 6) == 0;
-}
-
-void ShootoutManager::onLocalRDCDisconnect(const uint8_t* lostMac) {
-    // Gate before the log: this fires on every direct-peer link death, and
-    // outside a tournament that is ordinary chain-duel unplugging. LOG_W survives
-    // the release build, so logging first put a line on the wire per cable pull.
-    if (phase == Phase::IDLE || phase == Phase::ABORTED || phase == Phase::ENDED) return;
-    LOG_W(TAG, "onLocalRDCDisconnect %s phase=%d",
-          MacToString(lostMac), static_cast<int>(phase));
-    if (rdc && rdc->canReachPeer(lostMac)) return;
-    uint8_t packet[8];
-    packet[0] = static_cast<uint8_t>(ShootoutCmd::PEER_LOST);
-    packet[1] = 0;
-    memcpy(&packet[2], lostMac, 6);
-    const std::vector<std::array<uint8_t, 6>>& targets = bracket.empty() ? confirmedSet : bracket;
-    broadcastToRing(targets, packet, sizeof(packet));
-    // Locally observed: this device's own jack went quiet, so no ring filter.
-    applyPeerLoss(lostMac);
-}
-
-void ShootoutManager::onPeerLostReceived(const uint8_t* lostMac) {
-    // A broadcast PEER_LOST reaches every ring in range; only a loss inside ours
-    // may end our tournament.
-    if (!isRingMember(lostMac)) return;
-    applyPeerLoss(lostMac);
-}
-
-void ShootoutManager::applyPeerLoss(const uint8_t* lostMac) {
-    LOG_W(TAG, "applyPeerLoss %s phase=%d",
-          MacToString(lostMac), static_cast<int>(phase));
-    if (phase == Phase::IDLE || phase == Phase::ABORTED || phase == Phase::ENDED) return;
-    if (rdc && rdc->canReachPeer(lostMac)) return;
-    abortTournament();
 }
 
 void ShootoutManager::maybeStartNextMatch() {
@@ -930,14 +913,19 @@ void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
 }
 
 void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
+    // Acked ahead of the ring filter, not behind it: isRingMember reads bracket,
+    // confirmedSet and the loop roster, and a device whose own ring-break guard
+    // has already fired emptied all three — it would fail its own filter and
+    // leave the sender retransmitting to exhaustion at a device that did stop.
+    // An ack carries no authority, only receipt, so answering a neighbouring
+    // ring's abort costs one frame and is matched over there against a target
+    // list this device is not on. Addressed to fromMac because any ring member
+    // may abort, not just the coordinator; seqId 0 is the fire-and-forget
+    // sentinel and expects no answer.
+    if (seqId != 0) sendShootoutAck(ShootoutCmd::ABORT, seqId, fromMac);
     // Without this filter a neighbouring ring's abort would tear down every
     // tournament in radio range.
     if (!isRingMember(fromMac)) return;
-    // Admitted on the sender, so the ack is owed however our own phase reads: a
-    // member that already went idle still has to stop the sender retrying at it.
-    // Addressed to fromMac, because any ring member can abort, not just the
-    // coordinator. seqId 0 is the fire-and-forget sentinel and expects no answer.
-    if (seqId != 0) sendShootoutAck(ShootoutCmd::ABORT, seqId, fromMac);
     if (phase == Phase::ABORTED || phase == Phase::IDLE) return;
     // Same guard as abortTournament, and reachable: a member that missed
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the

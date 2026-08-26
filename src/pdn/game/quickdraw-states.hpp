@@ -21,7 +21,6 @@
 #include "device/remote-device-coordinator.hpp"
 #include "game/chain-duel-manager.hpp"
 #include "game/shootout-manager.hpp"
-#include "game/shootout-aware-state.hpp"
 
 /// Bundle of the shared game-wide managers a state may need. Built by the
 /// GameSession that owns them and handed to every state so a new manager is a
@@ -177,7 +176,7 @@ private:
 };
 
 /// A duel state returns to Idle on a persistent disconnect, but never while a
-/// tournament is live — the shootout's own PEER_LOST/ABORT teardown owns that
+/// tournament is live — the shootout's own ring-break/ABORT teardown owns that
 /// path. The debounce ages on wall clock even when unsampled, so a run started
 /// before the tournament went live would fire the instant the shootout ends;
 /// reset it while active so a fresh full window is always required afterward.
@@ -413,7 +412,7 @@ private:
     bool shouldRetryUpload = false;
 };
 
-class ShootoutProposal : public TypedState<PDN>, public ShootoutAwareState {
+class ShootoutProposal : public TypedState<PDN> {
 public:
     explicit ShootoutProposal(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
@@ -423,10 +422,12 @@ public:
     bool transitionToBracketReveal();
 
 private:
+    ShootoutManager* shootoutManager;
+
     bool shouldGoToReveal_ = false;
 };
 
-class ShootoutBracketReveal : public TypedState<PDN>, public ShootoutAwareState {
+class ShootoutBracketReveal : public TypedState<PDN> {
 public:
     explicit ShootoutBracketReveal(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
@@ -437,11 +438,13 @@ public:
     bool transitionToSpectator();
 
 private:
+    ShootoutManager* shootoutManager;
+
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
 };
 
-class ShootoutSpectator : public TypedState<PDN>, public ShootoutAwareState {
+class ShootoutSpectator : public TypedState<PDN> {
 public:
     explicit ShootoutSpectator(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
@@ -459,7 +462,7 @@ private:
     std::array<uint8_t, 6> lastDisplayedB_{};
 };
 
-class ShootoutEliminated : public TypedState<PDN>, public ShootoutAwareState {
+class ShootoutEliminated : public TypedState<PDN> {
 public:
     explicit ShootoutEliminated(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
@@ -503,6 +506,10 @@ private:
     SimpleTimer displayTimer_;
     bool shouldGoToIdle_ = false;
     static constexpr unsigned long ABORTED_DISPLAY_MS = 2000;
+    // Dismounting this screen calls resetToIdle, which cancels the ABORT fan-out
+    // armed when the tournament ended. The screen has to outlive it.
+    static_assert(ABORTED_DISPLAY_MS > Resender::retransmitSpanMs(),
+                  "the ABORTED screen must outlive the ABORT fan-out it cancels");
 };
 
 class SymbolState : public ConnectState<PDN> {

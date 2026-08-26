@@ -507,11 +507,8 @@ protected:
                     case ShootoutCmd::TOURNAMENT_END:
                         if (payloadLen >= 6) m->onTournamentEndReceived(fromMac, payload, seqId);
                         break;
-                    case ShootoutCmd::PEER_LOST:
-                        if (payloadLen >= 6) m->onPeerLostReceived(payload);
-                        break;
                     case ShootoutCmd::ABORT:
-                        m->onAbortReceived(fromMac, 0);
+                        m->onAbortReceived(fromMac, seqId);
                         break;
                 }
             },

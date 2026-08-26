@@ -202,10 +202,6 @@ void RemoteDeviceCoordinator::setChainChangeCallback(std::function<void()> callb
     chainChangeCallback = std::move(callback);
 }
 
-void RemoteDeviceCoordinator::setPeerLostCallback(std::function<void(const uint8_t*)> callback) {
-    peerLostCallback = std::move(callback);
-}
-
 DeviceType RemoteDeviceCoordinator::getPeerDeviceType(SerialIdentifier port) const {
     // The kind comes from the peer's context, so it reads UNKNOWN until that
     // exchange completes.
@@ -322,8 +318,6 @@ void RemoteDeviceCoordinator::enableHelloConnectivity() {
                 // Downstream (OUTPUT) departures are this device's to report: it
                 // is the only node that sees that HELLO go silent (#158).
                 if (j == SerialIdentifier::OUTPUT_JACK) reportDownstreamLoss(mac.data());
-                std::function<void(const uint8_t*)> lost = peerLostCallback;
-                if (lost) lost(mac.data());
             }
             onLinkLost(port);
             // This is where a link death is reported: Idle is mounted, so the jack

@@ -3,7 +3,6 @@
 
 ShootoutEliminated::ShootoutEliminated(const GameContext& ctx)
     : TypedState<PDN>(SHOOTOUT_ELIMINATED)
-    , ShootoutAwareState(ctx.shootoutManager, ctx.chainDuelManager)
     , shootout_(ctx.shootoutManager) {}
 
 void ShootoutEliminated::onStateMounted(PDN* pdn) {
@@ -19,15 +18,11 @@ void ShootoutEliminated::onStateMounted(PDN* pdn) {
 }
 
 void ShootoutEliminated::onStateLoop(PDN* pdn) {
-    // An eliminated player waits here until the tournament ends, so the ring
-    // breaking under it has to be able to end it too.
-    tickAbortGuard();
     auto p = shootout_->getPhase();
     if (p == ShootoutManager::Phase::ENDED) shouldGoToFinalStandings_ = true;
 }
 
 void ShootoutEliminated::onStateDismounted(PDN* pdn) {
-    resetAbortGuard();
     shouldGoToFinalStandings_ = false;
 }
 
