@@ -1202,6 +1202,45 @@ inline void cleanupDuelAbortDismountTearsDownTheBout(StateCleanupTests* suite) {
         << "a match left ready bounces the device into a phantom duel from Idle";
 }
 
+// The abort app-edge is registered ahead of both sibling duel edges, so when a
+// press and an abort land on the same tick the machine leaves for the ABORTED
+// screen while transitionToDuelPushedState is set. The dismount cannot read that
+// flag as proof it is staying inside the bout: doing so left the motor running,
+// the callbacks live and a match ready, which Idle bounces into a phantom duel.
+inline void cleanupDuelAbortOutranksAPressAndStillTearsDown(StateCleanupTests* suite) {
+    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    suite->matchManager->initializeMatch(dummyMac);
+
+    ShootoutManager shootout(suite->player, suite->device.wirelessManager,
+                             &suite->device.fakeRemoteDeviceCoordinator);
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    shootout.setLoopMembersForTest({me, other});
+    shootout.startProposal();
+    shootout.abortTournament();
+    ASSERT_EQ(shootout.getPhase(), ShootoutManager::Phase::ABORTED);
+    suite->ctx.shootoutManager = &shootout;
+
+    Duel duelState(suite->ctx);
+
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+
+    duelState.onStateMounted(&suite->device);
+    suite->fakeClock->advance(200);
+    suite->matchManager->getDuelButtonPush()(suite->matchManager);
+    duelState.onStateLoop(&suite->device);
+    ASSERT_TRUE(duelState.transitionToDuelPushed())
+        << "the press flag is the whole point of this case";
+
+    EXPECT_CALL(*suite->device.mockHaptics, off()).Times(1);
+    duelState.onStateDismounted(&suite->device);
+    EXPECT_FALSE(suite->matchManager->getCurrentMatch().has_value())
+        << "the abort edge left a ready match behind because a press flag was set";
+    suite->ctx.shootoutManager = nullptr;
+}
+
 // Test: DuelReceivedResult state clears button callbacks on dismount
 inline void cleanupDuelReceivedResultClearsButtonCallbacks(StateCleanupTests* suite) {
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};

@@ -181,6 +181,11 @@ private:
                             const uint8_t* mac);
     /// True when `mac` is the coordinator this device is following.
     bool isFromCoordinator(const uint8_t* mac) const;
+    /// ENDED and ABORTED are absorbing: nothing walks a tournament back out of
+    /// either, and every phase write outside them is refused rather than applied.
+    bool isTerminalPhase() const {
+        return phase == Phase::ENDED || phase == Phase::ABORTED;
+    }
     // Any of the three, because which set knows the ring depends on the phase:
     // the bracket after reveal, the confirmed set during the proposal, the
     // physical loop before either exists. A follower's bracket is not a subset
@@ -229,7 +234,7 @@ private:
     // Retransmits for every command family this manager sends. Owned here, not
     // shared with the coordinator's: a fan-out armed by this manager must die
     // with it rather than keep broadcasting for a tournament that is over.
-    // All four families ride one PktType, so the abandon callback reads which
+    // All five families ride one PktType, so the abandon callback reads which
     // one gave up off the frame's own command byte.
     Resender resender;
     void onCommandAbandoned(uint8_t seqId, const uint8_t* targetMac,
@@ -287,6 +292,10 @@ private:
 
     std::array<uint8_t, 6> tournamentWinner{};
     uint8_t lastTournamentEndSeqId = 0;
+    // The ABORT or TOURNAMENT_END this device sent to report the tournament
+    // ending, which a teardown spares — see resetTournamentState. Zero until one
+    // is armed, and zero on a device that only ever received the news.
+    uint8_t terminalFanOutSeqId = 0;
 
     void sendTournamentEndToPeers(const uint8_t* winner);
     std::array<uint8_t, 6> findLastRemaining() const;

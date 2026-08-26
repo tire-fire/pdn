@@ -117,15 +117,24 @@ bool Duel::transitionToShootoutEliminated() {
 }
 
 void Duel::onStateDismounted(PDN* pdn) {
-    // Input goes on every exit: each one either leaves the bout or hands off to a
-    // state that registers what it wants itself.
+    // Input goes on every exit. No successor inherits these callbacks — each
+    // registers what it wants on mount, or wants none.
     pdn->getPrimaryButton()->removeButtonCallbacks();
     pdn->getSecondaryButton()->removeButtonCallbacks();
-    // Only the two hand-offs that stay inside this bout keep the match. Framed as
-    // what stays rather than a list of the exits that leave: the shootout abort
-    // edge is an app transition and sets no flag here, so a list by name missed it
-    // and left the motor running, the callbacks live and a match ready behind it.
-    if (!transitionToDuelPushedState && !transitionToDuelReceivedResultState) {
+    // Only the two hand-offs that stay inside this bout keep the match, and only
+    // while the tournament is still standing. A flag is not proof the machine took
+    // that edge: the abort edge is registered ahead of both siblings, so a press
+    // observed on the same tick as an abort sets the flag and still leaves for the
+    // ABORTED screen. Reading the flags alone left the motor running, the
+    // callbacks live and a match ready behind it, which Idle bounces into a
+    // phantom duel.
+    const bool abortPreempts =
+        shootoutManager != nullptr &&
+        shootoutManager->getPhase() == ShootoutManager::Phase::ABORTED;
+    const bool staysInThisBout =
+        (transitionToDuelPushedState || transitionToDuelReceivedResultState) &&
+        !abortPreempts;
+    if (!staysInThisBout) {
         pdn->getHaptics()->off();
         matchManager->clearCurrentMatch();
     }

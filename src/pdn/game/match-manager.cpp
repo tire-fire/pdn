@@ -77,8 +77,8 @@ void MatchManager::sendMatchId() {
 
 void MatchManager::initializeShootoutMatch(const char* matchId, uint8_t* opponentMac,
                                            bool localIsHunter) {
-    // A bout already mounted is not rebuilt underneath itself: a repeat
-    // MATCH_START naming the live bout is a no-op, not a re-prime.
+    // A repeat MATCH_START names a bout that may already be mounted; the live one
+    // wins, since re-priming would reset a draw already in progress.
     if (activeDuelState.match.has_value()) return;
 
     auto* clock = SimpleTimer::getPlatformClock();

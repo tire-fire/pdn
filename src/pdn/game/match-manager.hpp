@@ -33,10 +33,8 @@ struct LastMatchDisplay {
 
 struct ActiveDuelState {
     bool matchIsReady = false;
-    // Which draw slot this device fills for THIS bout. Usually the player's
-    // standing hunter/bounty role, but a Shootout assigns it per match from MAC
-    // ordering - so every read of "which draw time do I write" resolves here,
-    // while the standing role still answers physical questions like cabling.
+    // The draw slot for THIS bout, which a shootout assigns per match from MAC
+    // ordering rather than from the player's standing role.
     bool localIsHunter = false;
     bool hasReceivedDrawResult = false;
     bool hasPressedButton = false;
@@ -93,8 +91,10 @@ public:
 
     bool didWin();
 
-    /// The draw slot this device fills for the active bout. Meaningful only
-    /// while a match exists.
+    /// The draw slot this device fills for the active bout. Needs no match guard
+    /// of its own: primeMatch is the only writer and sets it on the line above the
+    /// match itself, and the whole-struct reset clears both — so a slot without a
+    /// bout behind it cannot be built.
     bool isLocalHunter() const { return activeDuelState.localIsHunter; }
 
     unsigned long getDuelLocalStartTime();

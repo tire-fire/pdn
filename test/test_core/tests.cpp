@@ -1144,6 +1144,10 @@ TEST_F(StateCleanupTests, duelAbortDismountTearsDownTheBout) {
     cleanupDuelAbortDismountTearsDownTheBout(this);
 }
 
+TEST_F(StateCleanupTests, duelAbortOutranksAPressAndStillTearsDown) {
+    cleanupDuelAbortOutranksAPressAndStillTearsDown(this);
+}
+
 TEST_F(StateCleanupTests, duelReceivedResultClearsButtonCallbacks) {
     cleanupDuelReceivedResultClearsButtonCallbacks(this);
 }
@@ -1890,6 +1894,9 @@ TEST_F(ShootoutManagerTests, duplicateMatchResultDoesNotDoubleAdvance) { duplica
 TEST_F(ShootoutManagerTests, confirmRecordsPeerName) { confirmRecordsPeerName(this); }
 TEST_F(ShootoutManagerTests, shootoutLeavesStandingRoleAlone) { shootoutLeavesStandingRoleAlone(this); }
 TEST_F(ShootoutManagerTests, aLateResultDoesNotReopenACrownedTournament) { aLateResultDoesNotReopenACrownedTournament(this); }
+TEST_F(ShootoutManagerTests, endingSurvivesTheTerminalScreenExit) { endingSurvivesTheTerminalScreenExit(this); }
+TEST_F(ShootoutManagerTests, anAbortSurvivesTheAbortedScreenExit) { anAbortSurvivesTheAbortedScreenExit(this); }
+TEST_F(ShootoutManagerTests, aLocalWinDoesNotWalkBackAnAbortedTournament) { aLocalWinDoesNotWalkBackAnAbortedTournament(this); }
 TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody) { tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(this); }
 TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonCoordinatorIsRefused(this); }
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }

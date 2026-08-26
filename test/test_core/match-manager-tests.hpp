@@ -226,9 +226,10 @@ inline void matchManagerTracksDuelState(MatchManager* mm, Player* player) {
     EXPECT_TRUE(mm->matchResultsAreIn());
 }
 
-// A Shootout hands out the hunter/bounty slots per bout by MAC ordering, and the
-// standing role is left alone — so the two disagree routinely. The bout's slot is
-// what decides the duel.
+// ==========================================================================
+// Shootout draw slots: assigned per bout by MAC ordering, with the standing role
+// left alone, so the two disagree routinely.
+// ==========================================================================
 
 // The production sequence across a bout boundary: the finished bout's Duel
 // dismounts and clears, then the next bout is announced. Both halves have to

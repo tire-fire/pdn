@@ -1499,12 +1499,102 @@ inline void shootoutLeavesStandingRoleAlone(ShootoutManagerTests* suite) {
     suite->shootout->setMatchManager(nullptr);
 }
 
-// A bracket with nobody left cannot name a winner. A TOURNAMENT_END naming the
-// all-zero MAC is acked and dropped by every receiver, so nobody reaches ENDED
-// and the ring sits in BETWEEN_MATCHES for good. Reaching
-// zero survivors takes a stale result: one tagged with an index that is no
-// longer current is recorded without ending the bout, so it can take a finalist
-// out while the survivor scan is still gated.
+// The two terminal screens run resetToIdle on dismount, which is what lets the
+// next ring closure propose a fresh tournament. That reset cancels the shootout
+// fan-outs in flight — but not the one reporting the ending, whose recipients are
+// exactly the members that have not yet heard it. TOURNAMENT_END is the sharper
+// case of the two: the standings screen leaves on the first cable pull, with no
+// dwell timer, so without the exemption a pull inside the retransmit span drops
+// the news to anyone who missed the first frame.
+inline void endingSurvivesTheTerminalScreenExit(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->driveToFirstMatch({me, opMac});
+    const uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
+    suite->shootout->onCommandAckReceived(opMac.data(), msSeq);
+    suite->shootout->reportLocalWin();
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
+    const uint8_t endSeq = suite->shootout->getLastTournamentEndSeqId();
+    ASSERT_GT(suite->shootout->getPendingAckCount(endSeq), 0u);
+
+    // What ShootoutFinalStandings::onStateDismounted does when the ring opens.
+    suite->shootout->resetToIdle();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::IDLE);
+    EXPECT_GT(suite->shootout->getPendingAckCount(endSeq), 0u)
+        << "leaving the standings screen cancelled the TOURNAMENT_END still owed "
+           "to a member that never acked it";
+}
+
+// Same rule for the abort half, where the screen does have a dwell timer — so
+// this pins the exemption rather than the timer outlasting the retries.
+inline void anAbortSurvivesTheAbortedScreenExit(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    // Read the ABORT's seqId off the frame rather than through an accessor: it is
+    // on the wire, and byte 1 is where every recipient reads it too.
+    int abortSeq = -1;
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Invoke(
+            [&abortSeq](const uint8_t*, PktType type, const uint8_t* data, const size_t len) {
+                if (type == PktType::kShootoutCommand && len >= 2 &&
+                    data[0] == static_cast<uint8_t>(ShootoutCmd::ABORT)) {
+                    abortSeq = data[1];
+                }
+                return 1;
+            }));
+
+    suite->driveToFirstMatch({me, opMac});
+    suite->shootout->abortTournament();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+    ASSERT_GE(abortSeq, 0);
+    const size_t owed =
+        suite->shootout->getPendingAckCount(static_cast<uint8_t>(abortSeq));
+    ASSERT_GT(owed, 0u);
+
+    // What ShootoutAborted::onStateDismounted does when its display timer expires.
+    suite->shootout->resetToIdle();
+
+    EXPECT_EQ(suite->shootout->getPendingAckCount(static_cast<uint8_t>(abortSeq)), owed)
+        << "leaving the ABORTED screen cancelled the ABORT it was displaying";
+}
+
+// A bout resolving on the same tick as an abort must not walk the phase back.
+// The abort edge is read after this in the tick, so a walk-back leaves the device
+// in a tournament every other member has torn down — and on the abandonment path
+// the ring is still closed, so no ring-break guard will fire to correct it.
+inline void aLocalWinDoesNotWalkBackAnAbortedTournament(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->driveToFirstMatch({me, opMac});
+    suite->shootout->abortTournament();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+
+    suite->shootout->reportLocalWin();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a bout resolving after the abort reopened the tournament";
+}
+
 // A duelist still mounted when TOURNAMENT_END lands resolves its own bout and
 // reports it. That result must not walk a crowned tournament back into a round:
 // the winner is already eliminated by it, the next survivor scan finds nobody,
@@ -1532,6 +1622,12 @@ inline void aLateResultDoesNotReopenACrownedTournament(ShootoutManagerTests* sui
         << "a late result reopened a tournament that had already crowned a winner";
 }
 
+// A bracket with nobody left cannot name a winner. A TOURNAMENT_END naming the
+// all-zero MAC is acked and dropped by every receiver, so nobody reaches ENDED
+// and the ring sits in BETWEEN_MATCHES for good. Reaching zero survivors takes a
+// stale result: one tagged with an index that is no longer current is recorded
+// without ending the bout, so it can take a finalist out while the survivor scan
+// is still gated.
 inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
     ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};  // coord
@@ -1606,8 +1702,10 @@ inline void frameFromANonCoordinatorIsRefused(ShootoutManagerTests* suite) {
     ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), -1);
 
     // Both payloads are entirely well-formed against our own bracket; only the
-    // sender is wrong. Nothing may be acked either: an ack would clear our slot in
-    // a fan-out we are not part of, so that ring never learns we are not a member.
+    // sender is wrong. Nothing may be acked either: an ack is a unicast, and a
+    // unicast permanently registers its destination in the 20-entry ESP-NOW peer
+    // table, so acking a stranger's ring spends that table on devices we will
+    // never speak to again.
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
         .Times(0);
@@ -1698,12 +1796,8 @@ inline void transientRingBreakDoesNotAbortATournament(ShootoutManagerTests* suit
         << "a healed break still aborted once its original window elapsed";
 }
 
-// Nothing on the wire announces the ring opening: in a two-device ring each
-// device is the other's peer on both jacks, so one cut leaves each still a direct
-// peer of the other and peer-loss never fires. A member two hops from a cut in a larger ring gets
-// no edge either. The guard runs in sync() rather than a shootout state because
-// a bracket duelist spends its whole match inside the duel app, where no
-// shootout state is mounted to notice.
+// A settled break must abort even for a duelist mid-bout, who is inside the duel
+// app with no shootout state mounted to notice.
 inline void settledRingBreakAbortsALiveTournament(ShootoutManagerTests* suite) {
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, testing::_, testing::_, testing::_))

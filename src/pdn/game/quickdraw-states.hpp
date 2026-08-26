@@ -336,8 +336,8 @@ public:
     bool transitionToWin();
     bool transitionToLose();
     // Shootout takes priority over the regular Win/Lose paths when a tournament
-    // is active; reportLocalWin fires once on the spectator transition so the
-    // bracket advances exactly once per match.
+    // is active. This predicate reports the win as a side effect, so it must stay
+    // idempotent — reportLocalWin's own guard is what makes that true.
     bool transitionToShootoutSpectator();
     bool transitionToShootoutEliminated();
 
@@ -506,10 +506,6 @@ private:
     SimpleTimer displayTimer_;
     bool shouldGoToIdle_ = false;
     static constexpr unsigned long ABORTED_DISPLAY_MS = 2000;
-    // Dismounting this screen calls resetToIdle, which cancels the ABORT fan-out
-    // armed when the tournament ended. The screen has to outlive it.
-    static_assert(ABORTED_DISPLAY_MS > Resender::retransmitSpanMs(),
-                  "the ABORTED screen must outlive the ABORT fan-out it cancels");
 };
 
 class SymbolState : public ConnectState<PDN> {

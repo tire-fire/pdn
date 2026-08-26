@@ -245,8 +245,11 @@ void ShootoutManager::resetTournamentState() {
     bracket.clear();
     currentRound.clear();
     // Every fan-out this tournament had in flight is void; a retransmit landing
-    // after the reset would speak for a tournament that no longer exists.
-    resender.cancelAll(PktType::kShootoutCommand);
+    // after the reset would speak for a tournament that no longer exists. The
+    // exception is the frame that reports the ending: its recipients are exactly
+    // the members that have not yet heard, so it has to outlive the state it
+    // speaks about. Zero while no ending has been announced, which spares nothing.
+    resender.cancelAllExcept(PktType::kShootoutCommand, terminalFanOutSeqId);
     eliminated.clear();
     reportedLocalWin = false;
     names.clear();
@@ -262,6 +265,9 @@ void ShootoutManager::resetTournamentState() {
 
 void ShootoutManager::startProposal() {
     LOG_W(TAG, "startProposal");
+    // Cleared first so the reset below spares nothing: a previous tournament's
+    // ending is no longer worth delivering once a new one is being proposed.
+    terminalFanOutSeqId = 0;
     resetTournamentState();
     // An abort clears the anchor while the cables stay put, and the RDC latch is
     // edge-triggered, so a ring that is still closed will never announce itself
@@ -512,12 +518,11 @@ void ShootoutManager::sendBracketToPeers() {
 }
 
 void ShootoutManager::abortTournament() {
-    if (phase == Phase::ABORTED) return;
     // A tournament that reached its winner is over, not stuck. A late
     // abandonment from a fan-out that outlived the final match must not tear
     // down the standings — and the ABORT would be applied ring-wide, wiping the
     // winner screen on every device.
-    if (phase == Phase::ENDED) return;
+    if (isTerminalPhase()) return;
     LOG_W(TAG, "abortTournament from phase=%d", static_cast<int>(phase));
 
     // Copied before resetToIdle clears bracket and confirmedSet.
@@ -527,16 +532,19 @@ void ShootoutManager::abortTournament() {
     resetToIdle();
     phase = Phase::ABORTED;
 
-    // Armed after the reset, not before: resetTournamentState cancels every
-    // shootout fan-out in flight, and would cancel this one. It has to be reliable
-    // rather than rebroadcast on a timer like RING_CLOSED and CONFIRM, because a
-    // tournament this device has already left has nothing left to rebroadcast
-    // from — one dropped frame would leave that member in a tournament nothing
-    // would ever end.
+    // Armed after the reset, not before: the reset spares only the seqId already
+    // recorded as terminal, and this one is not recorded until it exists.
+    //
+    // Reliable rather than rebroadcast on a timer like RING_CLOSED and CONFIRM
+    // because this device has already left the tournament and has nothing left to
+    // rebroadcast from. Load-bearing on the abandonment path, where the ring is
+    // still closed and no member's own ring-break guard will ever fire; on a ring
+    // break it is the belt to that guard's braces.
     uint8_t packet[2];
     packet[0] = static_cast<uint8_t>(ShootoutCmd::ABORT);
     packet[1] = nextSeqId();
     sendReliablyToPeers(targets, packet[1], packet, sizeof(packet));
+    terminalFanOutSeqId = packet[1];
 }
 
 void ShootoutManager::sendLocalConfirm() {
@@ -558,20 +566,15 @@ void ShootoutManager::sendLocalConfirm() {
 }
 
 void ShootoutManager::sync() {
-    // The ring opening is the one abort trigger no frame carries: in a two-device
-    // ring each device is the other's peer on both jacks, so a single cut leaves
-    // each device still a direct peer of the other and nothing firing at all.
-    // Only the ring flag sees it.
-    //
-    // Driven here rather than from the shootout states because only the mounted
-    // app receives an onStateLoop, and a bracket duelist spends its whole match
-    // in the duel app — from there it could not see the break at all.
+    // Nothing announces a ring opening: in a two-device ring each device is the
+    // other's peer on both jacks, so a single cut leaves each still a direct peer
+    // of the other and no link-level event fires at all. Only the ring flag sees
+    // it, and only a device polling that flag notices.
     //
     // The phase test sits inside the condition, not around the call: heldFor has
     // to be sampled every tick, or its window ages while nobody is looking and
     // fires stale the first time someone asks.
-    const bool ringBrokeDuringTournament = active() && phase != Phase::ENDED &&
-                                           phase != Phase::ABORTED &&
+    const bool ringBrokeDuringTournament = active() && !isTerminalPhase() &&
                                            rdc != nullptr && !rdc->isInRing();
     if (ringBreakDebounce.heldFor(ringBrokeDuringTournament, LOOP_BREAK_DEBOUNCE_MS)) {
         abortTournament();
@@ -730,8 +733,7 @@ void ShootoutManager::onMatchStartReceived(
     uint8_t matchIndex, uint8_t seqId) {
     if (isCoordinator()) return;
     if (!isFromCoordinator(fromMac)) return;
-    // Admitted on the sender, so the ack is owed however the payload reads. One
-    // site, so no later exit can forget it.
+    // Admitted on the sender, so the ack is owed however the payload reads.
     sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
     if (!containsMac(bracket, duelistA) || !containsMac(bracket, duelistB)) {
         LOG_E(TAG, "MATCH_START from coordinator names a duelist outside our bracket");
@@ -787,12 +789,15 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
         eliminated.push_back(mac);
     }
     if (!endsCurrentBout) return;
-    // A crowned tournament is over, not between matches. A duelist still mounted
-    // when TOURNAMENT_END lands resolves its own bout on the timeout and reports,
-    // and reopening ENDED here walks that result back into a round that no longer
-    // exists — which now ends in a no-survivors abort over a published winner.
-    // Same reason abortTournament and onAbortReceived refuse ENDED.
-    if (phase == Phase::ENDED) return;
+    // A finished tournament is over, not between matches, and a duelist still
+    // mounted when it finished resolves its own bout on the timeout and reports.
+    // Walking ENDED back reopens a round that no longer exists, ending in a
+    // no-survivors abort over a published winner. Walking ABORTED back is worse:
+    // the abort edge is read after this in the same tick, so it reads false and
+    // the device stays in a tournament every other member has torn down — and on
+    // the abandonment path the ring is still closed, so no ring-break guard will
+    // ever fire to correct it.
+    if (isTerminalPhase()) return;
     phase = Phase::BETWEEN_MATCHES;
 }
 
@@ -829,10 +834,10 @@ void ShootoutManager::reportLocalWin() {
     LOG_W(TAG, "reportLocalWin matchIndex=%d", currentMatchIndex);
     sendMatchResultToPeers(selfMac, opponentMac.data(), static_cast<uint8_t>(currentMatchIndex));
     applyMatchResult(selfMac, opponentMac.data());
-    // The round advances on the next sync(), not from here. This runs inside
-    // Duel::onStateLoop, and that state dismounts later in the same tick through
-    // clearCurrentMatch() — anything primed for the next bout from here is torn
-    // down by the bout that is still mounted while it is being primed.
+    // The round advances on the next sync(), not from here. On the timeout path
+    // this is called from Duel::onStateLoop, and that state dismounts later in
+    // the same tick through clearCurrentMatch() — anything primed for the next
+    // bout from here is torn down by the bout that is still being left.
 }
 
 void ShootoutManager::onMatchResultReceived(
@@ -859,14 +864,10 @@ void ShootoutManager::onMatchResultReceived(
     // Record the elimination, but only let a result end the bout it belongs to.
     // A result can arrive late — its sender re-sends when the coordinator misses
     // one — and a device that has since been paired into a newer match would
-    // otherwise be pulled out of it mid-duel and have its per-match role
-    // restored underneath it, leaving both duelists computing the same role and
-    // neither reporting a win.
+    // otherwise be pulled out of it mid-duel by a result about the previous one.
     const bool namesCurrentBout =
         currentMatchIndex < 0 || static_cast<int>(matchIndex) == currentMatchIndex;
     applyMatchResult(winner, loser, namesCurrentBout);
-    // Advanced from sync() for the reason given in reportLocalWin: a duelist
-    // coordinator is inside a mounted Duel here too.
 }
 
 std::array<uint8_t, 6> ShootoutManager::findLastRemaining() const {
@@ -896,6 +897,7 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     // Targets confirmedSet rather than bracket: eliminated players need the
     // tournament-end transition or they stall in BETWEEN_MATCHES.
     sendReliablyToPeers(confirmedSet, lastTournamentEndSeqId, packet, sizeof(packet));
+    terminalFanOutSeqId = lastTournamentEndSeqId;
     memcpy(tournamentWinner.data(), winner, 6);
     phase = Phase::ENDED;
 }
@@ -903,8 +905,7 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
 void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
                                               const uint8_t* winner, uint8_t seqId) {
     if (!isFromCoordinator(fromMac)) return;
-    // Admitted on the sender, so the ack is owed however the payload reads. One
-    // site, so no later exit can forget it.
+    // Admitted on the sender, so the ack is owed however the payload reads.
     sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
     if (!containsMac(bracket, winner)) {
         LOG_E(TAG, "TOURNAMENT_END from coordinator names a winner outside our bracket");
@@ -917,25 +918,20 @@ void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
 }
 
 void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
-    // ABORT is one broadcast frame, so it reaches every device in radio range —
-    // other rings, and devices in no tournament at all. The ack must stay behind
-    // this filter: an ack is a unicast, and a unicast permanently registers its
-    // destination in a 20-entry ESP-NOW peer table that only the RDC evicts from.
-    // Acking every ABORT overheard would spend that table on strangers and take
-    // the radio down for everything else. A member whose own ring-break guard
-    // already fired fails this test, having emptied the rosters isRingMember
-    // reads — it stays silent and the sender spends its retries, which is four
-    // broadcast frames at a device that has in fact already stopped.
+    // One broadcast frame reaches every device in radio range, including other
+    // rings. The ack must stay behind this filter: an ack is a unicast, and a
+    // unicast permanently claims one of the 20 ESP-NOW peer slots that only the
+    // RDC ever frees. A member that already aborted on its own guard fails this
+    // test too, having emptied the rosters isRingMember reads, and the sender
+    // spends its retries on a device that has in fact already stopped.
     if (!isRingMember(fromMac)) return;
-    // Admitted on the sender, so the ack is owed however our own phase reads.
     // Addressed to fromMac because any ring member may abort, not just the
     // coordinator; seqId 0 is the fire-and-forget sentinel and expects no answer.
     if (seqId != 0) sendShootoutAck(ShootoutCmd::ABORT, seqId, fromMac);
-    if (phase == Phase::ABORTED || phase == Phase::IDLE) return;
-    // Same guard as abortTournament, and reachable: a member that missed
+    // ENDED is refused here too, and reachably: a member that missed
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the
     // winner appears sends ABORT to devices already showing the result.
-    if (phase == Phase::ENDED) return;
+    if (isTerminalPhase() || phase == Phase::IDLE) return;
     resetToIdle();
     phase = Phase::ABORTED;
 }
