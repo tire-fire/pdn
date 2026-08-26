@@ -1888,6 +1888,7 @@ TEST_F(ShootoutManagerTests, duplicateMatchResultDoesNotDoubleAdvance) { duplica
 TEST_F(ShootoutManagerTests, confirmRecordsPeerName) { confirmRecordsPeerName(this); }
 TEST_F(ShootoutManagerTests, shootoutLeavesStandingRoleAlone) { shootoutLeavesStandingRoleAlone(this); }
 TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody) { tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(this); }
+TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonCoordinatorIsRefused(this); }
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }
 TEST_F(ShootoutManagerTests, localRDCDisconnectIsIdempotent) { localRDCDisconnectIsIdempotent(this); }
 TEST_F(ShootoutManagerTests, shootoutProposalDebouncesTransientLoopBreak) { shootoutProposalDebouncesTransientLoopBreak(this); }

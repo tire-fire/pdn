@@ -1584,6 +1584,45 @@ inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
 // Admission is the sender's, not the payload's. A frame from our coordinator is
 // ours however its content reads, so a content fault is logged and still acked —
 // dropping the ack leaves the coordinator retrying until it gives up.
+// The sender, not the payload, decides whether a frame is ours. A neighbouring
+// ring's coordinator can name devices that really are in our bracket, so content
+// alone cannot tell its frames apart from our own coordinator's — and acting on
+// them starts a bout nobody here agreed to, or ends a tournament early.
+inline void frameFromANonCoordinatorIsRefused(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> alienCoord = {0xA1, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->shootout->setLoopMembersForTest({coord, me, other});
+    suite->shootout->startProposal();
+    for (const std::array<uint8_t, 6>& m : {coord, me, other})
+        suite->shootout->onConfirmReceived(m.data());
+    suite->shootout->onBracketReceived(coord.data(), {me, other, coord}, 1);
+    ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), -1);
+
+    // Both payloads are entirely well-formed against our own bracket; only the
+    // sender is wrong. Nothing may be acked either, or the alien ring's fan-out
+    // clears on an answer from a device that is not playing in it.
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .Times(0);
+
+    suite->shootout->onMatchStartReceived(alienCoord.data(), me.data(), other.data(), 0, 2);
+    EXPECT_EQ(suite->shootout->getCurrentMatchIndex(), -1)
+        << "a MATCH_START from a device that is not our coordinator started a bout";
+
+    suite->shootout->onTournamentEndReceived(alienCoord.data(), me.data(), 3);
+    EXPECT_NE(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
+        << "a TOURNAMENT_END from a device that is not our coordinator ended ours";
+}
+
 inline void admittedFrameWithBadContentIsStillAcked(ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
