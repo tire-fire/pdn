@@ -229,6 +229,24 @@ inline void matchManagerTracksDuelState(MatchManager* mm, Player* player) {
 // A Shootout hands out the hunter/bounty slots per bout by MAC ordering, and
 // the standing role is left alone — so the two disagree routinely. The bout's
 // slot is what decides the duel.
+// The coordinator advances the round from inside Duel::onStateLoop, so the next
+// bout is announced while the finished one is still mounted. The match must not
+// be rebuilt underneath it, but the announced slot must still land — otherwise
+// the next duel resolves on the previous bout's slot, and in the penultimate
+// round of any tournament that is the finalists eliminating each other.
+inline void rePrimedBoutCarriesItsOwnDrawSlot(MatchManagerTestSuite* suite) {
+    uint8_t opponent[6] = {0x05, 0, 0, 0, 0, 0};
+    suite->matchManager->initializeShootoutMatch("SHT-bout0", opponent, false);
+    ASSERT_FALSE(suite->matchManager->isLocalHunter());
+
+    // The coordinator advances the round from inside Duel::onStateLoop, before
+    // the mounted Duel dismounts and clears the match.
+    uint8_t nextOpponent[6] = {0x09, 0, 0, 0, 0, 0};
+    suite->matchManager->initializeShootoutMatch("SHT-bout1", nextOpponent, true);
+    EXPECT_TRUE(suite->matchManager->isLocalHunter())
+        << "the new bout's draw slot was dropped; the next duel resolves on the old one";
+}
+
 inline void matchManagerShootoutDrawSlotDecidesTheWinner(MatchManager* mm, Player* player) {
     player->setIsHunter(true);
     uint8_t opponentMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};

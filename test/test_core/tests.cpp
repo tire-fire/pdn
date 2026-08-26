@@ -858,6 +858,7 @@ TEST_F(MatchManagerTestSuite, graceExpiredAloneFinalizes) {
     matchManagerGraceExpiredAloneFinalizes(matchManager, player);
 }
 
+TEST_F(MatchManagerTestSuite, rePrimedBoutCarriesItsOwnDrawSlot) { rePrimedBoutCarriesItsOwnDrawSlot(this); }
 TEST_F(MatchManagerTestSuite, shootoutDrawSlotDecidesTheWinner) {
     matchManagerShootoutDrawSlotDecidesTheWinner(matchManager, player);
 }
@@ -1887,6 +1888,7 @@ TEST_F(ShootoutManagerTests, matchResultRetriesUntilAcked) { matchResultRetriesU
 TEST_F(ShootoutManagerTests, duplicateMatchResultDoesNotDoubleAdvance) { duplicateMatchResultDoesNotDoubleAdvance(this); }
 TEST_F(ShootoutManagerTests, confirmRecordsPeerName) { confirmRecordsPeerName(this); }
 TEST_F(ShootoutManagerTests, shootoutLeavesStandingRoleAlone) { shootoutLeavesStandingRoleAlone(this); }
+TEST_F(ShootoutManagerTests, aLateResultDoesNotReopenACrownedTournament) { aLateResultDoesNotReopenACrownedTournament(this); }
 TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody) { tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(this); }
 TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonCoordinatorIsRefused(this); }
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }

@@ -741,13 +741,14 @@ void ShootoutManager::onMatchStartReceived(
     // owed however the payload reads, so a bad pair is a fault we log and answer
     // rather than silence that leaves the coordinator retrying to exhaustion.
     if (!isFromCoordinator(fromMac)) return;
+    // Admitted on the sender, so the ack is owed however the payload reads. One
+    // site, so no later exit can forget it.
+    sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
     if (!containsMac(bracket, duelistA) || !containsMac(bracket, duelistB)) {
         LOG_E(TAG, "MATCH_START from coordinator names a duelist outside our bracket");
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
         return;
     }
     if (seqId != 0 && seqId == lastObservedMatchStartSeqId) {
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
         return;
     }
     // A bout whose loser is already out has been played. maybeStartNextMatch
@@ -759,13 +760,11 @@ void ShootoutManager::onMatchStartReceived(
     // re-primed against an opponent it already beat.
     if (isEliminated(duelistA) || isEliminated(duelistB)) {
         lastObservedMatchStartSeqId = seqId;
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
         return;
     }
     bool sameMatch = isSameMatch(matchIndex, duelistA, duelistB);
     lastObservedMatchStartSeqId = seqId;
     if (sameMatch) {
-        sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
         return;
     }
     currentMatchIndex = matchIndex;
@@ -779,7 +778,6 @@ void ShootoutManager::onMatchStartReceived(
         memcpy(opponentMac.data(), opp, 6);
         primeMatchManagerForMatch();
     }
-    sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
 }
 
 void ShootoutManager::sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint8_t* toMac) {
@@ -800,6 +798,12 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
         eliminated.push_back(mac);
     }
     if (!endsCurrentBout) return;
+    // A crowned tournament is over, not between matches. A duelist still mounted
+    // when TOURNAMENT_END lands resolves its own bout on the timeout and reports,
+    // and reopening ENDED here walks that result back into a round that no longer
+    // exists — which now ends in a no-survivors abort over a published winner.
+    // Same reason abortTournament and onAbortReceived refuse ENDED.
+    if (phase == Phase::ENDED) return;
     phase = Phase::BETWEEN_MATCHES;
 }
 
@@ -844,7 +848,8 @@ void ShootoutManager::onMatchResultReceived(
     uint8_t matchIndex, uint8_t seqId, const uint8_t* fromMac) {
     // A result is fanned out by whichever duelist won it, so the sender being in
     // our bracket is what says the frame is ours. A result from another ring must
-    // not be acked, or that ring's sender stops retrying to its real audience.
+    // not be acked: the ack would clear our slot in a fan-out we are not part of,
+    // so that ring never learns we are not one of its members.
     if (!containsMac(bracket, fromMac)) return;
     // Always ack so the sender stops retrying, even when this is a duplicate.
     sendShootoutAck(ShootoutCmd::MATCH_RESULT, seqId, fromMac);
@@ -879,9 +884,9 @@ std::array<uint8_t, 6> ShootoutManager::findLastRemaining() const {
 
 void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     // Nobody left standing: findLastRemaining() answers with the all-zero MAC,
-    // which names no bracket member, so every receiver would refuse the frame and
-    // the fan-out would retry to exhaustion while the ring sat in BETWEEN_MATCHES.
-    // A tournament with no winner is over for a reason ABORT already expresses.
+    // which names no bracket member. Receivers ack it and drop it, so the fan-out
+    // clears and nobody ever reaches ENDED — the ring would sit in BETWEEN_MATCHES
+    // for good. A tournament with no winner is over for a reason ABORT expresses.
     const std::array<uint8_t, 6> noWinner{};
     if (memcmp(winner, noWinner.data(), 6) == 0) {
         LOG_E(TAG, "tournament ended with no surviving player; aborting");
@@ -904,21 +909,17 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
 void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
                                               const uint8_t* winner, uint8_t seqId) {
     if (!isFromCoordinator(fromMac)) return;
+    // Admitted on the sender, so the ack is owed however the payload reads. One
+    // site, so no later exit can forget it.
+    sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
     if (!containsMac(bracket, winner)) {
         LOG_E(TAG, "TOURNAMENT_END from coordinator names a winner outside our bracket");
-        sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
         return;
     }
-    if (seqId != 0 && seqId == lastObservedTournamentEndSeqId) {
-        auto coord = getCoordinatorMac();
-        sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coord.data());
-        return;
-    }
+    if (seqId != 0 && seqId == lastObservedTournamentEndSeqId) return;
     lastObservedTournamentEndSeqId = seqId;
     memcpy(tournamentWinner.data(), winner, 6);
     phase = Phase::ENDED;
-    auto coord = getCoordinatorMac();
-    sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coord.data());
 }
 
 void ShootoutManager::onAbortReceived(const uint8_t* fromMac) {

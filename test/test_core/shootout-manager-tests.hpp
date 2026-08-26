@@ -1528,12 +1528,39 @@ inline void shootoutLeavesStandingRoleAlone(ShootoutManagerTests* suite) {
     suite->shootout->setMatchManager(nullptr);
 }
 
-// A bracket with nobody left cannot name a winner, and a TOURNAMENT_END naming
-// the all-zero MAC is refused by every receiver without an ack — the coordinator
-// then retries to exhaustion while the ring sits in BETWEEN_MATCHES. Reaching
+// A bracket with nobody left cannot name a winner. A TOURNAMENT_END naming the
+// all-zero MAC is acked and dropped by every receiver, so nobody reaches ENDED
+// and the ring sits in BETWEEN_MATCHES for good. Reaching
 // zero survivors takes a stale result: one tagged with an index that is no
 // longer current is recorded without ending the bout, so it can take a finalist
 // out while the survivor scan is still gated.
+// A duelist still mounted when TOURNAMENT_END lands resolves its own bout and
+// reports it. That result must not walk a crowned tournament back into a round:
+// the winner is already eliminated by it, the next survivor scan finds nobody,
+// and the no-survivors abort tears down standings the ring has already seen.
+inline void aLateResultDoesNotReopenACrownedTournament(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->shootout->setLoopMembersForTest({me, other});
+    suite->shootout->startProposal();
+    for (const std::array<uint8_t, 6>& m : {me, other})
+        suite->shootout->onConfirmReceived(m.data());
+    suite->shootout->onBracketReceived(me.data(), {me, other}, 1);
+    suite->shootout->onTournamentEndReceived(me.data(), me.data(), 2);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
+
+    suite->shootout->onMatchResultReceived(other.data(), me.data(), 0, 3, other.data());
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
+        << "a late result reopened a tournament that had already crowned a winner";
+}
+
 inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
     ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};  // coord
@@ -1581,9 +1608,6 @@ inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
         << "an all-zero winner was published as a result";
 }
 
-// Admission is the sender's, not the payload's. A frame from our coordinator is
-// ours however its content reads, so a content fault is logged and still acked —
-// dropping the ack leaves the coordinator retrying until it gives up.
 // The sender, not the payload, decides whether a frame is ours. A neighbouring
 // ring's coordinator can name devices that really are in our bracket, so content
 // alone cannot tell its frames apart from our own coordinator's — and acting on
@@ -1608,8 +1632,8 @@ inline void frameFromANonCoordinatorIsRefused(ShootoutManagerTests* suite) {
     ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), -1);
 
     // Both payloads are entirely well-formed against our own bracket; only the
-    // sender is wrong. Nothing may be acked either, or the alien ring's fan-out
-    // clears on an answer from a device that is not playing in it.
+    // sender is wrong. Nothing may be acked either: an ack would clear our slot in
+    // a fan-out we are not part of, so that ring never learns we are not a member.
     EXPECT_CALL(*suite->device.mockPeerComms,
                 sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
         .Times(0);
@@ -1623,6 +1647,9 @@ inline void frameFromANonCoordinatorIsRefused(ShootoutManagerTests* suite) {
         << "a TOURNAMENT_END from a device that is not our coordinator ended ours";
 }
 
+// Admission is the sender's, not the payload's. A frame from our coordinator is
+// ours however its content reads, so a content fault is logged and still acked —
+// dropping the ack leaves the coordinator retrying until it gives up.
 inline void admittedFrameWithBadContentIsStillAcked(ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};

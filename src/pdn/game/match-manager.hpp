@@ -131,8 +131,8 @@ public:
 
     void setBoostProvider(std::function<unsigned long()> provider);
 
-    /// Draw times and boost from the most recently finalized match, kept for the
-    /// result screen after the match itself is cleared.
+    /// Result-screen snapshot that outlives the match: draw times from
+    /// finalizeMatch, boost from the button press that earned it.
     const LastMatchDisplay& getLastMatchDisplay() const { return lastMatchDisplay; }
 
     // Required for SEND_MATCH_ID to be accepted: sender MAC must match one
