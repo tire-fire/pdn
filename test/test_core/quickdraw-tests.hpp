@@ -458,9 +458,8 @@ public:
 };
 
 // The shootout duel timeout forfeits the bout's HUNTER. Which side that is comes
-// from the bout's draw slot: a match result for this bout can restore the
-// standing role before the timeout fires, and reading it there sent the wrong
-// device to reportLocalWin.
+// from the bout's draw slot, not the standing role: the two disagree for the whole
+// bout, and reading the standing role here sends the wrong device to reportLocalWin.
 inline void duelShootoutTimeoutForfeitsTheBoutHunter(DuelStateTests* suite) {
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _))
         .Times(testing::AnyNumber());

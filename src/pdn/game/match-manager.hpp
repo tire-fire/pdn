@@ -35,8 +35,8 @@ struct ActiveDuelState {
     bool matchIsReady = false;
     // Which draw slot this device fills for THIS bout. Usually the player's
     // standing hunter/bounty role, but a Shootout assigns it per match from MAC
-    // ordering, and the standing role can be restored while the bout is still
-    // live — so every duel-path read of "am I the hunter" resolves here.
+    // ordering - so every read of "which draw time do I write" resolves here,
+    // while the standing role still answers physical questions like cabling.
     bool localIsHunter = false;
     bool hasReceivedDrawResult = false;
     bool hasPressedButton = false;

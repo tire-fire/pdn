@@ -1010,11 +1010,11 @@ TEST_F(DuelCountdownTests, cleansUpOnDismount) {
 // QUICKDRAW STATE TESTS - DUEL SCENARIOS
 // ============================================
 
-// Scenario 1: DUT presses button first
 TEST_F(DuelStateTests, shootoutTimeoutForfeitsTheBoutHunter) {
     duelShootoutTimeoutForfeitsTheBoutHunter(this);
 }
 
+// Scenario 1: DUT presses button first
 TEST_F(DuelStateTests, buttonPressTransitionsToDuelPushed) {
     duelButtonPressTransitionsToDuelPushed(this);
 }
