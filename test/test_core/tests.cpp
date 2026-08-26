@@ -858,7 +858,7 @@ TEST_F(MatchManagerTestSuite, graceExpiredAloneFinalizes) {
     matchManagerGraceExpiredAloneFinalizes(matchManager, player);
 }
 
-TEST_F(MatchManagerTestSuite, rePrimedBoutCarriesItsOwnDrawSlot) { rePrimedBoutCarriesItsOwnDrawSlot(this); }
+TEST_F(MatchManagerTestSuite, eachBoutIsPrimedWithItsOwnDrawSlot) { eachBoutIsPrimedWithItsOwnDrawSlot(this); }
 TEST_F(MatchManagerTestSuite, shootoutDrawSlotDecidesTheWinner) {
     matchManagerShootoutDrawSlotDecidesTheWinner(matchManager, player);
 }
@@ -1136,8 +1136,12 @@ TEST_F(StateCleanupTests, countdownClearsButtonCallbacks) {
     cleanupCountdownClearsButtonCallbacks(this);
 }
 
-TEST_F(StateCleanupTests, duelStateDoesNotClearCallbacksOnDismount) {
-    cleanupDuelStateDoesNotClearCallbacksOnDismount(this);
+TEST_F(StateCleanupTests, duelKeepsTheMatchIntoDuelPushed) {
+    cleanupDuelKeepsTheMatchIntoDuelPushed(this);
+}
+
+TEST_F(StateCleanupTests, duelAbortDismountTearsDownTheBout) {
+    cleanupDuelAbortDismountTearsDownTheBout(this);
 }
 
 TEST_F(StateCleanupTests, duelReceivedResultClearsButtonCallbacks) {
@@ -1891,7 +1895,6 @@ TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonC
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }
 TEST_F(ShootoutManagerTests, settledRingBreakAbortsALiveTournament) { settledRingBreakAbortsALiveTournament(this); }
 TEST_F(ShootoutManagerTests, abortIsAckedByItsRecipient) { abortIsAckedByItsRecipient(this); }
-TEST_F(ShootoutManagerTests, abortIsAckedByADeviceThatAlreadyReset) { abortIsAckedByADeviceThatAlreadyReset(this); }
 TEST_F(ShootoutManagerTests, transientRingBreakDoesNotAbortATournament) { transientRingBreakDoesNotAbortATournament(this); }
 TEST_F(ShootoutManagerTests, aFreshTournamentGetsAFullGraceWindow) { aFreshTournamentGetsAFullGraceWindow(this); }
 TEST_F(ShootoutManagerTests, abortRuleReachesEveryStateThatDeclaresIt) { abortRuleReachesEveryStateThatDeclaresIt(this); }

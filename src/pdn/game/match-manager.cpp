@@ -44,8 +44,8 @@ ShootoutManager* MatchManager::getShootoutManager() const {
 void MatchManager::clearCurrentMatch() {
     if (!activeDuelState.match) return;
     LOG_I(MATCH_MANAGER_TAG, "Clearing current match");
-    // Whole-struct reset: the per-field list this replaced had already dropped
-    // opponentMac, and a field added later would be forgotten the same way.
+    // Whole-struct reset, so a field added to ActiveDuelState cannot be forgotten
+    // here.
     activeDuelState = ActiveDuelState{};
 }
 
@@ -77,11 +77,8 @@ void MatchManager::sendMatchId() {
 
 void MatchManager::initializeShootoutMatch(const char* matchId, uint8_t* opponentMac,
                                            bool localIsHunter) {
-    // The coordinator advances the round from inside Duel::onStateLoop, so this
-    // fires while the finished bout is still mounted. The match itself must not
-    // be rebuilt underneath it, but the slot belongs to the bout being announced
-    // — dropping it here leaves the next duel resolving on the previous bout's.
-    activeDuelState.localIsHunter = localIsHunter;
+    // A bout already mounted is not rebuilt underneath itself: a repeat
+    // MATCH_START naming the live bout is a no-op, not a re-prime.
     if (activeDuelState.match.has_value()) return;
 
     auto* clock = SimpleTimer::getPlatformClock();

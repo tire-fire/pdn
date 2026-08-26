@@ -117,15 +117,17 @@ bool Duel::transitionToShootoutEliminated() {
 }
 
 void Duel::onStateDismounted(PDN* pdn) {
-    if(transitionToIdleState || transitionToShootoutSpectatorState
-       || transitionToShootoutEliminatedState) {
+    // Input goes on every exit: each one either leaves the bout or hands off to a
+    // state that registers what it wants itself.
+    pdn->getPrimaryButton()->removeButtonCallbacks();
+    pdn->getSecondaryButton()->removeButtonCallbacks();
+    // Only the two hand-offs that stay inside this bout keep the match. Framed as
+    // what stays rather than a list of the exits that leave: the shootout abort
+    // edge is an app transition and sets no flag here, so a list by name missed it
+    // and left the motor running, the callbacks live and a match ready behind it.
+    if (!transitionToDuelPushedState && !transitionToDuelReceivedResultState) {
         pdn->getHaptics()->off();
         matchManager->clearCurrentMatch();
-        pdn->getPrimaryButton()->removeButtonCallbacks();
-        pdn->getSecondaryButton()->removeButtonCallbacks();
-    } else if(transitionToDuelReceivedResultState) {
-        pdn->getPrimaryButton()->removeButtonCallbacks();
-        pdn->getSecondaryButton()->removeButtonCallbacks();
     }
 
     LOG_I(DUEL_TAG, "Duel state dismounted - Cleanup");

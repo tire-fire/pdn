@@ -28,10 +28,10 @@ public:
         ABORTED = 6,
     };
 
-    /// Subscribes to the coordinator's peer-lost and ring-closed edges when given
-    /// one. One callback exists per edge, so at most one ShootoutManager per
-    /// coordinator: a second built on the same one takes both slots over, and
-    /// whichever is destroyed first empties them for both.
+    /// Subscribes to the coordinator's ring-closed edge when given one. That
+    /// callback is a single slot, so at most one ShootoutManager per coordinator:
+    /// a second built on the same one takes the slot over, and whichever is
+    /// destroyed first empties it for both.
     ShootoutManager(Player* player,
                     WirelessManager* wirelessManager,
                     RemoteDeviceCoordinator* rdc);
@@ -262,8 +262,6 @@ private:
     std::vector<uint8_t> buildMatchStartPacket(int matchIndex) const;
 
     std::vector<std::array<uint8_t, 6>> eliminated;
-    // Ends the tournament for a departed participant. Callers own the question of
-    // whether the MAC is one of ours; a locally observed jack loss already is.
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin = false;
     // The match whose result this device has already re-sent once, or -1. Keyed

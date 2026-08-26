@@ -1154,8 +1154,9 @@ inline void cleanupCountdownClearsButtonCallbacks(StateCleanupTests* suite) {
     countdownState.onStateDismounted(&suite->device);
 }
 
-// Test: Duel state preserves button callbacks for DuelPushed/DuelReceivedResult
-inline void cleanupDuelStateDoesNotClearCallbacksOnDismount(StateCleanupTests* suite) {
+// The bout continues into DuelPushed, so the match has to survive the dismount —
+// that state reads it and writes the draw result against it.
+inline void cleanupDuelKeepsTheMatchIntoDuelPushed(StateCleanupTests* suite) {
     uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     suite->matchManager->initializeMatch(dummyMac);
 
@@ -1164,15 +1165,41 @@ inline void cleanupDuelStateDoesNotClearCallbacksOnDismount(StateCleanupTests* s
     EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
     EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
-    
+
     duelState.onStateMounted(&suite->device);
-    
-    // Duel state should NOT clear button callbacks on dismount
-    // The next state (DuelPushed or DuelReceivedResult) uses them
-    EXPECT_CALL(*suite->device.mockPrimaryButton, removeButtonCallbacks()).Times(0);
-    EXPECT_CALL(*suite->device.mockSecondaryButton, removeButtonCallbacks()).Times(0);
-    
+    suite->fakeClock->advance(200);
+    suite->matchManager->getDuelButtonPush()(suite->matchManager);
+    duelState.onStateLoop(&suite->device);
+    ASSERT_TRUE(duelState.transitionToDuelPushed());
+
     duelState.onStateDismounted(&suite->device);
+    EXPECT_TRUE(suite->matchManager->getCurrentMatch().has_value())
+        << "the bout's own match was torn down on the way into DuelPushed";
+}
+
+// The shootout abort edge is an app transition, so it sets none of this state's
+// flags. A dismount that enumerated the leaving edges by name missed it entirely:
+// the motor stayed on into the next screen, the duel button callbacks stayed
+// live, and a ready match survived into Idle, which mounts a duel off it.
+inline void cleanupDuelAbortDismountTearsDownTheBout(StateCleanupTests* suite) {
+    uint8_t dummyMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    suite->matchManager->initializeMatch(dummyMac);
+
+    Duel duelState(suite->ctx);
+
+    EXPECT_CALL(*suite->device.mockPrimaryButton, setButtonPress(_, _, _)).Times(1);
+    EXPECT_CALL(*suite->device.mockSecondaryButton, setButtonPress(_, _, _)).Times(1);
+    EXPECT_CALL(*suite->device.mockHaptics, setIntensity(_)).Times(testing::AnyNumber());
+
+    duelState.onStateMounted(&suite->device);
+
+    EXPECT_CALL(*suite->device.mockHaptics, off()).Times(1);
+    EXPECT_CALL(*suite->device.mockPrimaryButton, removeButtonCallbacks()).Times(1);
+    EXPECT_CALL(*suite->device.mockSecondaryButton, removeButtonCallbacks()).Times(1);
+
+    duelState.onStateDismounted(&suite->device);
+    EXPECT_FALSE(suite->matchManager->getCurrentMatch().has_value())
+        << "a match left ready bounces the device into a phantom duel from Idle";
 }
 
 // Test: DuelReceivedResult state clears button callbacks on dismount

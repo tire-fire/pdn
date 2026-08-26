@@ -228,10 +228,6 @@ bool RemoteDeviceCoordinator::isDirectPeer(const uint8_t* mac) const {
     return false;
 }
 
-bool RemoteDeviceCoordinator::canReachPeer(const uint8_t* mac) const {
-    return isDirectPeer(mac);
-}
-
 void RemoteDeviceCoordinator::registerPeer(const uint8_t* macAddress) {
     if (wirelessManager_ != nullptr) {
         wirelessManager_->addEspNowPeer(macAddress);

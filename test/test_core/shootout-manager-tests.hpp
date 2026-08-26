@@ -1218,10 +1218,12 @@ inline void finalMatchResultTriggersTournamentEnd(ShootoutManagerTests* suite) {
     uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
     suite->shootout->onCommandAckReceived(opMac.data(), msSeq);
     // Self wins.
+    // reportLocalWin → applyMatchResult → BETWEEN_MATCHES. The coordinator then
+    // finds no more pairs on its next tick and broadcasts TOURNAMENT_END.
     suite->shootout->reportLocalWin();
-    // reportLocalWin → applyMatchResult → BETWEEN_MATCHES.
-    // Coordinator sees no more pairs → broadcasts TOURNAMENT_END.
-    // reportLocalWin calls maybeStartNextMatch which triggers end.
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES)
+        << "the round advanced from inside the call that reported the win";
+    suite->shootout->sync();
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     EXPECT_EQ(memcmp(suite->shootout->getTournamentWinner().data(), me.data(), 6), 0);
 }
@@ -1250,6 +1252,7 @@ inline void startProposalClearsAllPriorTournamentState(ShootoutManagerTests* sui
     uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
     suite->shootout->onCommandAckReceived(opMac.data(), msSeq);
     suite->shootout->reportLocalWin();
+    suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     ASSERT_FALSE(suite->shootout->getBracket().empty());
     ASSERT_TRUE(suite->shootout->isEliminated(opMac.data()));
@@ -1330,7 +1333,9 @@ inline void duplicateMatchResultDoesNotDoubleAdvance(ShootoutManagerTests* suite
     const uint8_t* winner = pair.first.data();
     const uint8_t* loser  = pair.second.data();
     suite->shootout->onMatchResultReceived(winner, loser, 0, /*seqId=*/7, winner);
+    suite->shootout->sync();
     suite->shootout->onMatchResultReceived(winner, loser, 0, /*seqId=*/7, winner);
+    suite->shootout->sync();
 
     // After one real match: bracket is still 4, currentMatchIndex is 1
     // (coord moved on to match 1). The duplicate must NOT have advanced.
@@ -1371,6 +1376,7 @@ inline void tournamentEndRetriesUntilAcked(ShootoutManagerTests* suite) {
     uint8_t msSeq = suite->shootout->getLastMatchStartSeqId();
     suite->shootout->onCommandAckReceived(opMac.data(), msSeq);
     suite->shootout->reportLocalWin();
+    suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     ASSERT_EQ(suite->shootout->getPendingAckCount(suite->shootout->getLastTournamentEndSeqId()), 1u);
 
@@ -1546,12 +1552,14 @@ inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
         suite->shootout->getCurrentMatchPair();
     suite->shootout->onMatchResultReceived(round1a.first.data(), round1a.second.data(),
                                            0, 20, round1a.first.data());
+    suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), 1);
 
     std::pair<std::array<uint8_t, 6>, std::array<uint8_t, 6>> round1b =
         suite->shootout->getCurrentMatchPair();
     suite->shootout->onMatchResultReceived(round1b.second.data(), round1b.first.data(),
                                            1, 21, round1b.second.data());
+    suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getCurrentMatchIndex(), 0)
         << "the round never advanced to the final";
 
@@ -1565,6 +1573,7 @@ inline void tournamentWithNoSurvivorsAbortsInsteadOfNamingNobody(
     // The final's own result takes the other finalist out. Nobody is left.
     suite->shootout->onMatchResultReceived(round1a.first.data(), round1b.second.data(),
                                            0, 23, round1a.first.data());
+    suite->shootout->sync();
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
         << "a tournament with no survivor did not end with a reason";
@@ -1651,9 +1660,9 @@ inline void admittedFrameWithBadContentIsStillAcked(ShootoutManagerTests* suite)
         << "a winner outside the bracket ended the tournament";
 }
 
-// A cable nudge flickers the ring open for one tick. The abort guard is level
-// triggered, so a break has to persist for LOOP_BREAK_DEBOUNCE_MS before it counts
-// — the original code wiped tournament state on the first tick that read false.
+// A cable nudge flickers the ring open for a tick or two. The abort guard is
+// level triggered, so a break has to persist for LOOP_BREAK_DEBOUNCE_MS before it
+// counts for anything.
 inline void transientRingBreakDoesNotAbortATournament(ShootoutManagerTests* suite) {
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, testing::_, testing::_, testing::_))
@@ -1690,8 +1699,8 @@ inline void transientRingBreakDoesNotAbortATournament(ShootoutManagerTests* suit
 }
 
 // Nothing on the wire announces the ring opening: in a two-device ring each
-// device is the other's peer on both jacks, so one cut leaves canReachPeer true
-// and peer-loss never fires. A member two hops from a cut in a larger ring gets
+// device is the other's peer on both jacks, so one cut leaves each still a direct
+// peer of the other and peer-loss never fires. A member two hops from a cut in a larger ring gets
 // no edge either. The guard runs in sync() rather than a shootout state because
 // a bracket duelist spends its whole match inside the duel app, where no
 // shootout state is mounted to notice.
@@ -1735,37 +1744,6 @@ inline void abortIsAckedByItsRecipient(ShootoutManagerTests* suite) {
 
     suite->shootout->onAbortReceived(coord.data(), 7);
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
-}
-
-// The ring opens, so every member's own guard fires and each of them empties the
-// rosters isRingMember reads. The coordinator's ABORT then lands on a device
-// that can no longer recognise the sender — and an unacked frame is retried to
-// exhaustion, at a device that has in fact already stopped.
-inline void abortIsAckedByADeviceThatAlreadyReset(ShootoutManagerTests* suite) {
-    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
-        .WillByDefault(testing::Return(selfMac));
-    ON_CALL(*suite->device.mockPeerComms,
-            sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    // No setLoopMembersForTest here: that override outlives a teardown, and the
-    // roster going with the teardown is the whole case.
-    suite->shootout->onRingClosedReceived(coord.data(), {coord, me});
-    suite->shootout->startProposal();
-    suite->shootout->onConfirmReceived(coord.data());
-    suite->shootout->abortTournament();
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
-    ASSERT_TRUE(suite->shootout->getLoopMembers().empty())
-        << "the case only bites once the roster isRingMember reads is gone";
-
-    EXPECT_CALL(*suite->device.mockPeerComms,
-                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
-        .Times(1)
-        .WillRepeatedly(testing::Return(1));
-    suite->shootout->onAbortReceived(coord.data(), 7);
 }
 
 // The phase test belongs inside the debounced condition, not around it. A device

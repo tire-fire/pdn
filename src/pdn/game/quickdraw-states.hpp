@@ -422,7 +422,7 @@ public:
     bool transitionToBracketReveal();
 
 private:
-    ShootoutManager* shootoutManager;
+    ShootoutManager* shootoutManager = nullptr;
 
     bool shouldGoToReveal_ = false;
 };
@@ -438,7 +438,7 @@ public:
     bool transitionToSpectator();
 
 private:
-    ShootoutManager* shootoutManager;
+    ShootoutManager* shootoutManager = nullptr;
 
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
