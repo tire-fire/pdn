@@ -661,6 +661,105 @@ inline void aMemberJoinsItsCoordinatorsNextBracket(ShootoutManagerTests* suite) 
         << "a member turned away the next tournament its own coordinator drew";
 }
 
+// A coordinator can stop speaking after its bracket lands — its own abort lost,
+// or the device gone. Without a bound the member holds a dead tournament forever
+// and confirms nothing the ring tries next, which hangs the whole ring.
+inline void aMemberGivesUpWaitingForItsFirstMatch(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    suite->fakeClock->advance(ShootoutManager::kMatchAnnounceTimeoutMs + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a member still holds a bracket whose coordinator stopped speaking";
+}
+
+// A member whose first match does arrive keeps playing it: the wait is bounded,
+// not short, and the coordinator's own reveal window falls inside it.
+inline void aMemberThatGetsItsFirstMatchKeepsPlaying(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
+    suite->fakeClock->advance(ShootoutManager::kBracketRevealMs + 1);
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), coord.data(), 0, 2);
+    suite->fakeClock->advance(ShootoutManager::kMatchAnnounceTimeoutMs + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
+        << "the wait for a first match that arrived still timed the tournament out";
+}
+
+// The wait is per match, not per tournament. A tournament that runs longer than
+// one wait is normal, and reaching the gap between matches must not read as a
+// coordinator that stopped speaking.
+inline void aLongTournamentIsNotMistakenForASilentCoordinator(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me, third});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
+    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
+
+    // The bout itself outlasts one wait, which is what a real duel does.
+    suite->fakeClock->advance(ShootoutManager::kMatchAnnounceTimeoutMs + 1);
+    suite->shootout->sync();
+    suite->shootout->onMatchResultReceived(coord.data(), third.data(), 0, 3, coord.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES)
+        << "a live tournament was aborted the moment it reached a gap between matches";
+}
+
+// The same wait, one match in: a member between matches is waiting on the
+// coordinator too, and a coordinator that went quiet there strands it just as
+// surely as one that never announced the first match.
+inline void aMemberGivesUpWaitingForTheNextMatch(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me, third});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
+    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
+    suite->shootout->onMatchResultReceived(coord.data(), third.data(), 0, 3, coord.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+
+    suite->fakeClock->advance(ShootoutManager::kMatchAnnounceTimeoutMs + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a member sits between matches for a coordinator that stopped announcing them";
+}
+
 // A duplicate BRACKET can reach a device whose tournament is already playing.
 // Re-acking it is owed; rewinding to the reveal is not.
 inline void aBracketRetransmitDoesNotRewindALiveMatch(ShootoutManagerTests* suite) {

@@ -256,6 +256,7 @@ void ShootoutManager::resetTournamentState() {
     // Sampled only while the phase is PROPOSAL, so a tournament that leaves that
     // phase mid-window would carry a part-aged timer into the next one.
     shortRosterDebounce.reset();
+    nextMatchTimer.invalidate();
     reportedLocalWin = false;
     names.clear();
     currentMatchIndex = -1;
@@ -647,6 +648,19 @@ void ShootoutManager::sync() {
         }
     }
 
+    // A coordinator can stop speaking mid-tournament — its own abort lost, or the
+    // device gone — and nothing else would move a member waiting on it: it holds a
+    // bracket, so it is done confirming, and the ring is still closed, so the break
+    // guard above stays quiet. Left there it also confirms nothing the ring tries
+    // next, which hangs every other member too.
+    const bool waitingOnCoordinator =
+        phase == Phase::BRACKET_REVEAL || phase == Phase::BETWEEN_MATCHES;
+    if (waitingOnCoordinator && !isCoordinator() && !bracket.empty() &&
+        nextMatchTimer.expired()) {
+        LOG_E(TAG, "coordinator announced no match; aborting");
+        abortTournament();
+    }
+
     // Every command family retransmits and abandons here; which one gave up is
     // read off the frame in onCommandAbandoned.
     resender.sync();
@@ -767,7 +781,9 @@ void ShootoutManager::onBracketReceived(
     currentRound = offeredBracket;
     memcpy(coordinatorMac.data(), fromMac, 6);
     // The reveal timer paces the coordinator's first match, and a member that
-    // adopts a bracket is by definition not it.
+    // adopts a bracket is by definition not it. What this device needs instead is
+    // a bound on the wait for that match to be announced.
+    nextMatchTimer.setTimer(kMatchAnnounceTimeoutMs);
     phase = Phase::BRACKET_REVEAL;
     sendShootoutAck(ShootoutCmd::BRACKET, seqId, coordinatorMac.data());
 }
@@ -834,6 +850,9 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
     // same tick and would then read false, stranding this device in a tournament
     // every other member has left.
     if (isTerminalPhase()) return;
+    // The next match is the coordinator's to announce, so the wait for it is
+    // bounded here the same way the wait for the first one is.
+    nextMatchTimer.setTimer(kMatchAnnounceTimeoutMs);
     phase = Phase::BETWEEN_MATCHES;
 }
 

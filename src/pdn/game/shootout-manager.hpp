@@ -168,6 +168,13 @@ public:
     static constexpr unsigned long SHORT_ROSTER_TIMEOUT_MS = 3000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
+    /// How long a member waits for its coordinator to announce a match before it
+    /// gives up. Derived, not tuned: the coordinator waits out its own reveal
+    /// window before the first one, and both the bracket fan-out it waits on first
+    /// and the MATCH_START that follows can spend a full retry span before
+    /// anything reaches this device.
+    static constexpr unsigned long kMatchAnnounceTimeoutMs =
+        kBracketRevealMs + 2 * Resender::staleAfterMs();
     // Packet-validation clamp on an inbound BRACKET's member count. A ring can
     // hold as many devices as the chain does, so it tracks MAX_CHAIN_MEMBERS;
     // one ESP-NOW v2 frame carries that bracket several times over.
@@ -293,6 +300,7 @@ private:
     std::array<uint8_t, 6> currentDuelistB{};
     uint8_t lastMatchStartSeqId = 0;
     SimpleTimer bracketRevealTimer;
+    SimpleTimer nextMatchTimer;
     /// Advances the bracket. Called only from sync(), on the main loop — a second
     /// caller on the packet path would need its own guard against double-advance.
     void maybeStartNextMatch();

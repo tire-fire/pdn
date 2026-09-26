@@ -1904,6 +1904,10 @@ TEST_F(ShootoutManagerTests, memberTakesItsHeadsRosterDuringTheProposal) { membe
 TEST_F(ShootoutManagerTests, followerReacksItsCoordinatorsBracketRetransmit) { followerReacksItsCoordinatorsBracketRetransmit(this); }
 TEST_F(ShootoutManagerTests, aBracketRetransmitDoesNotRewindALiveMatch) { aBracketRetransmitDoesNotRewindALiveMatch(this); }
 TEST_F(ShootoutManagerTests, aMemberJoinsItsCoordinatorsNextBracket) { aMemberJoinsItsCoordinatorsNextBracket(this); }
+TEST_F(ShootoutManagerTests, aLongTournamentIsNotMistakenForASilentCoordinator) { aLongTournamentIsNotMistakenForASilentCoordinator(this); }
+TEST_F(ShootoutManagerTests, aMemberGivesUpWaitingForTheNextMatch) { aMemberGivesUpWaitingForTheNextMatch(this); }
+TEST_F(ShootoutManagerTests, aMemberGivesUpWaitingForItsFirstMatch) { aMemberGivesUpWaitingForItsFirstMatch(this); }
+TEST_F(ShootoutManagerTests, aMemberThatGetsItsFirstMatchKeepsPlaying) { aMemberThatGetsItsFirstMatchKeepsPlaying(this); }
 TEST_F(ShootoutManagerTests, abortedRingReclaimsWhileStillCabled) { abortedRingReclaimsWhileStillCabled(this); }
 TEST_F(ShootoutManagerTests, anAbortRetiresTheBoutTheTournamentPrimed) { anAbortRetiresTheBoutTheTournamentPrimed(this); }
 TEST_F(ShootoutManagerTests, aTournamentResetLeavesACableBoutAlone) { aTournamentResetLeavesACableBoutAlone(this); }
