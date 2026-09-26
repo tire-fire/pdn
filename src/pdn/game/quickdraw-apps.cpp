@@ -34,7 +34,7 @@ void HubApp::populateStateMap() {
         [awakenSequence]() { return awakenSequence->transitionToIdle(); },
         idle);
 
-    // Auto-trigger Shootout on ring closure — the coordinator's own RDC event,
+    // Auto-trigger Shootout on ring closure — the ring head's own RDC event,
     // every other member's RING_CLOSED. Priority over DuelCountdown/
     // SupporterReady: in a closed ring, adjacent H-B pairs otherwise look like a
     // normal duel initiation, and the ring intent (tournament) would be silently

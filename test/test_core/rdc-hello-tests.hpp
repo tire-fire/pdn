@@ -2400,9 +2400,9 @@ inline void rdcChainRoleChangeFiresOnConnectAndLinkDeath(RDCHelloTests* suite) {
     EXPECT_EQ(roles.size(), 2u);
 }
 
-// Ring closure reaches the role observer too (the shootout coordinator claim
-// reads getChainRole() when onRingClosed fires), and the latch opening on a
-// broken loop reports the fallback role.
+// Ring closure reaches the role observer too (the shootout reads getChainRole()
+// to decide who draws), and the latch opening on a broken loop reports the
+// fallback role.
 inline void rdcChainRoleChangeReportsRingLatch(RDCHelloTests* suite) {
     std::vector<ChainRole> roles;
     suite->rdc.setOnChainRoleChange([&](ChainRole role) { roles.push_back(role); });

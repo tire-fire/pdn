@@ -61,8 +61,7 @@ public:
     /// Head-only: fires when the chain member roster changes; read the new
     /// roster via getChainMembers().
     using MembershipChangeCallback = std::function<void()>;
-    /// Head-only: fires when the ring fully closes. This is the shootout
-    /// coordinator claim point.
+    /// Head-only: fires when the ring fully closes.
     using RingClosedCallback = std::function<void()>;
 
     /// Inert until initialize().
