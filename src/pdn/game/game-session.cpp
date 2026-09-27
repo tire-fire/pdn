@@ -3,7 +3,6 @@
 #include "device/drivers/peer-comms-types.hpp"
 #include "device/drivers/logger.hpp"
 #include <array>
-#include <cstring>
 
 const std::array<GameSession::PacketRoute, 6>& GameSession::packetRoutes() {
     // kRoleAnnounce is absent deliberately: ChainDuelManager's ReliableChannel
