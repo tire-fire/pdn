@@ -559,12 +559,9 @@ void ShootoutManager::primeMatchManagerForMatch() {
 }
 
 void ShootoutManager::drawBracket() {
-    // Only the device that draws leaves the proposal. A member has nothing to show
-    // until a bracket reaches it and the bracket is what moves it, so no state
-    // means "in the reveal holding nothing" — and a device still in the proposal
-    // is still confirming, which is what gets it counted if the head moves to it.
-    // Whoever heads the ring at this moment draws, and authoring the bracket is
-    // what makes it the coordinator for the rest of the tournament.
+    // Head-gated, and a no-op elsewhere for the reason the declaration gives.
+    // Authoring the bracket is what makes this device the coordinator for the rest of
+    // the tournament, so the head is read here rather than remembered.
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     if (!headsRing() || selfMac == nullptr) return;
     phase = Phase::BRACKET_REVEAL;
@@ -846,15 +843,10 @@ void ShootoutManager::sync() {
         }
     }
 
-    // The ending is the one word a member cannot do without, and giving up on it is
-    // an abandonment nobody notices: this device is already terminal, so it
-    // waits on nothing while the member waits forever. So the ending repeats for as
-    // long as the winner is on screen, the way the roster and the confirms repeat —
-    // a member that missed the fan-out is repaired by the next copy, whatever the
-    // loss count, with no wall clock and no abandonment to notice.
     // Gated on the ring, which the break guard above deliberately does not do for a
     // terminal phase: ENDED outlives the ring it was won on, so without this the
-    // coordinator keeps broadcasting to a ring that no longer exists.
+    // coordinator keeps broadcasting to a ring that no longer exists. Why it repeats
+    // at all is on reannounceEnding's declaration.
     if (phase == Phase::ENDED && isCoordinator() && rdc != nullptr && rdc->isInRing() &&
         endingRebroadcastTimer.expired()) {
         reannounceEnding();
@@ -1012,10 +1004,9 @@ void ShootoutManager::onMatchStartReceived(
     // frame, so without this it would drag the member back into a bout it
     // already finished and re-prime it against an opponent it already beat.
     if (isEliminated(duelistA) || isEliminated(duelistB)) return;
-    // A repeat of the match in progress. Deduplicated by content rather than
-    // against a remembered seqId: the coordinator's counter is a byte that wraps
-    // and restarts at 1 when it reboots, so a repeat and a fresh frame can carry
-    // the same id.
+    // A repeat of the match in progress. Deduplicated by content rather than against a
+    // remembered seqId, for the reason onBracketReceived gives about the sender's
+    // counter.
     if (isSameMatch(matchIndex, duelistA, duelistB)) return;
     currentMatchIndex = matchIndex;
     memcpy(currentDuelistA.data(), duelistA, 6);
