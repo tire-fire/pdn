@@ -189,16 +189,11 @@ public:
     /// announcing themselves to the head, which nothing here drives or can
     /// predict. Raise it if a venue's larger rings are seen to fill slower.
     static constexpr unsigned long SHORT_ROSTER_TIMEOUT_MS = 3000;
-    /// How long the ring waits for a roster to finish confirming. Paced for
-    /// players, not for frames: a ring detection can serve a name for a device that
-    /// has already left, and that name answers nothing, so the absence of a confirm
-    /// is the only signal there is: the ring is intact, so the break guard stays
-    /// quiet, and a peer's own ABORT is the only other way out. SHORT_ROSTER_TIMEOUT_MS
-    /// gets there faster when the roster is below the floor, which is the case it
-    /// watches; this one is for a roster above it that still cannot complete.
-    /// Generous because the cost of firing early is a screen the players can retry,
-    /// and the cost of never firing is a ring that hangs until someone unplugs it.
-    /// Gated on a local confirm, so an untouched ring sits idle instead of looping.
+    /// How long a device waits, from its own press, for a roster above the floor to
+    /// finish confirming. Ring detection can serve a name for a device that has
+    /// already left, and that name answers nothing, so an absent confirm is the only
+    /// signal there is. Paced for players: firing early costs a screen they can
+    /// retry, never firing costs a ring that hangs until someone unplugs it.
     static constexpr unsigned long PROPOSAL_TIMEOUT_MS = 60000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
@@ -264,7 +259,7 @@ private:
     // of its confirmed set, so none of the three subsumes the others.
     bool isRingMember(const uint8_t* mac) const;
     void broadcastCommand(const uint8_t* packet, size_t len);
-    void broadcastToRing(const std::vector<std::array<uint8_t, 6>>& peers,
+    void broadcastToRing(const std::vector<std::array<uint8_t, 6>>& audience,
                          const uint8_t* packet, size_t len);
     /// The peers a ring fan-out is addressed to: `peers` without this device.
     std::vector<std::array<uint8_t, 6>> peersExcludingSelf(

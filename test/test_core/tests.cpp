@@ -1918,6 +1918,7 @@ TEST_F(ShootoutManagerTests, theFirstPressOnAnOldRingStartsATournament) { theFir
 TEST_F(ShootoutManagerTests, aRosterCompletingOnTheBoundTickDrawsRatherThanAborting) { aRosterCompletingOnTheBoundTickDrawsRatherThanAborting(this); }
 TEST_F(ShootoutManagerTests, aMembersProposalGiveUpStaysLocal) { aMembersProposalGiveUpStaysLocal(this); }
 TEST_F(ShootoutManagerTests, theEndingStopsRepeatingOnceTheRingOpens) { theEndingStopsRepeatingOnceTheRingOpens(this); }
+TEST_F(ShootoutManagerTests, aBracketFromOurCoordinatorThatOmitsUsIsRefused) { aBracketFromOurCoordinatorThatOmitsUsIsRefused(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }

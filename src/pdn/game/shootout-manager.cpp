@@ -120,13 +120,15 @@ void ShootoutManager::broadcastCommand(const uint8_t* packet, size_t len) {
                                     PktType::kShootoutCommand, packet, len);
 }
 
-void ShootoutManager::broadcastToRing(const std::vector<std::array<uint8_t, 6>>& peers,
+void ShootoutManager::broadcastToRing(const std::vector<std::array<uint8_t, 6>>& audience,
                                       const uint8_t* packet, size_t len) {
     // A ring fan-out is one broadcast frame, not one unicast per member: the
     // ESP-NOW peer table holds 20 entries, so unicast addressing cannot reach a
     // ring larger than that at all, whereas the broadcast slot is registered once
     // at radio init. Receivers must drop commands naming MACs outside their own ring.
-    if (peersExcludingSelf(peers).empty()) return;
+    // `audience` is never addressed — it is only asked whether it holds anyone but
+    // this device, because a fan-out naming nobody must send nothing.
+    if (peersExcludingSelf(audience).empty()) return;
     broadcastCommand(packet, len);
 }
 
@@ -391,7 +393,8 @@ bool ShootoutManager::shouldEnterProposal() const {
 }
 
 void ShootoutManager::sendRingClosed() {
-    // seqId 0: receipt is idempotent and deduped by phase, so no ack round-trip.
+    // seqId 0: a repeat of this attempt lands on a member that already holds the
+    // same roster under the same identity, so there is nothing for an ack to add.
     std::vector<uint8_t> packet = buildMacListPacket(ShootoutCmd::RING_CLOSED, 0, ringMembers);
     broadcastToRing(ringMembers, packet.data(), packet.size());
     ringClosedRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
@@ -753,18 +756,18 @@ void ShootoutManager::sync() {
     }
 
     if (phase == Phase::PROPOSAL) {
-        // ringMembers is the tournament's roster, and it only grows. Ring detection
-        // can drop a member for a moment while the cables stay put, and drawing off
-        // the pruned roster would seat a bracket without it; a member that really
-        // leaves breaks the ring, which aborts. A member whose announce to the head
-        // was still in flight at closure appears here for the first time. Grown once
-        // per tick, so everything below asks the same roster the same question.
-        for (const auto& m : getLoopMembers()) {
-            if (!containsMac(ringMembers, m.data())) ringMembers.push_back(m);
-        }
-        // Read once into a local: abortTournament() below empties ringMembers, and
-        // everything after it should be answering the roster as this tick found it.
-        const std::vector<std::array<uint8_t, 6>> members = ringMembers;
+        // Within one attempt the roster only grows here: ring detection can drop a
+        // member for a moment while the cables stay put, and drawing off the pruned
+        // roster would seat a bracket without it, while a member that really leaves
+        // breaks the ring, which aborts. A member whose announce to the head was
+        // still in flight at closure appears for the first time. An announcement
+        // replaces it outright — onRingClosedReceived, for a repeat of this attempt
+        // or the arrival of another — so "only grows" is true of this loop, not of
+        // the field. Grown once per tick, so everything below asks one roster.
+        for (const std::array<uint8_t, 6>& m : getLoopMembers()) addMac(ringMembers, m.data());
+        // Bound once, and every question below is asked of it before any branch that
+        // clears it runs.
+        const std::vector<std::array<uint8_t, 6>>& members = ringMembers;
         const bool everyoneIn = allMembersConfirmed(members);
         const uint8_t* selfMac = wirelessManager->getMacAddress();
         const bool confirmedLocally = selfMac != nullptr && hasConfirmed(selfMac);
@@ -773,8 +776,9 @@ void ShootoutManager::sync() {
         // paces the repeats. Two things need announcing: a member that missed the
         // closure frame is sitting in Idle with no roster to poll, and a device that
         // ring detection settled on only after the proposal started has never sent
-        // one at all — hence the never-armed case. No ack needed: a repeat is a
-        // no-op once the member is out of Phase::IDLE.
+        // one at all — hence the never-armed case. No ack needed: a repeat of this
+        // attempt hands a member the same roster it already has, and a repeat from
+        // another attempt is how it learns of that one.
         const bool neverAnnounced = !ringClosedRebroadcastTimer.isRunning();
         if (headsRing() && (neverAnnounced ||
                             (ringClosedRebroadcastTimer.expired() && !everyoneIn))) {
@@ -803,11 +807,9 @@ void ShootoutManager::sync() {
             abortTournament();
         } else if (everyoneIn) {
             // Ahead of the bound below, which can come due on this same tick: a
-            // complete roster is the answer that wait was waiting for.
-            // Drawing is a standing duty of whoever heads the ring, not a chance
-            // taken on the CONFIRM that completes the proposal: the head can be
-            // unlatched for the tick that completes it, and the device that is head
-            // by the next tick draws instead. drawBracket() is a no-op elsewhere.
+            // complete roster is the answer that wait was waiting for. Polled rather
+            // than taken on the CONFIRM that completes the roster, for the reason
+            // drawBracket() gives.
             drawBracket();
         } else if (proposalTimer.expired()) {
             // Nothing else ends this wait: a roster name for a device that has left
@@ -827,7 +829,7 @@ void ShootoutManager::sync() {
     }
 
     // The ending is the one word a member cannot do without, and giving up on it is
-    // the one abandonment nobody notices: this device is already terminal, so it
+    // an abandonment nobody notices: this device is already terminal, so it
     // waits on nothing while the member waits forever. So the ending repeats for as
     // long as the winner is on screen, the way the roster and the confirms repeat —
     // a member that missed the fan-out is repaired by the next copy, whatever the

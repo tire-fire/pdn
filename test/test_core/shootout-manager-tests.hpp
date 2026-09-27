@@ -397,10 +397,13 @@ inline void ringHeadLoopMembersComeFromRdcRoster(ShootoutManagerTests* suite) {
     EXPECT_TRUE(ringShootout.getLoopMembers().empty());
 }
 
-// BRACKET is a broadcast, so an unrelated ring's tournament reaches us. Without
-// this guard a foreign bracket reaches the coordinator check, and anything that
-// displaces a live tournament's anchor leaves it in a state nothing recovers:
-// phase still MATCH_IN_PROGRESS, and a bracket whose author nobody now matches.
+// BRACKET is a broadcast, so an unrelated ring's tournament reaches us. This frame
+// is refused twice over — the roster check sees it does not name us, and the author
+// check sees the sender is not our coordinator — so the case pins the outcome rather
+// than either guard: nothing displaces a live tournament's anchor, which would leave
+// it where nothing recovers it, phase still MATCH_IN_PROGRESS and a bracket whose
+// author nobody matches. aBracketFromOurCoordinatorThatOmitsUsIsRefused is the case
+// that reaches the roster check on its own.
 inline void foreignRingBracketLeavesLiveTournamentIntact(ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x09, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> me = {0x09, 0, 0, 0, 0, 0};
@@ -419,8 +422,7 @@ inline void foreignRingBracketLeavesLiveTournamentIntact(ShootoutManagerTests* s
     ASSERT_TRUE(suite->shootout->isCoordinator());
     ASSERT_EQ(suite->shootout->getBracket().size(), 2u);
 
-    // A stranger ring sharing no member with our bracket. Its MAC is arbitrary:
-    // the refusal comes from the author check, not from any MAC comparison.
+    // A stranger ring sharing no member with our bracket.
     std::array<uint8_t, 6> stranger = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> strangerPeer = {0x02, 0, 0, 0, 0, 0};
     suite->shootout->onBracketReceived(stranger.data(), {stranger, strangerPeer}, 7);
@@ -1104,6 +1106,31 @@ inline void theEndingStopsRepeatingOnceTheRingOpens(ShootoutManagerTests* suite)
 
     EXPECT_EQ(endingFrames, afterOpen)
         << "the ending kept broadcasting to a ring that no longer exists";
+}
+
+// A bracket from our own coordinator that leaves this device out. Every other case
+// that looked like coverage for the roster check was shadowed by the author check,
+// because all 33 of them offer a bracket this device is in — so this is the one input
+// that reaches it: a coordinator that dropped us from its next tournament.
+inline void aBracketFromOurCoordinatorThatOmitsUsIsRefused(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, other}, 1);
+    ASSERT_EQ(suite->shootout->getBracket().size(), 3u);
+
+    suite->shootout->onBracketReceived(coord.data(), {coord, other, third}, 2);
+
+    EXPECT_EQ(suite->shootout->getBracket().size(), 3u);
+    EXPECT_TRUE(suite->shootout->getBracket()[0] == me)
+        << "this device joined a bracket it is not in, so it can never be paired";
 }
 
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
