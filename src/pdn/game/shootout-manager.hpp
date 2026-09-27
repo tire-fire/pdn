@@ -85,9 +85,6 @@ public:
     bool shouldEnterProposal() const;
 
     void startProposal();
-    /// Leaves the tournament on this device alone, with no fan-out: ABORTED for the
-    /// player, and nothing said to the ring.
-    void giveUpLocally();
     void confirmLocal();
     void sync();
     // [cmd, seqId, 4-byte attempt identity] — every kShootoutCommand frame opens with
@@ -245,6 +242,16 @@ private:
     // Writes [cmd, seqId, attempt identity] into `out`, which must hold at least
     // kHeaderLength bytes. Returns where the payload starts.
     size_t writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const;
+    // The body MATCH_START and MATCH_RESULT share, after the header: two MACs and the
+    // match index. One declaration, so the builders, the decoder and the abandon
+    // path's re-read of a kept frame cannot drift apart on an offset.
+    struct MatchPairBody {
+        uint8_t a[6];
+        uint8_t b[6];
+        uint8_t index;
+    } __attribute__((packed));
+    static_assert(sizeof(MatchPairBody) == 13,
+                  "MATCH_START/MATCH_RESULT bodies are 13 bytes on the wire");
     // [header, 6-byte winner]. `out` must hold kHeaderLength + 6 bytes. Shared by
     // the reliable fan-out and the unreliable repeat, which differ only in seqId.
     void buildTournamentEndPacket(uint8_t* out, const uint8_t* winner, uint8_t seqId) const;
@@ -272,6 +279,12 @@ private:
     void broadcastToRing(const std::vector<std::array<uint8_t, 6>>& audience,
                          const uint8_t* packet, size_t len);
     /// The peers a ring fan-out is addressed to: `peers` without this device.
+    // Leaves the tournament on this device alone, with no fan-out: ABORTED for the
+    // player, and nothing said to the ring.
+    void giveUpLocally();
+    // Whether a fan-out to `peers` would reach anyone. The only question
+    // broadcastToRing asks of its argument, and it needs no vector to answer it.
+    bool anyPeerBesidesSelf(const std::vector<std::array<uint8_t, 6>>& peers) const;
     std::vector<std::array<uint8_t, 6>> peersExcludingSelf(
         const std::vector<std::array<uint8_t, 6>>& peers) const;
     void sendReliablyToPeers(const std::vector<std::array<uint8_t, 6>>& peers,

@@ -38,10 +38,6 @@ void MatchManager::setShootoutManager(ShootoutManager* shootoutManager) {
     shootoutManager_ = shootoutManager;
 }
 
-ShootoutManager* MatchManager::getShootoutManager() const {
-    return shootoutManager_;
-}
-
 bool MatchManager::currentMatchIsShootout() const {
     return activeDuelState.match.has_value() &&
            strncmp(activeDuelState.match->getMatchId(), kShootoutMatchIdPrefix,

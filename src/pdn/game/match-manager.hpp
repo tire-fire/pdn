@@ -148,7 +148,6 @@ public:
     // so same-role duels in the bracket proceed. Injected by GameSession after
     // both managers are built.
     void setShootoutManager(ShootoutManager* shootoutManager);
-    ShootoutManager* getShootoutManager() const;
 
     void listenForMatchEvents(const QuickdrawCommand& command);
 

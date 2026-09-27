@@ -128,12 +128,21 @@ void ShootoutManager::broadcastToRing(const std::vector<std::array<uint8_t, 6>>&
     // at radio init. Receivers must drop commands naming MACs outside their own ring.
     // `audience` is never addressed — it is only asked whether it holds anyone but
     // this device, because a fan-out naming nobody must send nothing.
-    if (peersExcludingSelf(audience).empty()) return;
+    if (!anyPeerBesidesSelf(audience)) return;
     broadcastCommand(packet, len);
 }
 
 // Who a ring fan-out is addressed to. One spelling, asked by both send paths, so
 // a device can never end up owing an ack to itself.
+bool ShootoutManager::anyPeerBesidesSelf(
+    const std::vector<std::array<uint8_t, 6>>& peers) const {
+    const uint8_t* selfMac = wirelessManager->getMacAddress();
+    for (const std::array<uint8_t, 6>& m : peers) {
+        if (selfMac == nullptr || memcmp(m.data(), selfMac, 6) != 0) return true;
+    }
+    return false;
+}
+
 std::vector<std::array<uint8_t, 6>> ShootoutManager::peersExcludingSelf(
     const std::vector<std::array<uint8_t, 6>>& peers) const {
     const uint8_t* selfMac = wirelessManager->getMacAddress();
@@ -178,32 +187,32 @@ void ShootoutManager::onCommandAbandoned(uint8_t seqId, const uint8_t* targetMac
     // keeps retrying a silent recipient for over a second — so by the time it is
     // given up on, currentDuelist* may already name a different match, and a
     // finished tournament still names its final pair.
-    // [header, macA(6), macB(6), matchIndex] — the body MATCH_START and MATCH_RESULT
-    // share, read here off the frame the resender kept rather than decoded again.
-    const size_t macA = kHeaderLength;
-    const size_t macB = kHeaderLength + 6;
-    const size_t idx = kHeaderLength + 12;
-    const size_t pairLen = kHeaderLength + 13;
+    // Read off the frame the resender kept, through the same declaration the builders
+    // write and the decoder reads.
+    const size_t pairLen = kHeaderLength + sizeof(MatchPairBody);
+    const MatchPairBody* pair =
+        len >= pairLen ? reinterpret_cast<const MatchPairBody*>(packet + kHeaderLength)
+                       : nullptr;
 
     bool blocksTournament = false;
     if (cmd == ShootoutCmd::BRACKET) {
         blocksTournament = containsMac(bracket, targetMac) && !isEliminated(targetMac);
-    } else if (cmd == ShootoutCmd::MATCH_START && len >= pairLen) {
-        blocksTournament = memcmp(&packet[macA], targetMac, 6) == 0 ||
-                           memcmp(&packet[macB], targetMac, 6) == 0;
-    } else if (cmd == ShootoutCmd::MATCH_RESULT && len >= pairLen &&
+    } else if (cmd == ShootoutCmd::MATCH_START && pair != nullptr) {
+        blocksTournament = memcmp(pair->a, targetMac, 6) == 0 ||
+                           memcmp(pair->b, targetMac, 6) == 0;
+    } else if (cmd == ShootoutCmd::MATCH_RESULT && pair != nullptr &&
                memcmp(targetMac, coordinatorMac.data(), 6) == 0) {
         // Nothing on the coordinator's side notices a result that never lands: it
         // advances only on receiving one, so it waits with nothing owed. This
         // device is the one that knows, so it says so again. One attempt per
         // bout — a second abandonment cannot distinguish a lost result from a
         // lost ack, and guessing is worse than staying quiet.
-        if (matchResultResentIndex != static_cast<int>(packet[idx])) {
-            matchResultResentIndex = static_cast<int>(packet[idx]);
+        if (matchResultResentIndex != static_cast<int>(pair->index)) {
+            matchResultResentIndex = static_cast<int>(pair->index);
             LOG_W(TAG, "coordinator missed our match result; re-sending");
             // Off the abandoned frame, not current state: a fan-out outlives the
             // match it announced, so by now currentDuelist* can name another one.
-            sendMatchResultToPeers(&packet[macA], &packet[macB], packet[idx]);
+            sendMatchResultToPeers(pair->a, pair->b, pair->index);
         }
     }
 
@@ -655,13 +664,15 @@ void ShootoutManager::onShootoutFrame(const uint8_t* fromMac, const uint8_t* dat
             break;
         }
         case ShootoutCmd::MATCH_START:
-            if (payloadLen >= 13)
-                onMatchStartReceived(fromMac, payload, payload + 6, payload[12], seqId);
+        case ShootoutCmd::MATCH_RESULT: {
+            if (payloadLen < sizeof(MatchPairBody)) break;
+            const MatchPairBody* pair = reinterpret_cast<const MatchPairBody*>(payload);
+            if (cmd == ShootoutCmd::MATCH_START)
+                onMatchStartReceived(fromMac, pair->a, pair->b, pair->index, seqId);
+            else
+                onMatchResultReceived(pair->a, pair->b, pair->index, seqId, fromMac);
             break;
-        case ShootoutCmd::MATCH_RESULT:
-            if (payloadLen >= 13)
-                onMatchResultReceived(payload, payload + 6, payload[12], seqId, fromMac);
-            break;
+        }
         case ShootoutCmd::TOURNAMENT_END:
             if (payloadLen >= 6) onTournamentEndReceived(fromMac, payload, seqId);
             break;
@@ -866,13 +877,12 @@ ShootoutManager::getCurrentMatchPair() const {
 }
 
 std::vector<uint8_t> ShootoutManager::buildMatchStartPacket(int matchIndex) const {
-    std::vector<uint8_t> packet(kHeaderLength);
+    std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
     writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId);
-    const std::array<uint8_t, 6>& a = currentRound[matchIndex * 2];
-    const std::array<uint8_t, 6>& b = currentRound[matchIndex * 2 + 1];
-    packet.insert(packet.end(), a.begin(), a.end());
-    packet.insert(packet.end(), b.begin(), b.end());
-    packet.push_back(static_cast<uint8_t>(matchIndex));
+    MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
+    memcpy(pair->a, currentRound[matchIndex * 2].data(), 6);
+    memcpy(pair->b, currentRound[matchIndex * 2 + 1].data(), 6);
+    pair->index = static_cast<uint8_t>(matchIndex);
     return packet;
 }
 
@@ -1046,11 +1056,12 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
 
 std::vector<uint8_t> ShootoutManager::buildMatchResultPacket(
     const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) const {
-    std::vector<uint8_t> packet(kHeaderLength);
+    std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
     writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId);
-    packet.insert(packet.end(), winner, winner + 6);
-    packet.insert(packet.end(), loser, loser + 6);
-    packet.push_back(matchIndex);
+    MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
+    memcpy(pair->a, winner, 6);
+    memcpy(pair->b, loser, 6);
+    pair->index = matchIndex;
     return packet;
 }
 
@@ -1177,8 +1188,7 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the
     // winner appears sends ABORT to devices already showing the result.
     if (isTerminalPhase() || phase == Phase::IDLE) return;
-    resetToIdle();
-    phase = Phase::ABORTED;
+    giveUpLocally();
 }
 
 std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const {

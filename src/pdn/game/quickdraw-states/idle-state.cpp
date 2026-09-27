@@ -20,6 +20,7 @@ Idle::Idle(const GameContext& ctx)
     this->matchManager = ctx.matchManager;
     this->player = ctx.player;
     this->chainDuelManager = ctx.chainDuelManager;
+    this->shootoutManager = ctx.shootoutManager;
 }
 
 Idle::~Idle() {
@@ -73,8 +74,7 @@ void Idle::onStateLoop(PDN* pdn) {
         displayIsDirty = false;
     }
 
-    ShootoutManager* shMgr = matchManager->getShootoutManager();
-    bool shootoutActive = shMgr && shMgr->active();
+    bool shootoutActive = shootoutManager != nullptr && shootoutManager->active();
     if (!shootoutActive && isConnected()) {
         if (chainDuelManager->canInitiateMatch()) {
             if (!matchInitialized) {

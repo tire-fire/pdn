@@ -1223,6 +1223,52 @@ inline void aHeadCountsAConfirmFromAMemberDetectionHasPruned(ShootoutManagerTest
         << "the head refused the confirm it was still waiting on";
 }
 
+// The re-send after an abandonment reads the frame the resender kept, which is the
+// one place in the class that decodes a body it did not just build. Nothing else
+// notices if those offsets are wrong: the re-send still goes out, still under a fresh
+// seqId, just naming whatever bytes happen to sit where the MACs should be. So this
+// pins the content — the repeat must name the same bout as the frame it repeats.
+inline void theMatchResultResendNamesTheSameBout(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x03, 0, 0, 0, 0, 0};
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+
+    std::vector<std::vector<uint8_t>> results;
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
+        .WillByDefault(testing::Invoke(
+            [&results](const uint8_t*, PktType, const uint8_t* data, const size_t len) {
+                if (len > 0 && data[0] == static_cast<uint8_t>(ShootoutCmd::MATCH_RESULT))
+                    results.emplace_back(data, data + len);
+                return 1;
+            }));
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    for (const auto& m : {coord, me, other}) suite->shootout->onConfirmReceived(m.data());
+    suite->shootout->onBracketReceived(coord.data(), {coord, me, other}, 1);
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
+    suite->shootout->reportLocalWin();
+    ASSERT_FALSE(results.empty()) << "the result never went out";
+    const std::vector<uint8_t> first = results.front();
+
+    // The coordinator never acks, so the fan-out abandons and this device says it again.
+    suite->runRetryRounds(Resender::MAX_RETRIES + 1);
+
+    ASSERT_GT(results.size(), 1u) << "the coordinator's silence produced no re-send";
+    const std::vector<uint8_t>& resent = results.back();
+    ASSERT_EQ(resent.size(), first.size());
+    const size_t body = ShootoutManager::kHeaderLength;
+    EXPECT_EQ(memcmp(&resent[body], &first[body], first.size() - body), 0)
+        << "the re-send named a different bout than the frame it repeats";
+    EXPECT_EQ(memcmp(&resent[body], me.data(), 6), 0) << "the winner moved";
+    EXPECT_EQ(memcmp(&resent[body + 6], other.data(), 6), 0) << "the loser moved";
+}
+
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
 // gated on a local confirm for exactly that reason, and the proposal bound has to
 // be too: without it an untouched latched ring aborts, shows ABORTED for two
