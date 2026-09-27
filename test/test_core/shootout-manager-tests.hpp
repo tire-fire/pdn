@@ -836,11 +836,100 @@ inline void aHeadRefusesARivalHeadsBracket(ShootoutManagerTests* suite) {
         << "a rival head's bracket replaced the bracket already fanned out";
 }
 
-// The winner never hearing it won: the coordinator's TOURNAMENT_END fan-out is
-// abandoned against one member, the coordinator is already ENDED so nothing is
-// owed, and that member sits between matches with a result it will never get. The
-// source names this stall where the fan-out is built. Bounded like every other wait.
-inline void aTournamentThatStopsMovingGivesUp(ShootoutManagerTests* suite) {
+// A tournament this device has already finished stays finished. ENDED deliberately
+// keeps the bracket and the anchor standing, so without a terminal guard the strand
+// recovery fires on the winner's own screen and zeroes the winner it is showing.
+// Reachable: the ring head is eliminated early, misses the ending, gives up, and
+// re-proposes — announcing a ring while everyone else is still on the standings.
+inline void aRingClosureLeavesAFinishedTournamentAlone(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
+    suite->shootout->onTournamentEndReceived(coord.data(), me.data(), 2);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
+    ASSERT_EQ(suite->shootout->getTournamentWinner(), me);
+
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord});
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
+        << "a finished tournament was retired out from under the standings screen";
+    EXPECT_EQ(suite->shootout->getTournamentWinner(), me)
+        << "the winner this device is showing was zeroed";
+}
+
+// A ring nobody has touched must sit idle, not flash. The short-roster abort is
+// gated on a local confirm for exactly that reason, and the proposal bound has to
+// be too: without it an untouched latched ring aborts, shows ABORTED for two
+// seconds, returns to Idle, re-proposes off its standing latch, and does it again
+// forever.
+inline void anUntouchedRingSitsIdleRatherThanFlashing(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->headRingServing({peer});
+    suite->shootout->startProposal();
+
+    // Nobody presses anything, for twice the window.
+    suite->fakeClock->advance(2 * ShootoutManager::PROPOSAL_TIMEOUT_MS);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)
+        << "an untouched ring gave up and will now flash ABORTED once a minute";
+}
+
+// The ending is the one word a member cannot do without, and giving up on it is the
+// one abandonment nobody notices: the coordinator is already terminal, so it waits
+// on nothing while the member waits forever. So the ending repeats for as long as
+// this device shows it, the way the roster and the confirms already repeat.
+inline void theEndingRepeatsWhileTheWinnerIsShown(ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> opMac = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    // Counted by seqId, which is what separates the two senders: the reliable
+    // fan-out carries a real one, the repeat carries 0 and is owed no ack.
+    int reliableEndings = 0;
+    int repeatedEndings = 0;
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
+        .WillByDefault(testing::Invoke(
+            [&](const uint8_t*, PktType, const uint8_t* data, const size_t) {
+                if (data[0] == static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END)) {
+                    if (data[1] == 0) repeatedEndings++; else reliableEndings++;
+                }
+                return 1;
+            }));
+
+    suite->driveToFirstMatch({me, opMac});
+    suite->shootout->reportLocalWin();
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
+    ASSERT_GT(reliableEndings, 0) << "the ending never went out at all";
+    ASSERT_EQ(repeatedEndings, 0) << "a repeat went out before the window elapsed";
+
+    suite->fakeClock->advance(ShootoutManager::kConfirmRebroadcastMs + 1);
+    suite->shootout->sync();
+
+    EXPECT_GT(repeatedEndings, 0)
+        << "the ending did not repeat while the winner was still on screen";
+    // Unreliable on purpose: a reliable repeat would hold the terminal fan-out open
+    // and, with it, every later proposal.
+    EXPECT_EQ(suite->shootout->getPendingAckCount(0), 0u)
+        << "the repeat is owed an ack, so it can outlive the tournament";
+}
+
+// A member that missed the fan-out is repaired by the next copy, whatever the loss
+// count — no wall clock, and nothing has to notice the abandonment.
+inline void aMemberThatMissedTheEndingTakesTheRepeat(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
@@ -853,71 +942,18 @@ inline void aTournamentThatStopsMovingGivesUp(ShootoutManagerTests* suite) {
     suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
     suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
     suite->shootout->onMatchResultReceived(coord.data(), third.data(), 0, 3, coord.data());
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES)
+        << "the member is mid-tournament, waiting on an ending it never heard";
 
-    // Production ticks every loop, so the wait is armed on the tick the phase
-    // changed and read out on a later one.
-    suite->shootout->sync();
-    suite->fakeClock->advance(ShootoutManager::TOURNAMENT_STALL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
+    // seqId 0 marks the unreliable repeat, so no ack is owed for it.
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .Times(0);
+    suite->shootout->onTournamentEndReceived(coord.data(), coord.data(), 0);
 
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
-        << "a member waits forever on a coordinator that has already finished";
-}
-
-// The bound has to outlast a real match, which is the mistake that made the last
-// one fire mid-duel: countdown 3x2000 + DUEL_TIMEOUT 4000 + grace 900 is ~10.9s
-// before a duelist even reports, and the result fan-out follows. Absolute numbers,
-// so shortening the bound below the duel ceiling fails here.
-inline void aRealDuelOutlastsNothing(ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->joinRelayedRing(coord.data());
-    suite->shootout->setLoopMembersForTest({coord, me, third});
-    suite->shootout->startProposal();
-    suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
-    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
-    suite->shootout->sync();
-
-    // A bout in which neither duelist draws, then the result making its way here.
-    suite->fakeClock->advance(6000 + 4000 + 900 + 2000);
-    suite->shootout->sync();
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
-        << "the bound cut a match short that was still legitimately being played";
-}
-
-// A spectator that misses a result but hears the next match start stays in the same
-// phase, so the bound has to re-arm on the match changing too. Three matches at the
-// full duel length outlast it otherwise, and it would abort a healthy tournament.
-inline void backToBackMatchesEachGetTheirOwnWait(ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> fourth = {0x04, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->joinRelayedRing(coord.data());
-    suite->shootout->setLoopMembersForTest({coord, me, third, fourth});
-    suite->shootout->startProposal();
-    suite->shootout->onBracketReceived(coord.data(), {me, coord, third, fourth}, 1);
-
-    // Each match runs the full no-draw length, and this device never hears a result,
-    // so its phase never leaves MATCH_IN_PROGRESS.
-    for (uint8_t idx = 0; idx < 3; ++idx) {
-        suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(),
-                                              idx, static_cast<uint8_t>(10 + idx));
-        suite->shootout->sync();
-        suite->fakeClock->advance(6000 + 4000 + 900);
-        suite->shootout->sync();
-        ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
-            << "aborted during match " << static_cast<int>(idx);
-    }
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
+        << "a member never learned the tournament it was in had finished";
+    EXPECT_EQ(suite->shootout->getTournamentWinner(), coord);
 }
 
 // A coordinator whose own ABORT was lost re-enters the proposal and announces the

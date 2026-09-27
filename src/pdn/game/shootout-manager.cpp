@@ -257,6 +257,7 @@ void ShootoutManager::resetTournamentState() {
     // phase mid-window would carry a part-aged timer into the next one.
     shortRosterDebounce.reset();
     proposalTimer.invalidate();
+    endingRebroadcastTimer.invalidate();
     reportedLocalWin = false;
     names.clear();
     currentMatchIndex = -1;
@@ -312,12 +313,14 @@ void ShootoutManager::onRingClosedReceived(
     if (!containsMac(members, selfMac)) return;
     const uint8_t* head = ringHead();
     const bool fromOurHead = head != nullptr && memcmp(fromMac, head, 6) == 0;
-    // Our own head is announcing a ring, so it is running no tournament: both
-    // senders of RING_CLOSED are gated to a device that has none. The bracket this
-    // device holds is from a tournament that no longer exists, and the coordinator
-    // it is waiting on has already moved on. Giving up is local — an ABORT fan-out
+    // Our own head is announcing a ring, and neither sender of RING_CLOSED holds a
+    // bracket — onRingClosed refuses anything but IDLE, and the repeat lives inside
+    // the proposal block, which runs with the bracket already cleared. So a bracket
+    // held here is from a tournament that head is no longer in. A finished one stays
+    // finished: ENDED keeps the bracket standing on purpose, and retiring it would
+    // zero the winner this device is showing. Giving up is local — an ABORT fan-out
     // would reach that fresh proposal, which takes one from any ring member.
-    if (fromOurHead && !bracket.empty()) {
+    if (fromOurHead && !bracket.empty() && !isTerminalPhase()) {
         LOG_W(TAG, "our head announced a ring; retiring the bracket we hold");
         resetToIdle();
         phase = Phase::ABORTED;
@@ -643,10 +646,13 @@ void ShootoutManager::sync() {
             // and a fan-out naming nobody sends nothing.
             LOG_E(TAG, "ring has too few participants to draw a bracket; aborting");
             abortTournament();
-        } else if (proposalTimer.expired()) {
+        } else if (confirmedLocally && proposalTimer.expired()) {
             // Nothing else ends this wait: a roster name for a device that has left
-            // answers nothing, the ring is intact so the break guard stays quiet,
-            // and the roster is above the floor the short-roster abort watches.
+            // answers nothing, and the ring is intact so the break guard stays quiet.
+            // Gated on a local confirm for the same reason the short-roster abort is —
+            // an untouched ring has to sit idle rather than flash ABORTED, and since
+            // this device re-proposes off its own standing latch, aborting one it
+            // never joined would loop forever.
             LOG_E(TAG, "no roster this ring can complete; aborting");
             abortTournament();
         } else if (everyoneIn) {
@@ -658,28 +664,14 @@ void ShootoutManager::sync() {
         }
     }
 
-    // A tournament that stopped moving. Every phase past the proposal is a wait on
-    // the coordinator's next word, and the reachable way to wait forever is a
-    // fan-out abandoned against this device while the coordinator has already moved
-    // on — TOURNAMENT_END most sharply, since nothing is owed once it is ENDED and
-    // the member never learns it won. Armed off what this device is waiting for
-    // changing, rather than at each transition site, so a phase cannot be added
-    // without a bound.
-    const bool waitingOnTheTournament = phase == Phase::BRACKET_REVEAL ||
-                                        phase == Phase::MATCH_IN_PROGRESS ||
-                                        phase == Phase::BETWEEN_MATCHES;
-    if (phase != lastPhaseSeen || currentMatchIndex != lastStallMatchIndex) {
-        lastPhaseSeen = phase;
-        lastStallMatchIndex = currentMatchIndex;
-        if (waitingOnTheTournament) {
-            stallTimer.setTimer(TOURNAMENT_STALL_TIMEOUT_MS);
-        } else {
-            stallTimer.invalidate();
-        }
-    }
-    if (waitingOnTheTournament && stallTimer.expired()) {
-        LOG_E(TAG, "tournament stopped moving; aborting");
-        abortTournament();
+    // The ending is the one word a member cannot do without, and giving up on it is
+    // the one abandonment nobody notices: this device is already terminal, so it
+    // waits on nothing while the member waits forever. So the ending repeats for as
+    // long as the winner is on screen, the way the roster and the confirms repeat —
+    // a member that missed the fan-out is repaired by the next copy, whatever the
+    // loss count, with no wall clock and no abandonment to notice.
+    if (phase == Phase::ENDED && isCoordinator() && endingRebroadcastTimer.expired()) {
+        reannounceEnding();
     }
 
     // Every command family retransmits and abandons here; which one gave up is
@@ -961,14 +953,27 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     sendReliablyToPeers(confirmedSet, lastTournamentEndSeqId, packet, sizeof(packet));
     terminalFanOutSeqId = lastTournamentEndSeqId;
     memcpy(tournamentWinner.data(), winner, 6);
+    endingRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
     phase = Phase::ENDED;
+}
+
+void ShootoutManager::reannounceEnding() {
+    // seqId 0: unreliable on purpose. A reliable repeat would hold the terminal
+    // fan-out open, and TerminalFanOutsDone holds every later proposal behind it.
+    uint8_t packet[8];
+    packet[0] = static_cast<uint8_t>(ShootoutCmd::TOURNAMENT_END);
+    packet[1] = 0;
+    memcpy(&packet[2], tournamentWinner.data(), 6);
+    broadcastToRing(confirmedSet, packet, sizeof(packet));
+    endingRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
 }
 
 void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
                                               const uint8_t* winner, uint8_t seqId) {
     if (!isFromCoordinator(fromMac)) return;
-    // Admitted on the sender, so the ack is owed however the payload reads.
-    sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
+    // Admitted on the sender, so the ack is owed however the payload reads — except
+    // for seqId 0, which marks the unreliable repeat nobody is waiting on.
+    if (seqId != 0) sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
     if (!containsMac(bracket, winner)) {
         LOG_E(TAG, "TOURNAMENT_END from coordinator names a winner outside our bracket");
         return;

@@ -1909,9 +1909,10 @@ TEST_F(ShootoutManagerTests, aNewHeadMidProposalStillRebroadcastsTheRoster) { aN
 TEST_F(ShootoutManagerTests, joiningTheNextBracketClearsTheLastOnesEliminations) { joiningTheNextBracketClearsTheLastOnesEliminations(this); }
 TEST_F(ShootoutManagerTests, aProposalNobodyCanCompleteGivesUp) { aProposalNobodyCanCompleteGivesUp(this); }
 TEST_F(ShootoutManagerTests, aSlowButCompletingProposalIsNotCutShort) { aSlowButCompletingProposalIsNotCutShort(this); }
-TEST_F(ShootoutManagerTests, aTournamentThatStopsMovingGivesUp) { aTournamentThatStopsMovingGivesUp(this); }
-TEST_F(ShootoutManagerTests, backToBackMatchesEachGetTheirOwnWait) { backToBackMatchesEachGetTheirOwnWait(this); }
-TEST_F(ShootoutManagerTests, aRealDuelOutlastsNothing) { aRealDuelOutlastsNothing(this); }
+TEST_F(ShootoutManagerTests, aRingClosureLeavesAFinishedTournamentAlone) { aRingClosureLeavesAFinishedTournamentAlone(this); }
+TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
+TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
+TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }
 TEST_F(ShootoutManagerTests, aHeadRefusesARivalHeadsBracket) { aHeadRefusesARivalHeadsBracket(this); }
 TEST_F(ShootoutManagerTests, ourHeadAnnouncingARingRetiresTheBracketWeHold) { ourHeadAnnouncingARingRetiresTheBracketWeHold(this); }
 TEST_F(ShootoutManagerTests, retiringAStrandedBracketSendsNothing) { retiringAStrandedBracketSendsNothing(this); }

@@ -174,16 +174,8 @@ public:
     /// intact, and the roster is above the floor SHORT_ROSTER_TIMEOUT_MS watches.
     /// Generous because the cost of firing early is a screen the players can retry,
     /// and the cost of never firing is a ring that hangs until someone unplugs it.
+    /// Gated on a local confirm, so an untouched ring sits idle instead of looping.
     static constexpr unsigned long PROPOSAL_TIMEOUT_MS = 60000;
-    /// How long a device waits on the coordinator's next word before giving up on a
-    /// tournament that has stopped moving. Every phase past the proposal is such a
-    /// wait, and the reachable case is a TOURNAMENT_END fan-out abandoned against
-    /// one member: the coordinator is already ENDED so nothing is owed, and that
-    /// member would otherwise sit with a result it never gets. Well clear of the
-    /// longest legitimate wait, which is a match nobody draws in — countdown 3x2000
-    /// plus DUEL_TIMEOUT 4000 plus DUEL_RESULT_GRACE_PERIOD 900 (quickdraw-states.hpp)
-    /// is ~10.9s before a duelist reports, and the result fan-out follows.
-    static constexpr unsigned long TOURNAMENT_STALL_TIMEOUT_MS = 30000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
     // Packet-validation clamp on an inbound BRACKET's member count. A ring can
@@ -279,13 +271,8 @@ private:
     std::vector<std::array<uint8_t, 6>> currentRound;
 
     SimpleTimer confirmRebroadcastTimer;
+    SimpleTimer endingRebroadcastTimer;
     SimpleTimer proposalTimer;
-    SimpleTimer stallTimer;
-    // What the stall bound was last armed against. The match index is part of it
-    // because a device that misses a result but hears the next match start stays in
-    // MATCH_IN_PROGRESS, and that is progress the bound has to credit.
-    Phase lastPhaseSeen = Phase::IDLE;
-    int lastStallMatchIndex = -1;
 
     uint8_t lastBracketSeqId = 0;
     uint8_t nextShootoutSeqId = 1;
@@ -354,4 +341,8 @@ private:
     uint8_t terminalFanOutSeqId = 0;
 
     void sendTournamentEndToPeers(const uint8_t* winner);
+    /// Puts the ending back on the air as an unreliable broadcast, seqId 0. Repeats
+    /// while this device shows the winner, so a member that missed the fan-out is
+    /// repaired by the next copy whatever the loss count.
+    void reannounceEnding();
 };
