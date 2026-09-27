@@ -128,21 +128,12 @@ void ShootoutManager::broadcastToRing(const std::vector<std::array<uint8_t, 6>>&
     // at radio init. Receivers must drop commands naming MACs outside their own ring.
     // `audience` is never addressed — it is only asked whether it holds anyone but
     // this device, because a fan-out naming nobody must send nothing.
-    if (!anyPeerBesidesSelf(audience)) return;
+    if (peersExcludingSelf(audience).empty()) return;
     broadcastCommand(packet, len);
 }
 
-// Who a ring fan-out is addressed to. One spelling, asked by both send paths, so
-// a device can never end up owing an ack to itself.
-bool ShootoutManager::anyPeerBesidesSelf(
-    const std::vector<std::array<uint8_t, 6>>& peers) const {
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
-    for (const std::array<uint8_t, 6>& m : peers) {
-        if (selfMac == nullptr || memcmp(m.data(), selfMac, 6) != 0) return true;
-    }
-    return false;
-}
-
+// Who a ring fan-out is addressed to, and the only question broadcastToRing asks of
+// its argument, so a device can never end up owing an ack to itself.
 std::vector<std::array<uint8_t, 6>> ShootoutManager::peersExcludingSelf(
     const std::vector<std::array<uint8_t, 6>>& peers) const {
     const uint8_t* selfMac = wirelessManager->getMacAddress();
@@ -278,6 +269,7 @@ void ShootoutManager::resetTournamentState() {
     proposalTimer.invalidate();
     endingRebroadcastTimer.invalidate();
     reportedLocalWin = false;
+    abortedByRing = false;
     names.clear();
     currentMatchIndex = -1;
     memset(tournamentWinner.data(), 0, 6);
@@ -301,9 +293,11 @@ void ShootoutManager::startProposal() {
     // than carrying what the last one accumulated, which could name a device unplugged
     // since and stall the proposal above the short-roster floor. Off a head it reads
     // back the roster RING_CLOSED delivered, since that is what detection serves to a
-    // member — so this is the one seeding point either way.
-    // Announcing it is sync()'s: on the first tick after an abort, which clears the
-    // rebroadcast timer, and within the second otherwise.
+    // member — so one line serves both roles. An announcement replaces the roster
+    // outright later; this is only where an attempt starts from.
+    // Announcing it is sync()'s, on the first tick in PROPOSAL: resetToIdle invalidates
+    // the rebroadcast timer, and startProposal is the only way into the phase, so that
+    // tick always finds nothing announced yet.
     ringMembers = getLoopMembers();
     LOG_W(TAG, "proposing to members=%zu", ringMembers.size());
     phase = Phase::PROPOSAL;
@@ -342,11 +336,9 @@ void ShootoutManager::onRingClosedReceived(
     if (!containsMac(members, selfMac)) return;
     const uint8_t* head = ringHead();
     const bool fromOurHead = head != nullptr && memcmp(fromMac, head, 6) == 0;
-    // News of another attempt is only news from a device on the ring this device is
-    // on. A device unplugged from our ring goes on repeating a roster that still
-    // names us for as long as it keeps proposing, and that roster must not speak for
-    // the tournament we joined after leaving it. An idle device is the exception
-    // below: with no ring of its own to check against, the roster is all it has.
+    // News of another attempt is only news from a device on the ring this device is on.
+    // An idle device is the exception below: with no ring of its own to check against,
+    // the roster is all it has.
     const bool fromOurRing = containsMac(getLoopMembers(), fromMac);
     // A ring forming under an attempt this device is not in, announced by a device
     // on the ring this device is on. Whoever announced it is running no tournament:
@@ -362,6 +354,8 @@ void ShootoutManager::onRingClosedReceived(
     //     tournament is alive, because it is the one running it.
     //   not terminal — ENDED keeps the bracket standing on purpose, and retiring it
     //     would zero the winner on screen.
+    //   holding a bracket — with none there is nothing to retire, and the branch below
+    //     is the one that wants the roster.
     // Giving up is local: an ABORT fan-out would reach that fresh proposal, which
     // takes one from any ring member.
     if (epoch != tournamentEpoch && fromOurRing && !bracket.empty() &&
@@ -380,6 +374,10 @@ void ShootoutManager::onRingClosedReceived(
     // latch that ring detection has since resolved away.
     if (phase == Phase::IDLE ||
         (phase == Phase::PROPOSAL && epoch != tournamentEpoch && fromOurRing)) {
+        // A press belongs to the attempt it was made in: carrying it across would have
+        // the head count this device and draw it into a bracket the player never
+        // pressed for.
+        if (epoch != tournamentEpoch) forgetAttemptConsent();
         ringMembers = members;
         tournamentEpoch = epoch;
         LOG_W(TAG, "ring closed by %s members=%zu attempt=%08x", MacToString(fromMac),
@@ -392,6 +390,7 @@ void ShootoutManager::onRingClosedReceived(
     // identity to be corrected, and leaving it would stamp every later CONFIRM with
     // something the head drops.
     if (phase == Phase::PROPOSAL && fromOurHead) {
+        if (epoch != tournamentEpoch) forgetAttemptConsent();
         ringMembers = members;
         tournamentEpoch = epoch;
     }
@@ -409,11 +408,23 @@ bool ShootoutManager::shouldEnterProposal() const {
 
 void ShootoutManager::sendRingClosed() {
     // seqId 0: the repeat is the recovery, so there is nothing for an ack to add. It
-    // carries whatever the roster holds now, which is the point — see the two cases
-    // sync() names.
+    // carries whatever the roster holds at the moment it goes out, which is how a
+    // member that joined detection late is named at all.
     std::vector<uint8_t> packet = buildMacListPacket(ShootoutCmd::RING_CLOSED, 0, ringMembers);
     broadcastToRing(ringMembers, packet.data(), packet.size());
     ringClosedRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
+}
+
+void ShootoutManager::forgetAttemptConsent() {
+    // Everything the local press bought for the attempt this device is leaving. The
+    // phase stays as it is: the device is still in a proposal, just a different one's,
+    // and dropping to IDLE here would strand it in a mounted state it cannot confirm
+    // from. The bound goes with the consent — a clock armed in the last attempt would
+    // otherwise fire seconds into this one.
+    confirmedSet.clear();
+    names.clear();
+    proposalTimer.invalidate();
+    shortRosterDebounce.reset();
 }
 
 void ShootoutManager::giveUpLocally() {
@@ -450,9 +461,8 @@ void ShootoutManager::confirmLocal() {
 
 void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name) {
     if (phase != Phase::PROPOSAL) return;
-    // Fast path: already-confirmed peers bypass the loop-membership scan (this
-    // is the common case during 1Hz rebroadcasts — the gate only needs to
-    // block first-time stray CONFIRMs from outside the ring).
+    // Already-confirmed peers skip the roster test: the gate is only there to block a
+    // first-time CONFIRM from outside the ring, and the 1Hz repeats are the common case.
     // ringMembers, not the live detection: this is the same roster the completion
     // gate counts against, and on a head the two differ by construction — the grown
     // roster keeps a member detection pruned for a moment, so reading the live one
@@ -784,8 +794,9 @@ void ShootoutManager::sync() {
         // the field. Grown once per tick, so every gate in this block asks one roster —
         // sendLocalConfirm below is the exception, and it only asks whether anyone else
         // is there at all.
-        // Head-only: off a head, ring detection serves back this same roster, so the
-        // loop would copy it to ask nothing.
+        // Head-only. Off a head, ring detection serves back this same roster, so there
+        // is nothing to grow and the copy would be spent asking nothing; a member's
+        // roster arrives whole in RING_CLOSED instead.
         if (headsRing())
             for (const std::array<uint8_t, 6>& m : getLoopMembers()) addMac(ringMembers, m.data());
         // Bound once, and every question below is asked of it before any branch that
@@ -953,10 +964,20 @@ void ShootoutManager::onBracketReceived(
     // BRACKET is a broadcast, so a tournament two rings away lands here too, and
     // the roster is the only thing that says whether this one is ours.
     if (!containsMac(offeredBracket, selfMac)) return;
-    // A tournament this device has already ended stays ended. The coordinator can
-    // still be retransmitting to some other silent member, and nothing below
-    // tells that retransmit from a new bracket.
-    if (isTerminalPhase()) return;
+    // A tournament this device has already *finished* stays finished: ENDED keeps its
+    // bracket and its winner standing on purpose, and nothing below tells a retransmit
+    // aimed at some other silent member from a new bracket. ABORTED deliberately does
+    // not refuse. A device that gave up is still named in the head's bracket, because
+    // it confirmed before its bound fired, so a silent refusal here makes the head's
+    // fan-out abandon on this device and end the tournament for the whole ring — and
+    // the retry span is shorter than the ABORTED screen, so every copy lands inside
+    // the window. Re-joining is what the comment below already promises.
+    if (phase == Phase::ENDED) return;
+    // A device the ring aborted stays out, though. The coordinator that sent that
+    // ABORT cannot have drawn afterwards, so a bracket arriving now is a retransmit of
+    // the very bracket the abort retired — the opposite of the case above, where the
+    // head is still running and this device left on its own clock.
+    if (phase == Phase::ABORTED && abortedByRing) return;
     // The bracket to take is the one the ring's head drew, and once one is held its
     // author runs the tournament: a head that moves mid-tournament hands nothing
     // over. A refusal is silent, and the sender reads that as a member gone quiet:
@@ -1189,6 +1210,9 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // winner appears sends ABORT to devices already showing the result.
     if (isTerminalPhase() || phase == Phase::IDLE) return;
     giveUpLocally();
+    // After the reset, which clears it: this is what keeps a stale bracket retry from
+    // pulling us back into the tournament the ring just abandoned.
+    abortedByRing = true;
 }
 
 std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const {

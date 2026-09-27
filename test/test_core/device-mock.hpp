@@ -246,7 +246,7 @@ private:
 
 /// Stand-in RDC reporting a latched ring plus a head roster without driving the HELLO
 /// stack; only the chain surface ShootoutManager reads is overridden. Adds the head's
-/// side to the sibling above: a role and a roster it serves. The head MAC comes from
+/// side to the base above: a role and a roster it serves. The head MAC comes from
 /// the base, and "on a ring" is the base's head-MAC test or the RING role, since a
 /// latched head has no head to report.
 class FakeRingRemoteDeviceCoordinator : public FakeRemoteDeviceCoordinator {

@@ -62,8 +62,9 @@ public:
     /// GameSession and the multi-device test fixture both route through this, so a
     /// frame the hardware would reject is rejected in the tests too.
     void onShootoutFrame(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
-    /// Decodes one kShootoutCommandAck frame. The seqId alone names the frame, so
-    /// the command byte is only range-checked, never dispatched on.
+    /// Decodes one kShootoutCommandAck frame. The command byte is not read at all:
+    /// the resender matches an ack on its channel, seqId and sender, so the seqId
+    /// alone names the frame being answered.
     void onShootoutAckFrame(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
     /// Inbound RING_CLOSED: records `members` as the ring roster, which a member
     /// gates confirms against, and `epoch` as the attempt they belong to. A member
@@ -78,7 +79,8 @@ public:
     /// Minted by the head when its proposal opens and adopted from RING_CLOSED by
     /// everyone else, so it names one attempt fleet-wide without any agreement step.
     /// A device that comes to head the ring mid-proposal announces under the one it
-    /// adopted rather than minting a second.
+    /// adopted rather than minting a second — or under 0, if it entered the proposal off
+    /// its own closure and never adopted one.
     uint32_t getTournamentEpoch() const { return tournamentEpoch; }
     /// True while this device sits on a closed ring and no tournament is running:
     /// the Idle -> ShootoutProposal transition predicate.
@@ -193,8 +195,10 @@ public:
     /// How long a device waits, from its own press, for a roster above the floor to
     /// finish confirming. Ring detection can serve a name for a device that has
     /// already left, and that name answers nothing, so an absent confirm is the only
-    /// signal there is. Paced for players: firing early costs a screen they can
-    /// retry, never firing costs a ring that hangs until someone unplugs it.
+    /// signal there is. On a member this is the only bound there is, at any roster
+    /// size: the short-roster path below is head-gated. Paced for players: firing early
+    /// costs a screen they can retry, never firing costs a ring that hangs until
+    /// someone unplugs it.
     static constexpr unsigned long PROPOSAL_TIMEOUT_MS = 60000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
@@ -220,6 +224,9 @@ private:
     // everything else, and it has to survive that.
     uint32_t tournamentEpoch = 0;
     uint8_t epochCounter = 0;
+    // Why this device is in ABORTED: the ring told it to, rather than its own bound
+    // running out. Only the first kind refuses a bracket that names it.
+    bool abortedByRing = false;
 
     void primeMatchManagerForMatch();
     // resetToIdle() clears the ring roster on top of this and invalidates the
@@ -230,14 +237,13 @@ private:
 
     uint8_t nextSeqId();
     // Mints the identity of a new attempt: the low three bytes of this device's MAC
-    // name the announcer, the counter names the attempt. Distinct across every attempt
-    // of one power cycle and across devices, with no agreement step — two devices that
-    // close rings at the same moment must not mint the same value. The counter restarts
-    // at boot, so a rebooted device does repeat its earlier values; that is survivable
-    // only because a reboot drops HELLOs past HELLO_SILENT_LINK_MS, which opens the
-    // ring and aborts every follower on the break guard before the rebooted device can
-    // announce anything. Never returns 0, which means "no attempt", unless this device
-    // has no MAC to name itself with.
+    // name the announcer, the counter names the attempt. The counter is a byte, so a
+    // device repeats a value every 256 attempts and again after a reboot — which is
+    // enough, because the value only ever has to tell the attempt a device is holding
+    // from a newer one, never from one 256 attempts ago. Two devices that close rings
+    // at the same moment cannot collide, which is the part that needs no agreement
+    // step. Never returns 0, which means "no attempt", unless this device has no MAC to
+    // name itself with.
     uint32_t mintEpoch();
     // Writes the header into `out`, which must hold at least kHeaderLength bytes.
     // Returns where the payload starts.
@@ -278,13 +284,12 @@ private:
     void broadcastCommand(const uint8_t* packet, size_t len);
     void broadcastToRing(const std::vector<std::array<uint8_t, 6>>& audience,
                          const uint8_t* packet, size_t len);
-    /// The peers a ring fan-out is addressed to: `peers` without this device.
     // Leaves the tournament on this device alone, with no fan-out: ABORTED for the
     // player, and nothing said to the ring.
     void giveUpLocally();
-    // Whether a fan-out to `peers` would reach anyone. The only question
-    // broadcastToRing asks of its argument, and it needs no vector to answer it.
-    bool anyPeerBesidesSelf(const std::vector<std::array<uint8_t, 6>>& peers) const;
+    // Drops what the local press bought for one attempt, leaving the phase alone.
+    void forgetAttemptConsent();
+    /// The peers a ring fan-out is addressed to: `peers` without this device.
     std::vector<std::array<uint8_t, 6>> peersExcludingSelf(
         const std::vector<std::array<uint8_t, 6>>& peers) const;
     void sendReliablyToPeers(const std::vector<std::array<uint8_t, 6>>& peers,
@@ -403,6 +408,9 @@ private:
     void sendTournamentEndToPeers(const uint8_t* winner);
     /// Puts the ending back on the air as an unreliable broadcast, seqId 0. Repeats
     /// while this device shows the winner, so a member that missed the fan-out is
-    /// repaired by the next copy whatever the loss count.
+    /// repaired by the next copy whatever the loss count. Repetition rather than a
+    /// watchdog because giving up on the ending is the abandonment nobody notices: the
+    /// sender is already terminal, so it waits on nothing while the member waits
+    /// forever.
     void reannounceEnding();
 };
