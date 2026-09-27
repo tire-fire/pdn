@@ -224,6 +224,12 @@ public:
         }
         nodes[headIndex]->shootout->setLoopMembersForTest(roster);
         nodes[headIndex]->shootout->onRingClosed();
+        // The head announces on its first tick in the proposal, not on the closure
+        // edge: the announcement carries the attempt identity startProposal mints,
+        // so nothing can go out before then. Members join off that announcement.
+        if (nodes[headIndex]->shootout->shouldEnterProposal())
+            nodes[headIndex]->shootout->startProposal();
+        nodes[headIndex]->shootout->sync();
         deliverAllPackets();
         for (auto& n : nodes) {
             if (n->shootout->shouldEnterProposal()) n->shootout->startProposal();

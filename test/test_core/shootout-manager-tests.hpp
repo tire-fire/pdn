@@ -266,12 +266,19 @@ inline void ringClosedAnnouncesRosterToMembers(ShootoutManagerTests* suite) {
     ASSERT_EQ(suite->rdc.getChainRole(), ChainRole::RING);
     EXPECT_TRUE(suite->shootout->shouldEnterProposal());
 
+    // The roster goes out on the head's first tick in the proposal, which is where
+    // the attempt it belongs to is minted.
+    suite->shootout->startProposal();
+    suite->shootout->sync();
+
     EXPECT_EQ(memcmp(destination.data(), MockDevice::BROADCAST_MAC, 6), 0);
-    ASSERT_EQ(frame.size(), 3u + 6u * members.size());
+    const size_t count = ShootoutManager::kHeaderLength;
+    ASSERT_EQ(frame.size(), count + 1u + 6u * members.size());
     EXPECT_EQ(frame[0], static_cast<uint8_t>(ShootoutCmd::RING_CLOSED));
-    EXPECT_EQ(frame[2], members.size());
+    EXPECT_EQ(frame[count], members.size());
     for (size_t i = 0; i < members.size(); i++) {
-        EXPECT_EQ(memcmp(&frame[3 + 6 * i], members[i].data(), 6), 0) << "member " << i;
+        EXPECT_EQ(memcmp(&frame[count + 1 + 6 * i], members[i].data(), 6), 0)
+            << "member " << i;
     }
 }
 
@@ -281,20 +288,14 @@ inline void ringClosedAnnouncesRosterToMembers(ShootoutManagerTests* suite) {
 inline void ringClosureFromCoordinatorAnnouncesRing(ShootoutManagerTests* suite) {
     suite->shootout->setLoopMembersForTest({{0x01, 0, 0, 0, 0, 0}, {0x02, 0, 0, 0, 0, 0}});
 
-    // The RING_CLOSED announce, not shouldEnterProposal(): that polls the RDC role
-    // and so reads true from the latch alone, with or without this manager ever
-    // hearing about it. The announce is what this test can see, since nothing here
-    // calls startProposal(), which re-makes it.
-    std::vector<uint8_t> frame;
+    // The roster snapshot, not shouldEnterProposal(): that polls the RDC role and so
+    // reads true from the latch alone, with or without this manager ever hearing
+    // about it. The snapshot is what the callback leaves behind, and it is only
+    // visible once the ring opens again — while the role is RING the roster is read
+    // live from the RDC, so a manager that never subscribed would look identical.
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
-        .WillByDefault(testing::Invoke(
-            [&frame](const uint8_t*, PktType, const uint8_t* data, const size_t len) {
-                if (len > 0 && data[0] == static_cast<uint8_t>(ShootoutCmd::RING_CLOSED)) {
-                    frame.assign(data, data + len);
-                }
-                return 1;
-            }));
+        .WillByDefault(testing::Return(1));
 
     // Head a chain out of OUTPUT, then take our own MAC back on INPUT — the only
     // local evidence that a loop closed.
@@ -303,10 +304,12 @@ inline void ringClosureFromCoordinatorAnnouncesRing(ShootoutManagerTests* suite)
     suite->connectJackTo(suite->inJack, upstream, suite->localMac);
     ASSERT_TRUE(suite->rdc.isInRing());
 
-    // The announce only; entering PROPOSAL is the app's transition, driven off
-    // shouldEnterProposal() on a later tick.
-    ASSERT_FALSE(frame.empty());
-    EXPECT_EQ(frame[0], static_cast<uint8_t>(ShootoutCmd::RING_CLOSED));
+    suite->shootout->setLoopMembersForTest({});
+    suite->openRingOnJacks();
+    ASSERT_FALSE(suite->rdc.isInRing());
+
+    EXPECT_EQ(suite->shootout->getLoopMembers().size(), 2u)
+        << "the manager kept no roster from the closure, so it never heard of one";
 }
 
 // A member is never the head that latches the ring, so it learns closure twice
@@ -326,11 +329,11 @@ inline void ringClosedBroadcastPromotesOnlyItsOwnMembers(ShootoutManagerTests* s
     ASSERT_TRUE(suite->rdc.isInRing());
 
     std::array<uint8_t, 6> alienCoord = {0xA1, 0, 0, 0, 0, 0};
-    suite->shootout->onRingClosedReceived(alienCoord.data(), {alienCoord, other});
+    suite->shootout->onRingClosedReceived(alienCoord.data(), {alienCoord, other}, 0xA1000001u);
     EXPECT_FALSE(suite->shootout->shouldEnterProposal());
     EXPECT_TRUE(suite->shootout->getLoopMembers().empty());
 
-    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other});
+    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other}, 0xC6000001u);
     EXPECT_TRUE(suite->shootout->shouldEnterProposal());
     EXPECT_EQ(suite->shootout->getLoopMembers().size(), 3u);
 
@@ -357,7 +360,7 @@ inline void openRingRefusesProposalDespiteLatchedRoster(ShootoutManagerTests* su
         .WillByDefault(testing::Return(selfMac));
 
     suite->joinRelayedRing();
-    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other});
+    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other}, 0xC6000001u);
     ASSERT_TRUE(suite->shootout->shouldEnterProposal());
     ASSERT_EQ(suite->shootout->getLoopMembers().size(), 3u)
         << "the roster never arrived; nothing below would be testing anything";
@@ -616,15 +619,15 @@ inline void memberTakesItsHeadsRosterDuringTheProposal(ShootoutManagerTests* sui
         .WillByDefault(testing::Return(1));
 
     suite->followRingHead(head);
-    suite->shootout->onRingClosedReceived(head.data(), {me});
+    suite->shootout->onRingClosedReceived(head.data(), {me}, 0xC6000001u);
     suite->shootout->startProposal();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
 
-    suite->shootout->onRingClosedReceived(other.data(), {me, other});
+    suite->shootout->onRingClosedReceived(other.data(), {me, other}, 0x03000001u);
     EXPECT_EQ(suite->shootout->getLoopMembers().size(), 1u)
         << "a member took its roster from a device that is not its head";
 
-    suite->shootout->onRingClosedReceived(head.data(), {me, head, other});
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
     EXPECT_EQ(suite->shootout->getLoopMembers().size(), 3u)
         << "a member kept a roster its head's rebroadcast replaces";
 }
@@ -667,7 +670,7 @@ inline void aNewHeadMidProposalStillRebroadcastsTheRoster(ShootoutManagerTests* 
             }));
 
     suite->followRingHead(head);
-    suite->shootout->onRingClosedReceived(head.data(), {me, head});
+    suite->shootout->onRingClosedReceived(head.data(), {me, head}, 0xC6000001u);
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
     ASSERT_EQ(ringClosedFrames, 0) << "a member announced a ring it did not close";
@@ -797,33 +800,6 @@ inline void aHeadRefusesARivalHeadsBracket(ShootoutManagerTests* suite) {
         << "a rival head's bracket replaced the bracket already fanned out";
 }
 
-// The evidence is "the device running our tournament has moved on", and that device
-// is our coordinator, not whoever heads the ring now. 74641d76 decoupled those two
-// on purpose: a head that moves mid-tournament hands nothing over, so the new head
-// announcing a ring says nothing about the tournament we are still in.
-inline void aNewHeadsRingClosureLeavesOurCoordinatorsTournamentAlone(
-    ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> newHead = {0x02, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->followRingHead(coord);
-    suite->shootout->setLoopMembersForTest({coord, me, newHead});
-    suite->shootout->startProposal();
-    suite->shootout->onBracketReceived(coord.data(), {me, coord, newHead}, 1);
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
-
-    // Ring detection settles the head elsewhere; the coordinator keeps running.
-    suite->memberRdc.ringHeadMac = newHead;
-    suite->shootout->onRingClosedReceived(newHead.data(), {me, coord, newHead});
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
-        << "a head that never ran our tournament retired it anyway";
-    EXPECT_EQ(suite->shootout->getCoordinatorMac(), coord);
-}
-
 // A tournament this device has already finished stays finished. ENDED deliberately
 // keeps the bracket and the anchor standing, so without a terminal guard the strand
 // recovery fires on the winner's own screen and zeroes the winner it is showing.
@@ -843,12 +819,165 @@ inline void aRingClosureLeavesAFinishedTournamentAlone(ShootoutManagerTests* sui
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
     ASSERT_EQ(suite->shootout->getTournamentWinner(), me);
 
-    suite->shootout->onRingClosedReceived(coord.data(), {me, coord});
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord}, 0xC6000001u);
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED)
         << "a finished tournament was retired out from under the standings screen";
     EXPECT_EQ(suite->shootout->getTournamentWinner(), me)
         << "the winner this device is showing was zeroed";
+}
+
+// Every frame carries the identity of the attempt it belongs to, so a device can
+// say which tournament it is looking at rather than guessing from the sender. The
+// mint is once per attempt: two attempts on the same head must not collide, or a
+// frame left over from the first would be taken for one of the second.
+inline void eachAttemptGetsItsOwnIdentity(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->headRingServing({other});
+    suite->shootout->setLoopMembersForTest({me, other});
+    suite->shootout->startProposal();
+    const uint32_t first = suite->shootout->getTournamentEpoch();
+    EXPECT_NE(first, 0u) << "a head proposed without minting an attempt identity";
+
+    suite->shootout->abortTournament();
+    suite->shootout->startProposal();
+
+    EXPECT_NE(suite->shootout->getTournamentEpoch(), first)
+        << "the second attempt reused the first one's identity";
+}
+
+// The announcement repeats until everyone has confirmed, and every repeat carries
+// the same identity: a member that re-adopted a fresh one on each repeat would keep
+// changing which tournament it thinks it is in, and its own confirms would be
+// refused by a head that had moved on from the identity it confirmed under.
+inline void theRingClosedRepeatCarriesTheSameIdentity(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->headRingServing({other});
+    suite->shootout->setLoopMembersForTest({me, other});
+    suite->shootout->startProposal();
+    const uint32_t minted = suite->shootout->getTournamentEpoch();
+    suite->shootout->sync();
+
+    suite->fakeClock->advance(ShootoutManager::kConfirmRebroadcastMs + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getTournamentEpoch(), minted)
+        << "the repeat minted a second identity for one attempt";
+}
+
+// A member takes the attempt identity from the announcement and keeps it through the
+// proposal it then enters. startProposal resets the tournament, and resetting the
+// identity away would leave the member unable to tell its own attempt's frames from
+// a dead one's — which is the whole job.
+inline void aMemberKeepsTheIdentityItAdoptedThroughTheProposal(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord}, 0xA1B2C301u);
+    ASSERT_EQ(suite->shootout->getTournamentEpoch(), 0xA1B2C301u);
+
+    suite->shootout->startProposal();
+
+    EXPECT_EQ(suite->shootout->getTournamentEpoch(), 0xA1B2C301u)
+        << "entering the proposal discarded the attempt this device had joined";
+}
+
+// The strand this mechanism exists for, and a reversal of what 74641d76 pinned. Our
+// coordinator aborted and its ABORT was lost, so it will never speak again; ring
+// detection has settled the head on a third device, which announces a fresh attempt.
+// Nothing about the sender says our tournament is over — the old rule keyed on the
+// coordinator, and the coordinator is exactly the device that cannot tell us. Its
+// scenario and this one are the same frames in the same order, so the two cannot
+// both hold: a live tournament ending early is recoverable, and a device waiting on
+// a dead one is not.
+// Model evidence: StrandedMemberRecovers is exhaustively clean over 810,389 states
+// with this check and is violated with the sender-keyed one.
+inline void aForeignAttemptsRingClosureRetiresTheTournamentWeHold(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> newHead = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(coord);
+    suite->shootout->setLoopMembersForTest({coord, me, newHead});
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord, newHead}, 0xA1B2C301u);
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, newHead}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    suite->memberRdc.ringHeadMac = newHead;
+    suite->shootout->onRingClosedReceived(newHead.data(), {me, coord, newHead}, 0xA1B2C302u);
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a fresh attempt formed around this device and it kept waiting on a dead one";
+    EXPECT_TRUE(suite->shootout->getBracket().empty())
+        << "the dead attempt's bracket survived the retirement";
+    EXPECT_EQ(suite->shootout->getTournamentEpoch(), 0xA1B2C302u)
+        << "retiring left the old identity behind, so the next repeat retires again";
+}
+
+// The coordinator is the one device that knows its own tournament is alive, because
+// it is the one running it. A ring announcement from anyone else says nothing to it,
+// and retiring here would kill a live tournament from the inside. No sender-keyed
+// rule could express this, since the sender is not the coordinator either way.
+inline void aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure(
+    ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->driveToFirstMatch({me, other});
+    ASSERT_TRUE(suite->shootout->isCoordinator());
+    const ShootoutManager::Phase running = suite->shootout->getPhase();
+
+    suite->shootout->onRingClosedReceived(other.data(), {me, other},
+                                          suite->shootout->getTournamentEpoch() + 1);
+
+    EXPECT_EQ(suite->shootout->getPhase(), running)
+        << "the coordinator retired the tournament it was itself running";
+    EXPECT_FALSE(suite->shootout->getBracket().empty());
+}
+
+// A frame left over from an attempt that is over. The decoder drops it before any
+// handler sees it, because every handler would otherwise act on it: this is what
+// stops a retrying MATCH_START from a dead tournament starting a match in a live one.
+inline void aFrameFromADeadAttemptIsDropped(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(other);
+    suite->shootout->onRingClosedReceived(other.data(), {me, other}, 0xA1B2C301u);
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(other.data(), {me, other}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    // MATCH_START for the same two devices, stamped with an attempt this device is
+    // not in. Built by hand rather than through a builder, because the builder only
+    // ever stamps the attempt the sender is in.
+    std::vector<uint8_t> frame = {static_cast<uint8_t>(ShootoutCmd::MATCH_START), 7,
+                                  0xA1, 0xB2, 0xC3, 0x02};
+    frame.insert(frame.end(), me.begin(), me.end());
+    frame.insert(frame.end(), other.begin(), other.end());
+    frame.push_back(0);
+    suite->shootout->onShootoutFrame(other.data(), frame.data(), frame.size());
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
+        << "a match from a dead attempt started in this one";
 }
 
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
@@ -967,7 +1096,7 @@ inline void ourHeadAnnouncingARingRetiresTheBracketWeHold(ShootoutManagerTests* 
                          testing::Pointee(static_cast<uint8_t>(ShootoutCmd::ABORT)), testing::_))
         .Times(0);
 
-    suite->shootout->onRingClosedReceived(head.data(), {me, head});
+    suite->shootout->onRingClosedReceived(head.data(), {me, head}, 0xC6000001u);
     suite->shootout->sync();
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
@@ -988,7 +1117,7 @@ inline void aStrangersRingClosureLeavesOurBracketAlone(ShootoutManagerTests* sui
     suite->shootout->startProposal();
     suite->shootout->onBracketReceived(head.data(), {me, head}, 1);
 
-    suite->shootout->onRingClosedReceived(stranger.data(), {me, stranger});
+    suite->shootout->onRingClosedReceived(stranger.data(), {me, stranger}, 0x03000001u);
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
         << "a bracket was dropped on a ring closure from outside our own ring";
@@ -1097,8 +1226,8 @@ inline void laggingRosterDoesNotRunSoloTournament(ShootoutManagerTests* suite) {
     suite->shootout->setLoopMembersForTest({me, peer});
     suite->fakeClock->advance(ShootoutManager::kConfirmRebroadcastMs + 100);
     suite->shootout->sync();
-    ASSERT_EQ(lastRingClosed.size(), 3u + 6u * 2u);
-    EXPECT_EQ(memcmp(&lastRingClosed[9], peer.data(), 6), 0);
+    ASSERT_EQ(lastRingClosed.size(), ShootoutManager::kHeaderLength + 1u + 6u * 2u);
+    EXPECT_EQ(memcmp(&lastRingClosed[ShootoutManager::kHeaderLength + 7], peer.data(), 6), 0);
 
     suite->shootout->onConfirmReceived(peer.data());
     suite->shootout->sync();
@@ -1129,6 +1258,7 @@ inline void ringClosedReannouncesWhileMembersUnconfirmed(ShootoutManagerTests* s
     suite->shootout->setLoopMembersForTest({me, peer});
     suite->shootout->onRingClosed();
     suite->shootout->startProposal();
+    suite->shootout->sync();
     ASSERT_EQ(ringClosedFrames, 1);
 
     for (int i = 0; i < 30; i++) {
@@ -1216,6 +1346,7 @@ inline void coordinatorBroadcastsBracketOnAdvance(ShootoutManagerTests* suite) {
 
     suite->shootout->onRingClosed();
     suite->shootout->startProposal();
+    suite->shootout->sync();
     for (auto& m : members) suite->shootout->onConfirmReceived(m.data());
     suite->shootout->confirmLocal();
     // Leaves the draw's own fan-out alone in the list: the announce and this
@@ -2421,7 +2552,7 @@ inline void aBracketDoesNotReopenAnEndedTournament(ShootoutManagerTests* suite) 
 
     suite->followRingHead(coord);
     suite->shootout->setLoopMembersForTest({me, coord});
-    suite->shootout->onRingClosedReceived(coord.data(), {me, coord});
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord}, 0xC6000001u);
     suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
 
@@ -2751,7 +2882,7 @@ inline void aFreshTournamentGetsAFullGraceWindow(ShootoutManagerTests* suite) {
 
     // Admitted to a tournament over the radio, with the local ring flag still
     // down — exactly the ordering a member sees.
-    suite->shootout->onRingClosedReceived(coord.data(), {coord, me});
+    suite->shootout->onRingClosedReceived(coord.data(), {coord, me}, 0xC6000001u);
     suite->shootout->startProposal();
     ASSERT_FALSE(suite->rdc.isInRing());
     suite->shootout->sync();
@@ -2788,6 +2919,7 @@ inline void bracketFanOutIsOneFrameBeyondPeerTable(ShootoutManagerTests* suite) 
     suite->closeRingOnJacks();
     suite->shootout->onRingClosed();
     suite->shootout->startProposal();
+    suite->shootout->sync();
     destinations.clear();  // drop the announce's own RING_CLOSED frame
     for (auto& m : members)
         suite->shootout->onConfirmReceived(m.data());

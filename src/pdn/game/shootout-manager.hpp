@@ -65,10 +65,18 @@ public:
     /// the command byte is only range-checked, never dispatched on.
     void onShootoutAckFrame(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
     /// Inbound RING_CLOSED: records `members` as the ring roster, which a member
-    /// gates confirms against. A member has no other proposal trigger, though it
-    /// must also still be on the ring when the gate is polled.
+    /// gates confirms against, and `epoch` as the attempt they belong to. A member
+    /// has no other proposal trigger, though it must also still be on the ring when
+    /// the gate is polled. This is the only frame that legitimately crosses
+    /// attempts: it is how a device learns of the next one, and how it learns the
+    /// one it is holding is over.
     void onRingClosedReceived(const uint8_t* fromMac,
-                              const std::vector<std::array<uint8_t, 6>>& members);
+                              const std::vector<std::array<uint8_t, 6>>& members,
+                              uint32_t epoch);
+    /// The attempt this device is taking part in, or 0 before it has joined one.
+    /// Minted by the head that announces the ring and adopted from RING_CLOSED by
+    /// everyone else, so it names one attempt fleet-wide without any agreement step.
+    uint32_t getTournamentEpoch() const { return tournamentEpoch; }
     /// True while this device sits on a closed ring and no tournament is running:
     /// the Idle -> ShootoutProposal transition predicate.
     bool shouldEnterProposal() const;
@@ -76,6 +84,10 @@ public:
     void startProposal();
     void confirmLocal();
     void sync();
+    // [cmd, seqId, 4-byte attempt identity] — every shootout frame opens with this.
+    // writeHeader writes it and onShootoutFrame reads it, so the layout has one
+    // owner on each side of the wire.
+    static constexpr size_t kHeaderLength = 6;
     // Fixed on-wire name length for CONFIRM payloads. Local Player names are
     // null-padded/truncated to this size.
     static constexpr size_t kNameLength = 12;
@@ -203,6 +215,12 @@ private:
     RemoteDeviceCoordinator* rdc;
     MatchManager* matchManager = nullptr;
     Phase phase = Phase::IDLE;
+    // The attempt every frame this device sends is stamped with, and the one it
+    // accepts frames from. Deliberately outside resetTournamentState: a member
+    // adopts it from RING_CLOSED before it enters the proposal that resets
+    // everything else, and it has to survive that.
+    uint32_t tournamentEpoch = 0;
+    uint8_t epochCounter = 0;
 
     void primeMatchManagerForMatch();
     // resetToIdle() clears the ring roster on top of this; startProposal() reseeds
@@ -210,6 +228,18 @@ private:
     void resetTournamentState();
 
     uint8_t nextSeqId();
+    // Mints the identity of a new attempt: the low three bytes of this device's MAC
+    // name the announcer, the counter names the attempt. Unique without any
+    // agreement step, which is the whole point — two devices that close rings at the
+    // same moment must not mint the same value. Never returns 0, which means "no
+    // attempt", unless this device has no MAC to name itself with.
+    uint32_t mintEpoch();
+    // Writes [cmd, seqId, attempt identity] into `out`, which must hold at least
+    // kHeaderLength bytes. Returns where the payload starts.
+    size_t writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const;
+    // [header, 6-byte winner]. `out` must hold kHeaderLength + 6 bytes. Shared by
+    // the reliable fan-out and the unreliable repeat, which differ only in seqId.
+    void buildTournamentEndPacket(uint8_t* out, const uint8_t* winner, uint8_t seqId) const;
     static bool containsMac(const std::vector<std::array<uint8_t, 6>>& set,
                             const uint8_t* mac);
     /// Appends `mac` unless it is already there. The write half of containsMac.

@@ -1907,8 +1907,13 @@ TEST_F(ShootoutManagerTests, aNewHeadMidProposalStillRebroadcastsTheRoster) { aN
 TEST_F(ShootoutManagerTests, joiningTheNextBracketClearsTheLastOnesEliminations) { joiningTheNextBracketClearsTheLastOnesEliminations(this); }
 TEST_F(ShootoutManagerTests, aProposalNobodyCanCompleteGivesUp) { aProposalNobodyCanCompleteGivesUp(this); }
 TEST_F(ShootoutManagerTests, aSlowButCompletingProposalIsNotCutShort) { aSlowButCompletingProposalIsNotCutShort(this); }
-TEST_F(ShootoutManagerTests, aNewHeadsRingClosureLeavesOurCoordinatorsTournamentAlone) { aNewHeadsRingClosureLeavesOurCoordinatorsTournamentAlone(this); }
 TEST_F(ShootoutManagerTests, aRingClosureLeavesAFinishedTournamentAlone) { aRingClosureLeavesAFinishedTournamentAlone(this); }
+TEST_F(ShootoutManagerTests, eachAttemptGetsItsOwnIdentity) { eachAttemptGetsItsOwnIdentity(this); }
+TEST_F(ShootoutManagerTests, theRingClosedRepeatCarriesTheSameIdentity) { theRingClosedRepeatCarriesTheSameIdentity(this); }
+TEST_F(ShootoutManagerTests, aMemberKeepsTheIdentityItAdoptedThroughTheProposal) { aMemberKeepsTheIdentityItAdoptedThroughTheProposal(this); }
+TEST_F(ShootoutManagerTests, aForeignAttemptsRingClosureRetiresTheTournamentWeHold) { aForeignAttemptsRingClosureRetiresTheTournamentWeHold(this); }
+TEST_F(ShootoutManagerTests, aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure) { aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure(this); }
+TEST_F(ShootoutManagerTests, aFrameFromADeadAttemptIsDropped) { aFrameFromADeadAttemptIsDropped(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }
