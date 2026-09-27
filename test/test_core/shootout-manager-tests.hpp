@@ -797,6 +797,45 @@ inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite)
         << "a proposal that completed inside the window was cut short anyway";
 }
 
+// Two devices can be latched as ring head at once — a symmetric two-device boot,
+// or two chains merging — and ring detection resolves that by MAC within a HELLO
+// round. Inside that window both can draw, and each holds a bracket the other did
+// not author. This pins what happens: the rival's bracket is refused, and refused
+// silently, so its fan-out abandons and it aborts itself
+// (bracketRetriesThreeTimesThenAborts covers that side). Nothing recovers the
+// tournament; both rings end up on the ABORTED screen and the players press again.
+// Deliberate — see the deterministic-draw option in the lens ledger for the
+// alternative and why it was not taken.
+inline void aHeadRefusesARivalHeadsBracket(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> rival = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->closeRingOnJacks();
+    suite->shootout->setLoopMembersForTest({me, peer});
+    suite->shootout->onRingClosed();
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onConfirmReceived(peer.data());
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+    ASSERT_EQ(suite->shootout->getCoordinatorMac(), me) << "this device drew";
+    const std::vector<std::array<uint8_t, 6>> ours = suite->shootout->getBracket();
+
+    // The rival was latched at the same moment and drew its own bracket naming us.
+    EXPECT_CALL(*suite->device.mockPeerComms,
+                sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .Times(0);
+    suite->shootout->onBracketReceived(rival.data(), {rival, me, peer}, 7);
+
+    EXPECT_EQ(suite->shootout->getCoordinatorMac(), me)
+        << "a rival head's bracket displaced the one this device drew";
+    EXPECT_EQ(suite->shootout->getBracket(), ours)
+        << "a rival head's bracket replaced the bracket already fanned out";
+}
+
 // A coordinator whose own ABORT was lost re-enters the proposal and announces the
 // ring again. Both senders of RING_CLOSED are gated to a device running no
 // tournament, so hearing one from our own head is proof the bracket we hold is

@@ -1909,6 +1909,7 @@ TEST_F(ShootoutManagerTests, aNewHeadMidProposalStillRebroadcastsTheRoster) { aN
 TEST_F(ShootoutManagerTests, joiningTheNextBracketClearsTheLastOnesEliminations) { joiningTheNextBracketClearsTheLastOnesEliminations(this); }
 TEST_F(ShootoutManagerTests, aProposalNobodyCanCompleteGivesUp) { aProposalNobodyCanCompleteGivesUp(this); }
 TEST_F(ShootoutManagerTests, aSlowButCompletingProposalIsNotCutShort) { aSlowButCompletingProposalIsNotCutShort(this); }
+TEST_F(ShootoutManagerTests, aHeadRefusesARivalHeadsBracket) { aHeadRefusesARivalHeadsBracket(this); }
 TEST_F(ShootoutManagerTests, ourHeadAnnouncingARingRetiresTheBracketWeHold) { ourHeadAnnouncingARingRetiresTheBracketWeHold(this); }
 TEST_F(ShootoutManagerTests, retiringAStrandedBracketSendsNothing) { retiringAStrandedBracketSendsNothing(this); }
 TEST_F(ShootoutManagerTests, aStrangersRingClosureLeavesOurBracketAlone) { aStrangersRingClosureLeavesOurBracketAlone(this); }

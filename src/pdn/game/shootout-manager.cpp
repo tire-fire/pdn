@@ -763,10 +763,12 @@ void ShootoutManager::onBracketReceived(
     if (author == nullptr || memcmp(fromMac, author, 6) != 0) return;
     // Every member hears the retries meant for a silent one. The ack is owed —
     // refusing our own coordinator makes us the member those retries give up on —
-    // but the bracket already in hand is not re-adopted: that would rewind a bout
-    // in progress. Matched on content, since seqIds are unique per sender only. A
-    // different bracket from the same coordinator is a new tournament, and joining
-    // it is how a member it gave up on gets back in.
+    // but the bracket already in hand is not re-adopted: that would rewind a match
+    // in progress. Matched on content rather than against a remembered seqId: the
+    // sender's counter is a byte that wraps and restarts at 1 when it reboots, so a
+    // repeat and a fresh frame can carry the same id. A different bracket from the
+    // same coordinator is a new tournament, and joining it is how a member it gave
+    // up on gets back in.
     if (bracket == offeredBracket) {
         sendShootoutAck(ShootoutCmd::BRACKET, seqId, coordinatorMac.data());
         return;
@@ -809,8 +811,10 @@ void ShootoutManager::onMatchStartReceived(
     // frame, so without this it would drag the member back into a bout it
     // already finished and re-prime it against an opponent it already beat.
     if (isEliminated(duelistA) || isEliminated(duelistB)) return;
-    // A repeat of the bout in progress. Deduplicated by content, not seqId:
-    // seqIds are unique per sender only.
+    // A repeat of the match in progress. Deduplicated by content rather than
+    // against a remembered seqId: the coordinator's counter is a byte that wraps
+    // and restarts at 1 when it reboots, so a repeat and a fresh frame can carry
+    // the same id.
     if (isSameMatch(matchIndex, duelistA, duelistB)) return;
     currentMatchIndex = matchIndex;
     memcpy(currentDuelistA.data(), duelistA, 6);
