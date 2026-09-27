@@ -99,8 +99,9 @@ public:
     /// matches and after the tournament ends this still names the last pair.
     std::pair<std::array<uint8_t, 6>, std::array<uint8_t, 6>> getCurrentMatchPair() const;
 
-    /// Adopts the bracket the RDC's ring head drew and acks it; once a bracket is
-    /// held, only its author's retransmits. Anything else is refused, unacked.
+    /// Adopts the bracket the RDC's ring head drew and acks it. Once a bracket is
+    /// held, its author's retransmits are acked and ignored, and a different bracket
+    /// from that author is a new tournament. Anything else is refused, unacked.
     void onBracketReceived(const uint8_t* fromMac,
                            const std::vector<std::array<uint8_t, 6>>& offeredBracket,
                            uint8_t seqId);
@@ -166,15 +167,16 @@ public:
     /// announcing themselves to the head, which nothing here drives or can
     /// predict. Raise it if a venue's larger rings are seen to fill slower.
     static constexpr unsigned long SHORT_ROSTER_TIMEOUT_MS = 3000;
+    /// How long the ring waits for a roster to finish confirming. Paced for
+    /// players, not for frames: a ring detection can serve a name for a device that
+    /// has already left, and that name answers nothing, so the absence of a confirm
+    /// is the only signal there is. Nothing else ends that wait — the ring is
+    /// intact, and the roster is above the floor SHORT_ROSTER_TIMEOUT_MS watches.
+    /// Generous because the cost of firing early is a screen the players can retry,
+    /// and the cost of never firing is a ring that hangs until someone unplugs it.
+    static constexpr unsigned long PROPOSAL_TIMEOUT_MS = 60000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
-    /// How long a member waits for its coordinator to announce a match before it
-    /// gives up. Derived, not tuned: the coordinator waits out its own reveal
-    /// window before the first one, and both the bracket fan-out it waits on first
-    /// and the MATCH_START that follows can spend a full retry span before
-    /// anything reaches this device.
-    static constexpr unsigned long kMatchAnnounceTimeoutMs =
-        kBracketRevealMs + 2 * Resender::staleAfterMs();
     // Packet-validation clamp on an inbound BRACKET's member count. A ring can
     // hold as many devices as the chain does, so it tracks MAX_CHAIN_MEMBERS;
     // one ESP-NOW v2 frame carries that bracket several times over.
@@ -193,9 +195,8 @@ private:
     Phase phase = Phase::IDLE;
 
     void primeMatchManagerForMatch();
-    // resetToIdle() clears the ring roster on top of this; startProposal() does
-    // not, because the ring closure that drove the mount announced it moments
-    // earlier.
+    // resetToIdle() clears the ring roster on top of this; startProposal() reseeds
+    // it from ring detection instead.
     void resetTournamentState();
 
     uint8_t nextSeqId();
@@ -229,8 +230,9 @@ private:
     bool testLoopMembersOverride = false;
     std::vector<std::array<uint8_t, 6>> confirmedSet;
 
-    // The ring roster as of closure. Read live from the RDC on the head that
-    // latched it, and taken from that head's RING_CLOSED on every other member.
+    // The tournament's roster, and the one the head announced. Seeded from ring
+    // detection when a proposal starts, grown from it once per tick while the
+    // proposal runs, and on every other member taken from the head's RING_CLOSED.
     // Non-empty is also the "a ring closed" latch, and nothing retires it while
     // IDLE, so shouldEnterProposal pairs it with a liveness check.
     std::vector<std::array<uint8_t, 6>> ringMembers;
@@ -247,16 +249,18 @@ private:
     /// The ring's head as the RDC reports it: this device when latched, else the
     /// head relayed round the ring. nullptr off a ring or before one propagates.
     const uint8_t* ringHead() const;
-    /// True in the reveal before any bracket arrives: every confirm this device
-    /// saw is in, and nobody has drawn yet.
-    bool isAwaitingBracket() const;
     std::vector<std::array<uint8_t, 6>> buildLoopMemberSet() const;
     void sendLocalConfirm();
     bool allMembersConfirmed() const;
     /// Overload for a roster the caller already has, so a tick that asks several
     /// questions of it rebuilds it once.
     bool allMembersConfirmed(const std::vector<std::array<uint8_t, 6>>& members) const;
-    void advanceToBracketReveal();
+    /// Draws the bracket and fans it out, on the device ring detection has as the
+    /// ring's head. A no-op anywhere else: a device with nothing to show stays in
+    /// the proposal, where it goes on confirming. Called only from sync(), on the
+    /// main loop — a caller on the packet path would draw off a head latch sampled
+    /// at whatever instant the frame arrived.
+    void drawBracket();
     void generateBracket();
 
     std::vector<std::array<uint8_t, 6>> bracket;
@@ -266,6 +270,7 @@ private:
     std::vector<std::array<uint8_t, 6>> currentRound;
 
     SimpleTimer confirmRebroadcastTimer;
+    SimpleTimer proposalTimer;
 
     uint8_t lastBracketSeqId = 0;
     uint8_t nextShootoutSeqId = 1;
@@ -300,7 +305,6 @@ private:
     std::array<uint8_t, 6> currentDuelistB{};
     uint8_t lastMatchStartSeqId = 0;
     SimpleTimer bracketRevealTimer;
-    SimpleTimer nextMatchTimer;
     /// Advances the bracket. Called only from sync(), on the main loop — a second
     /// caller on the packet path would need its own guard against double-advance.
     void maybeStartNextMatch();

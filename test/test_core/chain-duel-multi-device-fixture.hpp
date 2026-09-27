@@ -197,16 +197,16 @@ public:
     /// Ring closure the way production delivers it: the head's RDC callback, the
     /// roster broadcast, then each member's Idle -> ShootoutProposal mount.
     ///
-    /// Index of the node that latched the ring, set by claimRing().
+    /// Index of the node that latched the ring, set by announceRing().
     size_t ringHeadIndex = 0;
 
-    /// Claims on whichever node latched, which `closeRing()` makes the last-indexed
-    /// one. Production fires onRingClosed() only from that RDC callback, so a
-    /// self-claim on any other node is a state no device can reach. The roster is
+    /// Announces the roster from whichever node latched, which `closeRing()` makes
+    /// the last-indexed one. Production fires onRingClosed() only from that RDC
+    /// callback, so announcing from any other node is a state no device can reach. The roster is
     /// injected because `dispatch()` has no kConnectionAnnounce case, so the
     /// announces the RDC really sends fall through to `default:` and no roster
     /// ever reaches a head here.
-    void claimRing() {
+    void announceRing() {
         size_t headIndex = nodes.size();
         for (size_t i = 0; i < nodes.size(); ++i) {
             if (nodes[i]->rdc->getChainRole() == ChainRole::RING) {
@@ -748,7 +748,7 @@ inline void shootoutFourDeviceConsensusAndMatchStart(ChainDuelMultiDeviceFixture
             << "node " << i << " does not see loop";
     }
 
-    suite->claimRing();
+    suite->announceRing();
     for (size_t i = 0; i < suite->nodeCount(); ++i) {
         EXPECT_EQ(suite->node(i).shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)
             << "node " << i << " missed the ring-closed broadcast";
@@ -810,7 +810,7 @@ inline void shootoutFourDeviceFullTournament(ChainDuelMultiDeviceFixture* suite)
     suite->deliverAllPackets();
     suite->closeRing();
 
-    suite->claimRing();
+    suite->announceRing();
     for (size_t i = 0; i < suite->nodeCount(); ++i) {
         suite->node(i).shootout->confirmLocal();
         suite->deliverAllPackets();
@@ -896,7 +896,7 @@ inline void shootoutEightDeviceFullTournament(ChainDuelMultiDeviceFixture* suite
         suite->node(i).player->setName(kNames[i]);
     }
 
-    suite->claimRing();
+    suite->announceRing();
     for (size_t i = 0; i < suite->nodeCount(); ++i) {
         suite->node(i).shootout->confirmLocal();
         suite->deliverAllPackets();
@@ -963,7 +963,7 @@ inline void shootoutFourDeviceTwoTournamentsBackToBack(ChainDuelMultiDeviceFixtu
     suite->closeRing();
 
     auto runOne = [&]() {
-        suite->claimRing();
+        suite->announceRing();
         for (size_t i = 0; i < suite->nodeCount(); ++i) {
             suite->node(i).shootout->confirmLocal();
             suite->deliverAllPackets();
@@ -1024,7 +1024,7 @@ inline void shootoutFourDeviceTwoTournamentsBackToBack(ChainDuelMultiDeviceFixtu
             << "post-reset loop broken on node " << i;
     }
 
-    // Run tournament 2. runOne re-claims the ring, which is what re-seeds the
+    // Run tournament 2. runOne re-announces the ring, which is what re-seeds the
     // loop-member set that resetToIdle just dropped.
     int matchesTwo = runOne();
     for (size_t i = 0; i < suite->nodeCount(); ++i) {
