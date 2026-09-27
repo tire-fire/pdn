@@ -658,6 +658,30 @@ void ShootoutManager::sync() {
         }
     }
 
+    // A tournament that stopped moving. Every phase past the proposal is a wait on
+    // the coordinator's next word, and the reachable way to wait forever is a
+    // fan-out abandoned against this device while the coordinator has already moved
+    // on — TOURNAMENT_END most sharply, since nothing is owed once it is ENDED and
+    // the member never learns it won. Armed off what this device is waiting for
+    // changing, rather than at each transition site, so a phase cannot be added
+    // without a bound.
+    const bool waitingOnTheTournament = phase == Phase::BRACKET_REVEAL ||
+                                        phase == Phase::MATCH_IN_PROGRESS ||
+                                        phase == Phase::BETWEEN_MATCHES;
+    if (phase != lastPhaseSeen || currentMatchIndex != lastStallMatchIndex) {
+        lastPhaseSeen = phase;
+        lastStallMatchIndex = currentMatchIndex;
+        if (waitingOnTheTournament) {
+            stallTimer.setTimer(TOURNAMENT_STALL_TIMEOUT_MS);
+        } else {
+            stallTimer.invalidate();
+        }
+    }
+    if (waitingOnTheTournament && stallTimer.expired()) {
+        LOG_E(TAG, "tournament stopped moving; aborting");
+        abortTournament();
+    }
+
     // Every command family retransmits and abandons here; which one gave up is
     // read off the frame in onCommandAbandoned.
     resender.sync();

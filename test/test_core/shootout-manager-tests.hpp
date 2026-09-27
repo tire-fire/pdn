@@ -836,6 +836,90 @@ inline void aHeadRefusesARivalHeadsBracket(ShootoutManagerTests* suite) {
         << "a rival head's bracket replaced the bracket already fanned out";
 }
 
+// The winner never hearing it won: the coordinator's TOURNAMENT_END fan-out is
+// abandoned against one member, the coordinator is already ENDED so nothing is
+// owed, and that member sits between matches with a result it will never get. The
+// source names this stall where the fan-out is built. Bounded like every other wait.
+inline void aTournamentThatStopsMovingGivesUp(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me, third});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
+    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
+    suite->shootout->onMatchResultReceived(coord.data(), third.data(), 0, 3, coord.data());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BETWEEN_MATCHES);
+
+    // Production ticks every loop, so the wait is armed on the tick the phase
+    // changed and read out on a later one.
+    suite->shootout->sync();
+    suite->fakeClock->advance(ShootoutManager::TOURNAMENT_STALL_TIMEOUT_MS + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a member waits forever on a coordinator that has already finished";
+}
+
+// The bound has to outlast a real match, which is the mistake that made the last
+// one fire mid-duel: countdown 3x2000 + DUEL_TIMEOUT 4000 + grace 900 is ~10.9s
+// before a duelist even reports, and the result fan-out follows. Absolute numbers,
+// so shortening the bound below the duel ceiling fails here.
+inline void aRealDuelOutlastsNothing(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me, third});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, third}, 1);
+    suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(), 0, 2);
+    suite->shootout->sync();
+
+    // A bout in which neither duelist draws, then the result making its way here.
+    suite->fakeClock->advance(6000 + 4000 + 900 + 2000);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
+        << "the bound cut a match short that was still legitimately being played";
+}
+
+// A spectator that misses a result but hears the next match start stays in the same
+// phase, so the bound has to re-arm on the match changing too. Three matches at the
+// full duel length outlast it otherwise, and it would abort a healthy tournament.
+inline void backToBackMatchesEachGetTheirOwnWait(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> fourth = {0x04, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->joinRelayedRing(coord.data());
+    suite->shootout->setLoopMembersForTest({coord, me, third, fourth});
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, third, fourth}, 1);
+
+    // Each match runs the full no-draw length, and this device never hears a result,
+    // so its phase never leaves MATCH_IN_PROGRESS.
+    for (uint8_t idx = 0; idx < 3; ++idx) {
+        suite->shootout->onMatchStartReceived(coord.data(), coord.data(), third.data(),
+                                              idx, static_cast<uint8_t>(10 + idx));
+        suite->shootout->sync();
+        suite->fakeClock->advance(6000 + 4000 + 900);
+        suite->shootout->sync();
+        ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS)
+            << "aborted during match " << static_cast<int>(idx);
+    }
+}
+
 // A coordinator whose own ABORT was lost re-enters the proposal and announces the
 // ring again. Both senders of RING_CLOSED are gated to a device running no
 // tournament, so hearing one from our own head is proof the bracket we hold is
