@@ -1914,6 +1914,10 @@ TEST_F(ShootoutManagerTests, aMemberKeepsTheIdentityItAdoptedThroughTheProposal)
 TEST_F(ShootoutManagerTests, aForeignAttemptsRingClosureRetiresTheTournamentWeHold) { aForeignAttemptsRingClosureRetiresTheTournamentWeHold(this); }
 TEST_F(ShootoutManagerTests, aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure) { aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure(this); }
 TEST_F(ShootoutManagerTests, aFrameFromADeadAttemptIsDropped) { aFrameFromADeadAttemptIsDropped(this); }
+TEST_F(ShootoutManagerTests, theFirstPressOnAnOldRingStartsATournament) { theFirstPressOnAnOldRingStartsATournament(this); }
+TEST_F(ShootoutManagerTests, aRosterCompletingOnTheBoundTickDrawsRatherThanAborting) { aRosterCompletingOnTheBoundTickDrawsRatherThanAborting(this); }
+TEST_F(ShootoutManagerTests, aMembersProposalGiveUpStaysLocal) { aMembersProposalGiveUpStaysLocal(this); }
+TEST_F(ShootoutManagerTests, theEndingStopsRepeatingOnceTheRingOpens) { theEndingStopsRepeatingOnceTheRingOpens(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }

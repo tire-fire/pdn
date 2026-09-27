@@ -82,6 +82,9 @@ public:
     bool shouldEnterProposal() const;
 
     void startProposal();
+    /// Leaves the tournament on this device alone, with no fan-out: ABORTED for the
+    /// player, and nothing said to the ring.
+    void giveUpLocally();
     void confirmLocal();
     void sync();
     // [cmd, seqId, 4-byte attempt identity] — every shootout frame opens with this.

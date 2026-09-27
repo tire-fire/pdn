@@ -292,7 +292,6 @@ void ShootoutManager::startProposal() {
         ringMembers = getLoopMembers();
         LOG_W(TAG, "proposing to members=%zu", ringMembers.size());
     }
-    proposalTimer.setTimer(PROPOSAL_TIMEOUT_MS);
     phase = Phase::PROPOSAL;
 }
 
@@ -358,8 +357,7 @@ void ShootoutManager::onRingClosedReceived(
         !isCoordinator() && !isTerminalPhase()) {
         LOG_W(TAG, "attempt %08x formed around us; retiring the bracket we hold",
               static_cast<unsigned>(epoch));
-        resetToIdle();
-        phase = Phase::ABORTED;
+        giveUpLocally();
         // Adopted as we retire, so the repeats of this same announcement do not read
         // as one more attempt to give up on.
         tournamentEpoch = epoch;
@@ -399,6 +397,15 @@ void ShootoutManager::sendRingClosed() {
     ringClosedRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
 }
 
+void ShootoutManager::giveUpLocally() {
+    // Lands in ABORTED like every other giving-up path, so the player gets the same
+    // screen — but nothing goes out. A fan-out from here would reach the fresh
+    // proposal that this device is giving up in favour of, and onAbortReceived takes
+    // one from any ring member in any non-terminal phase.
+    resetToIdle();
+    phase = Phase::ABORTED;
+}
+
 void ShootoutManager::confirmLocal() {
     // Gate on PROPOSAL: stale ShootoutProposal button callbacks can fire in
     // later phases and re-advance the bracket if not guarded.
@@ -413,6 +420,12 @@ void ShootoutManager::confirmLocal() {
     if (player != nullptr) {
         recordName(selfMac, player->getName().c_str());
     }
+    // The bound starts here, because this is where the wait starts: everything
+    // before the press is a ring sitting idle, which is allowed to sit as long as it
+    // likes. Armed at the phase edge instead, it aged through the whole window its
+    // answer was ignored in, and the first press on a ring left cabled through a lull
+    // was answered with ABORTED.
+    proposalTimer.setTimer(PROPOSAL_TIMEOUT_MS);
     sendLocalConfirm();
 }
 
@@ -788,21 +801,28 @@ void ShootoutManager::sync() {
             // and a fan-out naming nobody sends nothing.
             LOG_E(TAG, "ring has too few participants to draw a bracket; aborting");
             abortTournament();
-        } else if (confirmedLocally && proposalTimer.expired()) {
-            // Nothing else ends this wait: a roster name for a device that has left
-            // answers nothing, and the ring is intact so the break guard stays quiet.
-            // Gated on a local confirm for the same reason the short-roster abort is —
-            // an untouched ring has to sit idle rather than flash ABORTED, and since
-            // this device re-proposes off its own standing latch, aborting one it
-            // never joined would loop forever.
-            LOG_E(TAG, "no roster this ring can complete; aborting");
-            abortTournament();
         } else if (everyoneIn) {
+            // Ahead of the bound below, which can come due on this same tick: a
+            // complete roster is the answer that wait was waiting for.
             // Drawing is a standing duty of whoever heads the ring, not a chance
             // taken on the CONFIRM that completes the proposal: the head can be
             // unlatched for the tick that completes it, and the device that is head
             // by the next tick draws instead. drawBracket() is a no-op elsewhere.
             drawBracket();
+        } else if (proposalTimer.expired()) {
+            // Nothing else ends this wait: a roster name for a device that has left
+            // answers nothing, and the ring is intact so the break guard stays quiet.
+            // The timer runs only from the local press, so an untouched ring reaches
+            // this with nothing armed and sits idle rather than flashing ABORTED.
+            LOG_E(TAG, "no roster this ring can complete; giving up");
+            // Only the device that would have drawn takes the ring with it. A member
+            // has no roster authority and cannot tell whether the head is about to
+            // draw, so its own patience running out is news about itself.
+            if (headsRing()) {
+                abortTournament();
+            } else {
+                giveUpLocally();
+            }
         }
     }
 
@@ -812,7 +832,11 @@ void ShootoutManager::sync() {
     // long as the winner is on screen, the way the roster and the confirms repeat —
     // a member that missed the fan-out is repaired by the next copy, whatever the
     // loss count, with no wall clock and no abandonment to notice.
-    if (phase == Phase::ENDED && isCoordinator() && endingRebroadcastTimer.expired()) {
+    // Gated on the ring, which the break guard above deliberately does not do for a
+    // terminal phase: ENDED outlives the ring it was won on, so without this the
+    // coordinator keeps broadcasting to a ring that no longer exists.
+    if (phase == Phase::ENDED && isCoordinator() && rdc != nullptr && rdc->isInRing() &&
+        endingRebroadcastTimer.expired()) {
         reannounceEnding();
     }
 
@@ -1097,8 +1121,10 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
 }
 
 void ShootoutManager::reannounceEnding() {
-    // seqId 0: unreliable on purpose. A reliable repeat would hold the terminal
-    // fan-out open, and TerminalFanOutsDone holds every later proposal behind it.
+    // seqId 0: unreliable on purpose. A reliable repeat would keep spending retries
+    // on a tournament that is over, and leave terminalFanOutSeqId naming a frame this
+    // device is still sending — which spares that seqId from the next tournament's
+    // cancel, so a later frame reusing it survives a reset it should not.
     uint8_t packet[kHeaderLength + 6];
     buildTournamentEndPacket(packet, tournamentWinner.data(), 0);
     broadcastToRing(confirmedSet, packet, sizeof(packet));
