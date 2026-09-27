@@ -1105,7 +1105,8 @@ void ShootoutManager::onMatchResultReceived(
 
 void ShootoutManager::buildTournamentEndPacket(uint8_t* out, const uint8_t* winner,
                                               uint8_t seqId) const {
-    memcpy(out + writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId), winner, 6);
+    const size_t winnerAt = writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId);
+    memcpy(out + winnerAt, winner, 6);
 }
 
 void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
