@@ -285,15 +285,18 @@ void ShootoutManager::startProposal() {
         // carries it, and the members adopt it from the announcement below. Minted
         // here rather than at the ring-closed edge because this is the one place a
         // new attempt begins — a reclaim off a standing latch gets no fresh edge.
+        // Head-only: everyone else adopts the identity from RING_CLOSED.
         tournamentEpoch = mintEpoch();
-        // A new tournament is a new roster: re-read ring detection rather than
-        // carrying what the last one accumulated, which could name a device
-        // unplugged since and stall the proposal above the short-roster floor.
-        // Announcing it is sync()'s: on the first tick after an abort, which clears
-        // the rebroadcast timer, and within the second otherwise.
-        ringMembers = getLoopMembers();
-        LOG_W(TAG, "proposing to members=%zu", ringMembers.size());
     }
+    // A new tournament is a new roster. On a head that re-reads ring detection rather
+    // than carrying what the last one accumulated, which could name a device unplugged
+    // since and stall the proposal above the short-roster floor. Off a head it reads
+    // back the roster RING_CLOSED delivered, since that is what detection serves to a
+    // member — so this is the one seeding point either way.
+    // Announcing it is sync()'s: on the first tick after an abort, which clears the
+    // rebroadcast timer, and within the second otherwise.
+    ringMembers = getLoopMembers();
+    LOG_W(TAG, "proposing to members=%zu", ringMembers.size());
     phase = Phase::PROPOSAL;
 }
 
@@ -377,9 +380,15 @@ void ShootoutManager::onRingClosedReceived(
               members.size(), static_cast<unsigned>(epoch));
         return;
     }
-    // A member's roster is its head's, so the head's repeat replaces one this
-    // device recorded from a latch of its own that ring detection resolved away.
-    if (phase == Phase::PROPOSAL && fromOurHead) ringMembers = members;
+    // A member's roster is its head's, so the head's repeat replaces one this device
+    // recorded from a latch of its own that ring detection resolved away — and the
+    // attempt with it. A device that took a stray roster while idle has a foreign
+    // identity to be corrected, and leaving it would stamp every later CONFIRM with
+    // something the head drops.
+    if (phase == Phase::PROPOSAL && fromOurHead) {
+        ringMembers = members;
+        tournamentEpoch = epoch;
+    }
 }
 
 bool ShootoutManager::shouldEnterProposal() const {
@@ -437,7 +446,11 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
     // Fast path: already-confirmed peers bypass the loop-membership scan (this
     // is the common case during 1Hz rebroadcasts — the gate only needs to
     // block first-time stray CONFIRMs from outside the ring).
-    if (!hasConfirmed(fromMac) && !containsMac(getLoopMembers(), fromMac)) return;
+    // ringMembers, not the live detection: this is the same roster the completion
+    // gate counts against, and on a head the two differ by construction — the grown
+    // roster keeps a member detection pruned for a moment, so reading the live one
+    // here would refuse the confirm the head is still waiting on.
+    if (!hasConfirmed(fromMac) && !containsMac(ringMembers, fromMac)) return;
     recordName(fromMac, name);
     if (!hasConfirmed(fromMac)) {
         addMac(confirmedSet, fromMac);
@@ -805,11 +818,14 @@ void ShootoutManager::sync() {
             // and a fan-out naming nobody sends nothing.
             LOG_E(TAG, "ring has too few participants to draw a bracket; aborting");
             abortTournament();
-        } else if (everyoneIn) {
+        } else if (everyoneIn && headsRing()) {
             // Ahead of the bound below, which can come due on this same tick: a
-            // complete roster is the answer that wait was waiting for. Polled rather
-            // than taken on the CONFIRM that completes the roster, for the reason
-            // drawBracket() gives.
+            // complete roster is the answer that wait was waiting for. Head-gated
+            // because only a head can answer it — drawBracket() is a no-op elsewhere,
+            // so without the gate a member reaching "everyone I know has confirmed"
+            // would spend the tick its own bound needed, and every tick after it.
+            // Polled rather than taken on the CONFIRM that completes the roster, for
+            // the reason drawBracket() gives.
             drawBracket();
         } else if (proposalTimer.expired()) {
             // Nothing else ends this wait: a roster name for a device that has left

@@ -554,6 +554,10 @@ inline void aMemberInTheProposalStillCountsConfirms(ShootoutManagerTests* suite)
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
 
     suite->shootout->setLoopMembersForTest({me, peer, late});
+    // The roster grows once per tick, and the confirm gate reads the grown roster so
+    // it cannot disagree with the completion gate. A confirm that beats the tick is
+    // refused and counted on its own 1Hz repeat.
+    suite->shootout->sync();
     suite->shootout->onConfirmReceived(late.data());
 
     EXPECT_TRUE(suite->shootout->hasConfirmed(late.data()))
@@ -894,16 +898,16 @@ inline void aMemberKeepsTheIdentityItAdoptedThroughTheProposal(ShootoutManagerTe
         << "entering the proposal discarded the attempt this device had joined";
 }
 
-// The strand this mechanism exists for, and a reversal of what 74641d76 pinned. Our
-// coordinator aborted and its ABORT was lost, so it will never speak again; ring
-// detection has settled the head on a third device, which announces a fresh attempt.
-// Nothing about the sender says our tournament is over — the old rule keyed on the
-// coordinator, and the coordinator is exactly the device that cannot tell us. Its
-// scenario and this one are the same frames in the same order, so the two cannot
-// both hold: a live tournament ending early is recoverable, and a device waiting on
-// a dead one is not.
-// Model evidence: StrandedMemberRecovers is exhaustively clean over 810,389 states
-// with this check and is violated with the sender-keyed one.
+// The strand this mechanism exists for. Our coordinator aborted and its ABORT was
+// lost, so it will never speak again; a third device on the ring announces a fresh
+// attempt while this device's own detection still names the aborted coordinator as
+// head. Nothing about the sender says our tournament is over: the announcer is
+// neither our coordinator nor the head we believe in, which is what every rule before
+// this one keyed on. Deliberately not moving ringHeadMac to the announcer — doing so
+// makes a head-keyed rule retire the bracket too, and the case stops discriminating.
+// A live tournament ending early is recoverable; a device waiting on a dead one is not.
+// Checked in the TLA+ model as well: the member's escape from BETWEEN_MATCHES holds
+// exhaustively with the attempt check and fails with the sender-keyed one.
 inline void aForeignAttemptsRingClosureRetiresTheTournamentWeHold(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
@@ -918,7 +922,6 @@ inline void aForeignAttemptsRingClosureRetiresTheTournamentWeHold(ShootoutManage
     suite->shootout->onBracketReceived(coord.data(), {me, coord, newHead}, 1);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
 
-    suite->memberRdc.ringHeadMac = newHead;
     suite->shootout->onRingClosedReceived(newHead.data(), {me, coord, newHead}, 0xA1B2C302u);
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
@@ -1131,6 +1134,88 @@ inline void aBracketFromOurCoordinatorThatOmitsUsIsRefused(ShootoutManagerTests*
     EXPECT_EQ(suite->shootout->getBracket().size(), 3u);
     EXPECT_TRUE(suite->shootout->getBracket()[0] == me)
         << "this device joined a bracket it is not in, so it can never be paired";
+}
+
+// A member's own bound has to survive its roster looking complete. Every member
+// hears every CONFIRM, so a member reaches "everyone I know has confirmed" as a
+// matter of course and then waits on a bracket only the head can draw. If that
+// branch swallows the tick, the bound is dead for the rest of the attempt and a
+// member whose coordinator has stopped reaching it waits forever.
+inline void aMemberWithAFullRosterStillGivesUpEventually(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onConfirmReceived(head.data());
+    suite->shootout->onConfirmReceived(other.data());
+    // Every name this device holds has confirmed, and no bracket is coming.
+    ASSERT_EQ(suite->shootout->getConfirmedCount(), 3u);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
+
+    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a full roster on a member swallowed the tick its own bound needed";
+}
+
+// Our head's repeat is authoritative for the attempt as well as the roster. A device
+// that adopted a stray roster while idle has a foreign identity to be corrected, and
+// the repeat is what corrects it — taking the roster and leaving the identity stamps
+// every later CONFIRM with something the head drops.
+inline void ourHeadsRepeatCorrectsTheAttemptAsWellAsTheRoster(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> stranger = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    // Idle takes a roster from anyone who names it: that is how a device joins, and
+    // it is the one branch with no ring test in front of it.
+    suite->shootout->onRingClosedReceived(stranger.data(), {me, stranger}, 0xAAAA0001u);
+    suite->shootout->startProposal();
+    ASSERT_EQ(suite->shootout->getTournamentEpoch(), 0xAAAA0001u);
+
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, stranger}, 0xC6000001u);
+
+    EXPECT_EQ(suite->shootout->getTournamentEpoch(), 0xC6000001u)
+        << "our head's repeat fixed the roster and left the attempt wrong";
+}
+
+// One roster answers "is this device on my ring" for the whole proposal. The head's
+// completion gate reads the grown roster, which keeps a member ring detection pruned
+// for a moment; if the confirm gate reads the live roster instead, the head demands a
+// confirm from that member and refuses the one it sends.
+inline void aHeadCountsAConfirmFromAMemberDetectionHasPruned(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->headRingServing({other, third});
+    suite->shootout->startProposal();
+    ASSERT_EQ(suite->shootout->getLoopMembers().size(), 3u);
+
+    // Ring detection drops third while the cables stay put — the flap the grown
+    // roster exists to absorb.
+    suite->memberRdc.chainMembers = {other};
+    suite->shootout->sync();
+
+    suite->shootout->confirmLocal();
+    suite->shootout->onConfirmReceived(other.data());
+    suite->shootout->onConfirmReceived(third.data());
+    suite->shootout->sync();
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
+        << "the head refused the confirm it was still waiting on";
 }
 
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
