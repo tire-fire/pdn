@@ -53,8 +53,9 @@ public:
     // Test-only: override the loop-member set. Pass an empty vector to clear.
     void setLoopMembersForTest(const std::vector<std::array<uint8_t, 6>>& members);
 
-    /// RDC ring-closed observer: snapshots the ring roster and announces it to the
-    /// other members. Who coordinates is read from the RDC when a bracket is drawn.
+    /// RDC ring-closed observer: records the ring roster. Announcing it is sync()'s,
+    /// once the proposal has minted the attempt the announcement belongs to. Who
+    /// coordinates is read from the RDC when a bracket is drawn.
     void onRingClosed();
     /// Decodes one kShootoutCommand frame and routes it to the handler for its
     /// command byte. The wire layout lives here beside the builders that write it:
@@ -74,8 +75,10 @@ public:
                               const std::vector<std::array<uint8_t, 6>>& members,
                               uint32_t epoch);
     /// The attempt this device is taking part in, or 0 before it has joined one.
-    /// Minted by the head that announces the ring and adopted from RING_CLOSED by
+    /// Minted by the head when its proposal opens and adopted from RING_CLOSED by
     /// everyone else, so it names one attempt fleet-wide without any agreement step.
+    /// A device that comes to head the ring mid-proposal announces under the one it
+    /// adopted rather than minting a second.
     uint32_t getTournamentEpoch() const { return tournamentEpoch; }
     /// True while this device sits on a closed ring and no tournament is running:
     /// the Idle -> ShootoutProposal transition predicate.
@@ -87,9 +90,10 @@ public:
     void giveUpLocally();
     void confirmLocal();
     void sync();
-    // [cmd, seqId, 4-byte attempt identity] — every shootout frame opens with this.
-    // writeHeader writes it and onShootoutFrame reads it, so the layout has one
-    // owner on each side of the wire.
+    // [cmd, seqId, 4-byte attempt identity] — every kShootoutCommand frame opens with
+    // this. writeHeader writes it and onShootoutFrame reads it, so the layout has one
+    // owner on each side of the wire. The ack frame is the exception: it is a
+    // ShootoutAckPayload, and the seqId alone names the frame it answers.
     static constexpr size_t kHeaderLength = 6;
     // Fixed on-wire name length for CONFIRM payloads. Local Player names are
     // null-padded/truncated to this size.
@@ -221,16 +225,22 @@ private:
     uint8_t epochCounter = 0;
 
     void primeMatchManagerForMatch();
-    // resetToIdle() clears the ring roster on top of this; startProposal() reseeds
-    // it from ring detection instead.
+    // resetToIdle() clears the ring roster on top of this and invalidates the
+    // ring-closed rebroadcast timer, which is what makes sync()'s never-announced case
+    // fire for the next attempt; startProposal() reseeds the roster from ring
+    // detection instead.
     void resetTournamentState();
 
     uint8_t nextSeqId();
     // Mints the identity of a new attempt: the low three bytes of this device's MAC
-    // name the announcer, the counter names the attempt. Unique without any
-    // agreement step, which is the whole point — two devices that close rings at the
-    // same moment must not mint the same value. Never returns 0, which means "no
-    // attempt", unless this device has no MAC to name itself with.
+    // name the announcer, the counter names the attempt. Distinct across every attempt
+    // of one power cycle and across devices, with no agreement step — two devices that
+    // close rings at the same moment must not mint the same value. The counter restarts
+    // at boot, so a rebooted device does repeat its earlier values; that is survivable
+    // only because a reboot drops HELLOs past HELLO_SILENT_LINK_MS, which opens the
+    // ring and aborts every follower on the break guard before the rebooted device can
+    // announce anything. Never returns 0, which means "no attempt", unless this device
+    // has no MAC to name itself with.
     uint32_t mintEpoch();
     // Writes [cmd, seqId, attempt identity] into `out`, which must hold at least
     // kHeaderLength bytes. Returns where the payload starts.
@@ -270,9 +280,11 @@ private:
     bool testLoopMembersOverride = false;
     std::vector<std::array<uint8_t, 6>> confirmedSet;
 
-    // The tournament's roster, and the one the head announced. Seeded from ring
-    // detection when a proposal starts, grown from it once per tick while the
-    // proposal runs, and on every other member taken from the head's RING_CLOSED.
+    // The tournament's roster, and the one the head announced. On a head: read from
+    // ring detection when the proposal starts and grown from it once per tick, so it
+    // never shrinks inside one attempt. On every other member: taken from the head's
+    // RING_CLOSED, which is also what detection serves back to a member, so the seed
+    // and the grow are both no-ops there.
     // Non-empty is also the "a ring closed" latch, and nothing retires it while
     // IDLE, so shouldEnterProposal pairs it with a liveness check.
     std::vector<std::array<uint8_t, 6>> ringMembers;
@@ -323,8 +335,7 @@ private:
                             const uint8_t* packet, size_t len);
 
     void sendBracketToPeers();
-    // [cmd, seqId, count, count * 6-byte MAC] — the frame BRACKET and
-    // RING_CLOSED share.
+    // [header, count, count * 6-byte MAC] — the frame BRACKET and RING_CLOSED share.
     std::vector<uint8_t> buildMacListPacket(
         ShootoutCmd cmd, uint8_t seqId,
         const std::vector<std::array<uint8_t, 6>>& macs) const;

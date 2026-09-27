@@ -117,13 +117,9 @@ enum class ShootoutCmd : uint8_t {
     RING_CLOSED = 6,
 };
 
-struct ShootoutPacket
-{
-    ShootoutCmd cmd;
-    uint8_t     seqId;   // nonzero for reliable commands; 0 = no ack expected
-    uint8_t     payload[];
-} __attribute__((packed));
-
+// The one shootout frame with no attempt identity on it: the seqId alone names the
+// frame being answered, and the command frame it answers was already gated on the
+// attempt. Every other shootout frame is laid out by ShootoutManager::writeHeader.
 struct ShootoutAckPayload
 {
     ShootoutCmd cmd;

@@ -310,15 +310,12 @@ void ShootoutManager::onRingClosed() {
         LOG_E(TAG, "onRingClosed with no local MAC");
         return;
     }
-    // The RDC fires this on the device whose own MAC came back around the ring.
-    // It only announces the roster: who coordinates is read from ring detection
-    // when a bracket is drawn, because a second latch this same edge fired on can
-    // resolve away before then.
-    // Recorded, not announced. The announcement is sync()'s, on the first tick in
-    // PROPOSAL, which is after startProposal has minted the attempt it belongs to.
-    // Announcing here would put one on the wire under whatever identity the last
-    // attempt left behind, and a member that adopted that would be refused by a head
-    // that has since minted its own.
+    // The RDC fires this on the device whose own MAC came back around the ring. It
+    // records the roster and nothing else: announcing it is sync()'s, on the first
+    // tick in PROPOSAL, which is after startProposal has minted the attempt the
+    // announcement belongs to. Who coordinates is read from ring detection when a
+    // bracket is drawn, because a second latch this same edge fired on can resolve
+    // away before then.
     ringMembers = getLoopMembers();
     LOG_W(TAG, "ring closed; members=%zu", ringMembers.size());
 }
@@ -343,20 +340,20 @@ void ShootoutManager::onRingClosedReceived(
     // below: with no ring of its own to check against, the roster is all it has.
     const bool fromOurRing = containsMac(getLoopMembers(), fromMac);
     // A ring forming under an attempt this device is not in, announced by a device
-    // on the ring this device is on. Whoever announced it is running no tournament —
-    // both senders of RING_CLOSED are gated to a device that holds none — and a
-    // device cannot be in two, so the attempt held here is over. Keyed on the
-    // attempt rather than the sender because the sender says nothing: when the
-    // coordinator aborts and its ABORT is lost, the coordinator can never announce
-    // again, and the device that does is a third one that never ran our tournament.
-    // Gated on the announcer being on our own ring because a device we unplugged
-    // from goes on repeating a roster that still names us, and that roster must not
-    // retire the tournament we joined after leaving it.
-    // Not while coordinating: the coordinator is the one device that knows its own
-    // tournament is alive, because it is the one running it.
-    // A finished one stays finished: ENDED keeps the bracket standing on purpose,
-    // and retiring it would zero the winner on screen.
-    // Giving up is local — an ABORT fan-out would reach that fresh proposal, which
+    // on the ring this device is on. Whoever announced it is running no tournament:
+    // RING_CLOSED goes out only from sync()'s PROPOSAL block, which startProposal
+    // reached through resetTournamentState, so the sender's bracket is empty. A device
+    // cannot be in two tournaments, so the attempt held here is over. Each conjunct:
+    //   epoch mismatch — the sender says nothing. A coordinator that aborted while the
+    //     ring head sat elsewhere cannot announce at all, so the device that does is a
+    //     third one that never ran our tournament.
+    //   on our ring — a device we unplugged from goes on repeating a roster that still
+    //     names us, and it must not speak for the tournament we joined after leaving.
+    //   not coordinating — the coordinator is the one device that knows its own
+    //     tournament is alive, because it is the one running it.
+    //   not terminal — ENDED keeps the bracket standing on purpose, and retiring it
+    //     would zero the winner on screen.
+    // Giving up is local: an ABORT fan-out would reach that fresh proposal, which
     // takes one from any ring member.
     if (epoch != tournamentEpoch && fromOurRing && !bracket.empty() &&
         !isCoordinator() && !isTerminalPhase()) {
@@ -402,8 +399,9 @@ bool ShootoutManager::shouldEnterProposal() const {
 }
 
 void ShootoutManager::sendRingClosed() {
-    // seqId 0: a repeat of this attempt lands on a member that already holds the
-    // same roster under the same identity, so there is nothing for an ack to add.
+    // seqId 0: the repeat is the recovery, so there is nothing for an ack to add. It
+    // carries whatever the roster holds now, which is the point — see the two cases
+    // sync() names.
     std::vector<uint8_t> packet = buildMacListPacket(ShootoutCmd::RING_CLOSED, 0, ringMembers);
     broadcastToRing(ringMembers, packet.data(), packet.size());
     ringClosedRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
@@ -413,7 +411,7 @@ void ShootoutManager::giveUpLocally() {
     // Lands in ABORTED like every other giving-up path, so the player gets the same
     // screen — but nothing goes out. A fan-out from here would reach the fresh
     // proposal that this device is giving up in favour of, and onAbortReceived takes
-    // one from any ring member in any non-terminal phase.
+    // one from any ring member.
     resetToIdle();
     phase = Phase::ABORTED;
 }
@@ -679,7 +677,6 @@ void ShootoutManager::onShootoutFrame(const uint8_t* fromMac, const uint8_t* dat
 void ShootoutManager::onShootoutAckFrame(const uint8_t* fromMac, const uint8_t* data,
                                          size_t dataLen) {
     if (dataLen < 2) return;
-    if (data[0] > static_cast<uint8_t>(ShootoutCmd::ABORT)) return;
     onCommandAckReceived(fromMac, data[1]);
 }
 
@@ -724,20 +721,20 @@ void ShootoutManager::abortTournament() {
     const std::vector<std::array<uint8_t, 6>> targets =
         bracket.empty() ? confirmedSet : bracket;
 
-    resetToIdle();
-    phase = Phase::ABORTED;
+    giveUpLocally();
 
     // Reliable rather than rebroadcast on a timer like RING_CLOSED and CONFIRM:
     // this device has already left the tournament and has nothing to rebroadcast
     // from. Load-bearing on the abandonment path, where the ring is still closed
     // and no member's own ring-break guard will ever fire.
+    const uint8_t seqId = nextSeqId();
     uint8_t packet[kHeaderLength];
-    writeHeader(packet, ShootoutCmd::ABORT, nextSeqId());
-    sendReliablyToPeers(targets, packet[1], packet, sizeof(packet));
+    writeHeader(packet, ShootoutCmd::ABORT, seqId);
+    sendReliablyToPeers(targets, seqId, packet, sizeof(packet));
     // Only if one actually went out. A ring of one names no recipients, so there
     // is no group to spare and a seqId recorded here would spare a later frame
     // that happens to reuse it.
-    terminalFanOutSeqId = getPendingAckCount(packet[1]) > 0 ? packet[1] : 0;
+    terminalFanOutSeqId = getPendingAckCount(seqId) > 0 ? seqId : 0;
 }
 
 void ShootoutManager::sendLocalConfirm() {
@@ -776,8 +773,13 @@ void ShootoutManager::sync() {
         // still in flight at closure appears for the first time. An announcement
         // replaces it outright — onRingClosedReceived, for a repeat of this attempt
         // or the arrival of another — so "only grows" is true of this loop, not of
-        // the field. Grown once per tick, so everything below asks one roster.
-        for (const std::array<uint8_t, 6>& m : getLoopMembers()) addMac(ringMembers, m.data());
+        // the field. Grown once per tick, so every gate in this block asks one roster —
+        // sendLocalConfirm below is the exception, and it only asks whether anyone else
+        // is there at all.
+        // Head-only: off a head, ring detection serves back this same roster, so the
+        // loop would copy it to ask nothing.
+        if (headsRing())
+            for (const std::array<uint8_t, 6>& m : getLoopMembers()) addMac(ringMembers, m.data());
         // Bound once, and every question below is asked of it before any branch that
         // clears it runs.
         const std::vector<std::array<uint8_t, 6>>& members = ringMembers;

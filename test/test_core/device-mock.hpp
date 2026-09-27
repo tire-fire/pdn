@@ -244,13 +244,14 @@ private:
     bool inputPeerSet = false;
 };
 
-// Stand-in RDC reporting a latched ring plus a head roster without driving the
-// HELLO stack. Only the chain surface ShootoutManager reads is overridden.
-/// Adds the head's side to the sibling above: a role, a roster it serves, and a
-/// latch of its own. The head MAC and both RDC answers come from the base, so
-/// there is one field and one rule for "on a ring" rather than two of each.
+/// Stand-in RDC reporting a latched ring plus a head roster without driving the HELLO
+/// stack; only the chain surface ShootoutManager reads is overridden. Adds the head's
+/// side to the sibling above: a role and a roster it serves. The head MAC comes from
+/// the base, and "on a ring" is the base's head-MAC test or the RING role, since a
+/// latched head has no head to report.
 class FakeRingRemoteDeviceCoordinator : public FakeRemoteDeviceCoordinator {
 public:
+    /// The role this stand-in reports; RING by default.
     ChainRole getChainRole() const override { return chainRole; }
     /// The roster this stand-in serves, as a real head's RDC would.
     std::vector<std::array<uint8_t, 6>> getChainMembers() const override { return chainMembers; }

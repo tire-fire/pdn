@@ -544,20 +544,20 @@ inline void aMemberInTheProposalStillCountsConfirms(ShootoutManagerTests* suite)
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> late = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
     ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
         .WillByDefault(testing::Return(1));
 
-    suite->shootout->setLoopMembersForTest({me, peer});
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, peer}, 0xC6000001u);
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
     suite->shootout->onConfirmReceived(peer.data());
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
 
-    suite->shootout->setLoopMembersForTest({me, peer, late});
-    // The roster grows once per tick, and the confirm gate reads the grown roster so
-    // it cannot disagree with the completion gate. A confirm that beats the tick is
-    // refused and counted on its own 1Hz repeat.
-    suite->shootout->sync();
+    // A member's roster changes the one way production changes it: its head announces
+    // a fuller one. Growing it from ring detection is the head's path, not a member's.
+    suite->shootout->onRingClosedReceived(head.data(), {me, peer, late}, 0xC6000001u);
     suite->shootout->onConfirmReceived(late.data());
 
     EXPECT_TRUE(suite->shootout->hasConfirmed(late.data()))
@@ -769,12 +769,16 @@ inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite)
 // round. Inside that window both can draw, and each holds a bracket the other did
 // not author. This pins what happens: the rival's bracket is refused, and refused
 // silently, so its fan-out abandons and it aborts itself
-// (bracketRetriesThreeTimesThenAborts covers that side). Nothing recovers the
-// tournament; both rings end up on the ABORTED screen and the players press again.
+// (bracketRetriesThreeTimesThenAborts covers that side). The rival's own ABORT does
+// not reach this device: it is stamped with the rival's attempt and dropped, so this
+// head waits out its own bound rather than aborting alongside. Both ends reach the
+// ABORTED screen and the players press again, just not together.
 // Deliberate: the alternative is a bracket every device derives identically, from a
 // nonce each carries in its CONFIRM, so rival heads draw the same one and there is
-// nothing to reconcile. Not taken — the window is one HELLO round against seconds of
-// button-pressing, and the cost is a wire change for a symptom the players retry.
+// nothing to reconcile. Not taken — the window is a few HELLO rounds, since a higher
+// head holds its latch out to RING_EVIDENCE_TIMEOUT_MS and the lower head's claim
+// travels hop by hop, against seconds of button-pressing; the cost is a wire change
+// for a symptom the players retry.
 inline void aHeadRefusesARivalHeadsBracket(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
@@ -1111,10 +1115,11 @@ inline void theEndingStopsRepeatingOnceTheRingOpens(ShootoutManagerTests* suite)
         << "the ending kept broadcasting to a ring that no longer exists";
 }
 
-// A bracket from our own coordinator that leaves this device out. Every other case
-// that looked like coverage for the roster check was shadowed by the author check,
-// because all 33 of them offer a bracket this device is in — so this is the one input
-// that reaches it: a coordinator that dropped us from its next tournament.
+// A bracket from our own coordinator that leaves this device out. Other cases offer a
+// bracket omitting this device, but each of those comes from a stranger, so the author
+// check refuses them too and deleting the roster check leaves them green. This is the
+// one input where the roster check is the only thing refusing: the sender is our own
+// coordinator, and it dropped us from its next tournament.
 inline void aBracketFromOurCoordinatorThatOmitsUsIsRefused(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
@@ -1271,15 +1276,23 @@ inline void theEndingRepeatsWhileTheWinnerIsShown(ShootoutManagerTests* suite) {
     ASSERT_GT(reliableEndings, 0) << "the ending never went out at all";
     ASSERT_EQ(repeatedEndings, 0) << "a repeat went out before the window elapsed";
 
+    // Recorded before the repeat, so the repeat can be shown to add nothing to it.
+    const size_t owedBefore =
+        suite->shootout->getPendingAckCount(suite->shootout->getLastTournamentEndSeqId());
+
     suite->fakeClock->advance(ShootoutManager::kConfirmRebroadcastMs + 1);
     suite->shootout->sync();
 
     EXPECT_GT(repeatedEndings, 0)
         << "the ending did not repeat while the winner was still on screen";
-    // Unreliable on purpose: a reliable repeat would hold the terminal fan-out open
-    // and, with it, every later proposal.
+    // Unreliable on purpose: a reliable repeat would keep re-arming the spared seqId,
+    // so it would never stop crossing resets. Both spellings of that mistake are
+    // covered — a repeat sent under seqId 0, and one sent under the fan-out's own.
     EXPECT_EQ(suite->shootout->getPendingAckCount(0), 0u)
-        << "the repeat is owed an ack, so it can outlive the tournament";
+        << "the repeat is owed an ack under seqId 0, so it can outlive the tournament";
+    EXPECT_EQ(suite->shootout->getPendingAckCount(suite->shootout->getLastTournamentEndSeqId()),
+              owedBefore)
+        << "the repeat added to what the fan-out is owed, so it re-armed the carve-out";
 }
 
 // A member that missed the fan-out is repaired by the next copy, whatever the loss
@@ -1312,9 +1325,9 @@ inline void aMemberThatMissedTheEndingTakesTheRepeat(ShootoutManagerTests* suite
 }
 
 // A coordinator whose own ABORT was lost re-enters the proposal and announces the
-// ring again. Both senders of RING_CLOSED are gated to a device running no
-// tournament, so hearing one from our own head is proof the bracket we hold is
-// from a tournament that no longer exists.
+// ring again. RING_CLOSED goes out only from a device whose proposal has just reset
+// its bracket, so an announcement under an attempt we are not in is proof the bracket
+// we hold is from a tournament that no longer exists.
 inline void ourHeadAnnouncingARingRetiresTheBracketWeHold(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
@@ -1341,8 +1354,10 @@ inline void ourHeadAnnouncingARingRetiresTheBracketWeHold(ShootoutManagerTests* 
         << "a member kept a bracket its own head has already moved on from";
 }
 
-// Only our own head's announce is evidence. Another ring's closure says nothing
-// about the tournament this device is in.
+// Evidence has to come from a device on our own ring — not our head specifically,
+// which is the rule the attempt identity replaced. A closure announced from outside
+// our ring says nothing about the tournament this device is in, and a device we
+// unplugged from goes on repeating a roster that still names us.
 inline void aStrangersRingClosureLeavesOurBracketAlone(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
