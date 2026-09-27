@@ -257,21 +257,6 @@ public:
         settleLinks();
         syncAll();
         deliverAllPackets();
-        seedRingRoster();
-    }
-
-    /// Hands every node the ring's member list. Ring detection is local and
-    /// real here; the member list is not — it lives on the head only, and no
-    /// coordinator broadcast (#169) hands it to followers yet.
-    void seedRingRoster() {
-        std::vector<std::array<uint8_t, 6>> members;
-        for (auto& n : nodes) {
-            std::array<uint8_t, 6> mac;
-            memcpy(mac.data(), n->mac, 6);
-            members.push_back(mac);
-        }
-        for (auto& n : nodes)
-            n->shootout->setLoopMembersForTest(members);
     }
 
     // Pump all captured outgoing packets into the intended recipient's handlers
