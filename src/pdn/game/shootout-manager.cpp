@@ -1116,6 +1116,11 @@ void ShootoutManager::sendTournamentEndToPeers(const uint8_t* winner) {
     // Targets confirmedSet rather than bracket: eliminated players need the
     // tournament-end transition or they stall in BETWEEN_MATCHES.
     sendReliablyToPeers(confirmedSet, lastTournamentEndSeqId, packet, sizeof(packet));
+    // Spared from the next tournament's cancel, like ABORT. The repeat does not cover
+    // this: it stops the moment the standings screen dismounts and the phase leaves
+    // ENDED, so past that point these retries are the only delivery a member that
+    // never acked will get. The cost is a live seqId crossing the reset, which the
+    // attempt stamped on every frame is what keeps from being mistaken for a new one.
     terminalFanOutSeqId = lastTournamentEndSeqId;
     memcpy(tournamentWinner.data(), winner, 6);
     endingRebroadcastTimer.setTimer(kConfirmRebroadcastMs);
