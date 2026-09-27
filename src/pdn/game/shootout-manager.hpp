@@ -82,7 +82,6 @@ public:
     /// True when this device drew the bracket it holds.
     bool isCoordinator() const;
     std::vector<std::array<uint8_t, 6>> getBracket() const;
-    bool hasBye() const;
 
     /// Cumulative retry counters for this manager's command channel. Sends and
     /// retries count frames, abandons count recipients; see Resender::Stats.
@@ -170,8 +169,10 @@ public:
     /// How long the ring waits for a roster to finish confirming. Paced for
     /// players, not for frames: a ring detection can serve a name for a device that
     /// has already left, and that name answers nothing, so the absence of a confirm
-    /// is the only signal there is. Nothing else ends that wait — the ring is
-    /// intact, and the roster is above the floor SHORT_ROSTER_TIMEOUT_MS watches.
+    /// is the only signal there is: the ring is intact, so the break guard stays
+    /// quiet, and a peer's own ABORT is the only other way out. SHORT_ROSTER_TIMEOUT_MS
+    /// gets there faster when the roster is below the floor, which is the case it
+    /// watches; this one is for a roster above it that still cannot complete.
     /// Generous because the cost of firing early is a screen the players can retry,
     /// and the cost of never firing is a ring that hangs until someone unplugs it.
     /// Gated on a local confirm, so an untouched ring sits idle instead of looping.
@@ -203,6 +204,8 @@ private:
     uint8_t nextSeqId();
     static bool containsMac(const std::vector<std::array<uint8_t, 6>>& set,
                             const uint8_t* mac);
+    /// Appends `mac` unless it is already there. The write half of containsMac.
+    static void addMac(std::vector<std::array<uint8_t, 6>>& set, const uint8_t* mac);
     /// True when `mac` is the coordinator this device is following.
     bool isFromCoordinator(const uint8_t* mac) const;
     /// True in the two phases a tournament ends in. Every handler that would
@@ -252,9 +255,6 @@ private:
     const uint8_t* ringHead() const;
     std::vector<std::array<uint8_t, 6>> buildLoopMemberSet() const;
     void sendLocalConfirm();
-    bool allMembersConfirmed() const;
-    /// Overload for a roster the caller already has, so a tick that asks several
-    /// questions of it rebuilds it once.
     bool allMembersConfirmed(const std::vector<std::array<uint8_t, 6>>& members) const;
     /// Draws the bracket and fans it out, on the device ring detection has as the
     /// ring's head. A no-op anywhere else: a device with nothing to show stays in

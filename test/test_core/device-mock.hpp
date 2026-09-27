@@ -246,27 +246,25 @@ private:
 
 // Stand-in RDC reporting a latched ring plus a head roster without driving the
 // HELLO stack. Only the chain surface ShootoutManager reads is overridden.
-class FakeRingRemoteDeviceCoordinator : public RemoteDeviceCoordinator {
+/// Adds the head's side to the sibling above: a role, a roster it serves, and a
+/// latch of its own. The head MAC and both RDC answers come from the base, so
+/// there is one field and one rule for "on a ring" rather than two of each.
+class FakeRingRemoteDeviceCoordinator : public FakeRemoteDeviceCoordinator {
 public:
-    /// The role this stand-in reports; RING by default.
     ChainRole getChainRole() const override { return chainRole; }
     /// The roster this stand-in serves, as a real head's RDC would.
     std::vector<std::array<uint8_t, 6>> getChainMembers() const override { return chainMembers; }
     /// Membership is broader than the RING role: a device relaying another head's
-    /// closure sits on a live loop with no latch of its own.
+    /// closure sits on a live loop with no latch of its own, and a latched head is
+    /// on one with no relayed head to report.
     bool isInRing() const override {
-        return chainRole == ChainRole::RING || relayedMember;
-    }
-
-    /// The head relayed to a member; the base answers only for a real chain.
-    const uint8_t* getHeadMac() const override {
-        return headMac == std::array<uint8_t, 6>{} ? nullptr : headMac.data();
+        return chainRole == ChainRole::RING || relayedMember ||
+               FakeRemoteDeviceCoordinator::isInRing();
     }
 
     ChainRole chainRole = ChainRole::RING;
     bool relayedMember = false;
     std::vector<std::array<uint8_t, 6>> chainMembers;
-    std::array<uint8_t, 6> headMac{};
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.

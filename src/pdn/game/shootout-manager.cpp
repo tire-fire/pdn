@@ -58,10 +58,6 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::getBracket() const {
     return bracket;
 }
 
-bool ShootoutManager::hasBye() const {
-    return bracket.size() % 2 == 1;
-}
-
 size_t ShootoutManager::getPendingAckCount(uint8_t seqId) const {
     return resender.pendingCount(PktType::kShootoutCommand, seqId);
 }
@@ -90,6 +86,13 @@ uint8_t ShootoutManager::nextSeqId() {
     uint8_t id = nextShootoutSeqId++;
     if (nextShootoutSeqId == 0) nextShootoutSeqId = 1;
     return id;
+}
+
+void ShootoutManager::addMac(std::vector<std::array<uint8_t, 6>>& set, const uint8_t* mac) {
+    if (containsMac(set, mac)) return;
+    std::array<uint8_t, 6> entry;
+    memcpy(entry.data(), mac, 6);
+    set.push_back(entry);
 }
 
 bool ShootoutManager::containsMac(const std::vector<std::array<uint8_t, 6>>& set,
@@ -274,7 +277,8 @@ void ShootoutManager::startProposal() {
         // A new tournament is a new roster: re-read ring detection rather than
         // carrying what the last one accumulated, which could name a device
         // unplugged since and stall the proposal above the short-roster floor.
-        // Announcing it is sync()'s, on the first tick of the proposal.
+        // Announcing it is sync()'s: on the first tick after an abort, which clears
+        // the rebroadcast timer, and within the second otherwise.
         ringMembers = getLoopMembers();
         LOG_W(TAG, "proposing to members=%zu", ringMembers.size());
     }
@@ -313,14 +317,17 @@ void ShootoutManager::onRingClosedReceived(
     if (!containsMac(members, selfMac)) return;
     const uint8_t* head = ringHead();
     const bool fromOurHead = head != nullptr && memcmp(fromMac, head, 6) == 0;
-    // Our own head is announcing a ring, and neither sender of RING_CLOSED holds a
-    // bracket — onRingClosed refuses anything but IDLE, and the repeat lives inside
-    // the proposal block, which runs with the bracket already cleared. So a bracket
-    // held here is from a tournament that head is no longer in. A finished one stays
-    // finished: ENDED keeps the bracket standing on purpose, and retiring it would
-    // zero the winner this device is showing. Giving up is local — an ABORT fan-out
-    // would reach that fresh proposal, which takes one from any ring member.
-    if (fromOurHead && !bracket.empty() && !isTerminalPhase()) {
+    // The device running our tournament is announcing a ring, so it is running no
+    // tournament: neither sender of RING_CLOSED holds a bracket — onRingClosed
+    // refuses anything but IDLE, and the repeat lives inside the proposal block,
+    // which runs with the bracket already cleared. Keyed on the coordinator rather
+    // than the current head, because those are deliberately not the same device: a
+    // head that moves mid-tournament hands nothing over, so a new head announcing a
+    // ring says nothing about the tournament this device is still in. A finished one
+    // stays finished: ENDED keeps the bracket standing on purpose, and retiring it
+    // would zero the winner on screen. Giving up is local — an ABORT fan-out would
+    // reach that fresh proposal, which takes one from any ring member.
+    if (isFromCoordinator(fromMac) && !bracket.empty() && !isTerminalPhase()) {
         LOG_W(TAG, "our head announced a ring; retiring the bracket we hold");
         resetToIdle();
         phase = Phase::ABORTED;
@@ -360,11 +367,7 @@ void ShootoutManager::confirmLocal() {
     LOG_W(TAG, "confirmLocal; confirmedCount before=%zu", confirmedSet.size());
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     if (selfMac == nullptr) return;
-    std::array<uint8_t, 6> mac;
-    memcpy(mac.data(), selfMac, 6);
-    if (!hasConfirmed(mac.data())) {
-        confirmedSet.push_back(mac);
-    }
+    addMac(confirmedSet, selfMac);
     if (player != nullptr) {
         recordName(selfMac, player->getName().c_str());
     }
@@ -378,11 +381,8 @@ void ShootoutManager::onConfirmReceived(const uint8_t* fromMac, const char* name
     // block first-time stray CONFIRMs from outside the ring).
     if (!hasConfirmed(fromMac) && !containsMac(getLoopMembers(), fromMac)) return;
     recordName(fromMac, name);
-    bool added = !hasConfirmed(fromMac);
-    if (added) {
-        std::array<uint8_t, 6> mac;
-        memcpy(mac.data(), fromMac, 6);
-        confirmedSet.push_back(mac);
+    if (!hasConfirmed(fromMac)) {
+        addMac(confirmedSet, fromMac);
         LOG_W(TAG, "onConfirmReceived from=%s count=%zu",
               MacToString(fromMac), confirmedSet.size());
     }
@@ -417,10 +417,6 @@ std::string ShootoutManager::getNameForMac(const uint8_t* mac) const {
 
 bool ShootoutManager::hasConfirmed(const uint8_t* mac) const {
     return containsMac(confirmedSet, mac);
-}
-
-bool ShootoutManager::allMembersConfirmed() const {
-    return allMembersConfirmed(getLoopMembers());
 }
 
 bool ShootoutManager::allMembersConfirmed(
@@ -607,8 +603,8 @@ void ShootoutManager::sync() {
         for (const auto& m : getLoopMembers()) {
             if (!containsMac(ringMembers, m.data())) ringMembers.push_back(m);
         }
-        // A copy, not a reference: abortTournament() below clears ringMembers, and a
-        // reference into it would dangle for the rest of the block.
+        // Read once into a local: abortTournament() below empties ringMembers, and
+        // everything after it should be answering the roster as this tick found it.
         const std::vector<std::array<uint8_t, 6>> members = ringMembers;
         const bool everyoneIn = allMembersConfirmed(members);
         const uint8_t* selfMac = wirelessManager->getMacAddress();
@@ -632,11 +628,11 @@ void ShootoutManager::sync() {
             sendLocalConfirm();
         }
 
-        // Without this the head waits forever: a roster below the floor never
-        // satisfies everyoneIn, so the tournament neither starts nor ends.
-        // Held over a window because the roster is still filling just after a ring
-        // closes, and gated on a local confirm, which leaves an untouched
-        // self-cabled device sitting here idle rather than flashing ABORTED.
+        // A roster below the floor never satisfies everyoneIn, so without this the
+        // head waits out PROPOSAL_TIMEOUT_MS to reach the same answer a great deal
+        // later. Held over a window because the roster is still filling just after a
+        // ring closes, and gated on a local confirm — the same gate the bound below
+        // carries, so an untouched self-cabled device sits idle rather than flashing.
         const bool ringTooSmallToPlay =
             headsRing() && confirmedLocally && members.size() < MIN_PARTICIPANTS;
         if (shortRosterDebounce.heldFor(ringTooSmallToPlay, SHORT_ROSTER_TIMEOUT_MS)) {
@@ -857,11 +853,7 @@ bool ShootoutManager::isEliminated(const uint8_t* mac) const {
 
 void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* loser,
                                        bool endsCurrentBout) {
-    if (!isEliminated(loser)) {
-        std::array<uint8_t, 6> mac;
-        memcpy(mac.data(), loser, 6);
-        eliminated.push_back(mac);
-    }
+    addMac(eliminated, loser);
     if (!endsCurrentBout) return;
     // A duelist still mounted when the tournament ended resolves its own bout and
     // reports it. Walking ENDED back reopens a round that no longer exists;
@@ -1011,10 +1003,6 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::buildLoopMemberSet() const 
     // getChainMembers() enumerates the devices that announced to the head, never
     // the head itself, and the head is a participant like any other.
     const uint8_t* selfMac = wirelessManager->getMacAddress();
-    if (selfMac != nullptr && !containsMac(members, selfMac)) {
-        std::array<uint8_t, 6> self;
-        memcpy(self.data(), selfMac, 6);
-        members.push_back(self);
-    }
+    if (selfMac != nullptr) addMac(members, selfMac);
     return members;
 }
