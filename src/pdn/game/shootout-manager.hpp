@@ -239,8 +239,8 @@ private:
     // announce anything. Never returns 0, which means "no attempt", unless this device
     // has no MAC to name itself with.
     uint32_t mintEpoch();
-    // Writes [cmd, seqId, attempt identity] into `out`, which must hold at least
-    // kHeaderLength bytes. Returns where the payload starts.
+    // Writes the header into `out`, which must hold at least kHeaderLength bytes.
+    // Returns where the payload starts.
     size_t writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const;
     // The body MATCH_START and MATCH_RESULT share, after the header: two MACs and the
     // match index. One declaration, so the builders, the decoder and the abandon

@@ -26,6 +26,7 @@ Idle::Idle(const GameContext& ctx)
 Idle::~Idle() {
     player = nullptr;
     matchManager = nullptr;
+    shootoutManager = nullptr;
 }
 
 void Idle::onStateMounted(PDN* pdn) {
