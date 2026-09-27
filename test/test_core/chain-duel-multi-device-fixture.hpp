@@ -470,74 +470,23 @@ protected:
             cdm);
     }
 
-    // Register Shootout command + ack handlers. Mirrors the dispatcher in
-    // the GameSession constructor so every packet path exercised on hardware is
-    // exercised in the fixture too.
+    // Register Shootout command + ack handlers. Both route straight into
+    // ShootoutManager's own frame decoders, the same ones GameSession installs, so
+    // the fixture cannot accept a frame the shipping dispatcher would reject.
     void wireShootoutHandlers(MultiDeviceNode& n) {
         ShootoutManager* mgr = n.shootout.get();
 
         n.device->wirelessManager->setEspNowPacketHandler(
             PktType::kShootoutCommand,
             [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
-                auto* m = static_cast<ShootoutManager*>(ctx);
-                if (dataLen < 2) return;
-                ShootoutCmd cmd = static_cast<ShootoutCmd>(data[0]);
-                uint8_t seqId = data[1];
-                const uint8_t* payload = data + 2;
-                size_t payloadLen = dataLen - 2;
-                switch (cmd) {
-                    case ShootoutCmd::CONFIRM: {
-                        if (payloadLen < 6) break;
-                        const char* name = (payloadLen >= 6 + ShootoutManager::kNameLength)
-                            ? reinterpret_cast<const char*>(payload + 6) : nullptr;
-                        m->onConfirmReceived(payload, name);
-                        break;
-                    }
-                    case ShootoutCmd::BRACKET:
-                    case ShootoutCmd::RING_CLOSED: {
-                        if (payloadLen < 1) break;
-                        uint8_t count = payload[0];
-                        if (payloadLen < 1 + 6u * static_cast<size_t>(count)) break;
-                        std::vector<std::array<uint8_t, 6>> macs;
-                        for (uint8_t i = 0; i < count; i++) {
-                            std::array<uint8_t, 6> mac;
-                            memcpy(mac.data(), payload + 1 + 6 * i, 6);
-                            macs.push_back(mac);
-                        }
-                        if (cmd == ShootoutCmd::BRACKET) {
-                            m->onBracketReceived(fromMac, macs, seqId);
-                        } else {
-                            m->onRingClosedReceived(fromMac, macs);
-                        }
-                        break;
-                    }
-                    case ShootoutCmd::MATCH_START:
-                        if (payloadLen >= 13)
-                            m->onMatchStartReceived(fromMac, payload, payload + 6, payload[12], seqId);
-                        break;
-                    case ShootoutCmd::MATCH_RESULT:
-                        if (payloadLen >= 13) m->onMatchResultReceived(payload, payload + 6, payload[12], seqId, fromMac);
-                        break;
-                    case ShootoutCmd::TOURNAMENT_END:
-                        if (payloadLen >= 6) m->onTournamentEndReceived(fromMac, payload, seqId);
-                        break;
-                    case ShootoutCmd::ABORT:
-                        m->onAbortReceived(fromMac, seqId);
-                        break;
-                }
+                static_cast<ShootoutManager*>(ctx)->onShootoutFrame(fromMac, data, dataLen);
             },
             mgr);
 
         n.device->wirelessManager->setEspNowPacketHandler(
             PktType::kShootoutCommandAck,
             [](const uint8_t* fromMac, const uint8_t* data, const size_t dataLen, void* ctx) {
-                // Same routing as GameSession::onShootoutCommandAckPacket: the
-                // seqId alone names the frame, so the command byte is only
-                // range-checked, never dispatched on.
-                auto* m = static_cast<ShootoutManager*>(ctx);
-                if (dataLen < 2) return;
-                if (data[0] > static_cast<uint8_t>(ShootoutCmd::ABORT)) return;
-                m->onCommandAckReceived(fromMac, data[1]);
+                static_cast<ShootoutManager*>(ctx)->onShootoutAckFrame(fromMac, data, dataLen);
             },
             mgr);
     }

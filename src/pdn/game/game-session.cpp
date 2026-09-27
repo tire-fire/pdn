@@ -217,73 +217,10 @@ void GameSession::onChainJoinPacket(const uint8_t* fromMac, const uint8_t* data,
     chainDuelManager->onChainJoinReceived(fromMac, payload->championMac);
 }
 
-namespace {
-// [count, count * 6-byte MAC] — the body BRACKET and RING_CLOSED share.
-bool decodeMacList(const uint8_t* payload, size_t payloadLen,
-                   std::vector<std::array<uint8_t, 6>>& out) {
-    if (payloadLen < 1) return false;
-    uint8_t count = payload[0];
-    if (count > ShootoutManager::MAX_BRACKET_SIZE) return false;
-    if (payloadLen < 1 + 6 * static_cast<size_t>(count)) return false;
-    out.reserve(count);
-    for (uint8_t i = 0; i < count; i++) {
-        std::array<uint8_t, 6> mac;
-        memcpy(mac.data(), payload + 1 + 6 * i, 6);
-        out.push_back(mac);
-    }
-    return true;
-}
-}  // namespace
-
 void GameSession::onShootoutCommandPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
-    if (!shootoutManager || dataLen < 2) return;
-    if (data[0] > static_cast<uint8_t>(ShootoutCmd::RING_CLOSED)) return;
-    ShootoutCmd cmd = static_cast<ShootoutCmd>(data[0]);
-    uint8_t seqId = data[1];
-    const uint8_t* payload = data + 2;
-    size_t payloadLen = dataLen - 2;
-    switch (cmd) {
-        case ShootoutCmd::CONFIRM: {
-            if (payloadLen < 6) break;
-            const char* name = (payloadLen >= 6 + ShootoutManager::kNameLength)
-                                   ? reinterpret_cast<const char*>(payload + 6)
-                                   : nullptr;
-            shootoutManager->onConfirmReceived(payload, name);
-            break;
-        }
-        case ShootoutCmd::BRACKET: {
-            std::vector<std::array<uint8_t, 6>> bracket;
-            if (!decodeMacList(payload, payloadLen, bracket)) break;
-            shootoutManager->onBracketReceived(fromMac, bracket, seqId);
-            break;
-        }
-        case ShootoutCmd::RING_CLOSED: {
-            std::vector<std::array<uint8_t, 6>> members;
-            if (!decodeMacList(payload, payloadLen, members)) break;
-            shootoutManager->onRingClosedReceived(fromMac, members);
-            break;
-        }
-        case ShootoutCmd::MATCH_START:
-            if (payloadLen >= 13)
-                shootoutManager->onMatchStartReceived(fromMac, payload, payload + 6,
-                                                      payload[12], seqId);
-            break;
-        case ShootoutCmd::MATCH_RESULT:
-            if (payloadLen >= 13)
-                shootoutManager->onMatchResultReceived(payload, payload + 6, payload[12], seqId, fromMac);
-            break;
-        case ShootoutCmd::TOURNAMENT_END:
-            if (payloadLen >= 6)
-                shootoutManager->onTournamentEndReceived(fromMac, payload, seqId);
-            break;
-        case ShootoutCmd::ABORT:
-            shootoutManager->onAbortReceived(fromMac, seqId);
-            break;
-    }
+    if (shootoutManager) shootoutManager->onShootoutFrame(fromMac, data, dataLen);
 }
 
 void GameSession::onShootoutCommandAckPacket(const uint8_t* fromMac, const uint8_t* data, size_t dataLen) {
-    if (!shootoutManager || dataLen < 2) return;
-    if (data[0] > static_cast<uint8_t>(ShootoutCmd::ABORT)) return;
-    shootoutManager->onCommandAckReceived(fromMac, data[1]);
+    if (shootoutManager) shootoutManager->onShootoutAckFrame(fromMac, data, dataLen);
 }

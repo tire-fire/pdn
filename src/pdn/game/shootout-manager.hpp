@@ -56,6 +56,14 @@ public:
     /// RDC ring-closed observer: snapshots the ring roster and announces it to the
     /// other members. Who coordinates is read from the RDC when a bracket is drawn.
     void onRingClosed();
+    /// Decodes one kShootoutCommand frame and routes it to the handler for its
+    /// command byte. The wire layout lives here beside the builders that write it:
+    /// GameSession and the multi-device test fixture both route through this, so a
+    /// frame the hardware would reject is rejected in the tests too.
+    void onShootoutFrame(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
+    /// Decodes one kShootoutCommandAck frame. The seqId alone names the frame, so
+    /// the command byte is only range-checked, never dispatched on.
+    void onShootoutAckFrame(const uint8_t* fromMac, const uint8_t* data, size_t dataLen);
     /// Inbound RING_CLOSED: records `members` as the ring roster, which a member
     /// gates confirms against. A member has no other proposal trigger, though it
     /// must also still be on the ring when the gate is polled.
