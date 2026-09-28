@@ -1928,6 +1928,7 @@ TEST_F(ShootoutManagerTests, adoptingANewAttemptRequiresAFreshPress) { adoptingA
 TEST_F(ShootoutManagerTests, aFinishedAttemptsIdentityDoesNotOutliveIt) { aFinishedAttemptsIdentityDoesNotOutliveIt(this); }
 TEST_F(ShootoutManagerTests, aHeadWithNoAttemptMintsBeforeAnnouncing) { aHeadWithNoAttemptMintsBeforeAnnouncing(this); }
 TEST_F(ShootoutManagerTests, aBracketHolderWithNoRosterCanStillBeRetired) { aBracketHolderWithNoRosterCanStillBeRetired(this); }
+TEST_F(ShootoutManagerTests, ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity) { ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }

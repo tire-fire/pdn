@@ -328,9 +328,14 @@ void ShootoutManager::onRingClosedReceived(
     // RING_CLOSED goes out only from sync()'s PROPOSAL block, which startProposal
     // reached through resetTournamentState, so the sender's bracket is empty. A device
     // cannot be in two tournaments, so the attempt held here is over. Each conjunct:
-    //   epoch mismatch — the sender says nothing. A coordinator that aborted while the
-    //     ring head sat elsewhere cannot announce at all, so the device that does is a
-    //     third one that never ran our tournament.
+    //   a newer attempt, or our own coordinator announcing — two rules, because neither
+    //     covers the other. The identity catches a third device forming an attempt,
+    //     which the sender cannot: a coordinator that aborted while the ring head sat
+    //     elsewhere can never announce again, so the device that does is one that never
+    //     ran our tournament. The sender catches an identity reused after a reboot,
+    //     which the identity cannot: a device announcing a ring holds no bracket, so our
+    //     own coordinator announcing says our tournament is over whatever it is stamped
+    //     with.
     //   on our ring — a device we unplugged from goes on repeating a roster that still
     //     names us, and it must not speak for the tournament we joined after leaving.
     //   not coordinating — the coordinator is the one device that knows its own
@@ -341,7 +346,8 @@ void ShootoutManager::onRingClosedReceived(
     //     is the one that wants the roster.
     // Giving up is local: an ABORT fan-out would reach that fresh proposal, which
     // takes one from any ring member.
-    if (epoch != tournamentEpoch && fromOurRing && !bracket.empty() &&
+    const bool newerAttempt = epoch != tournamentEpoch && fromOurRing;
+    if ((newerAttempt || isFromCoordinator(fromMac)) && !bracket.empty() &&
         !isCoordinator() && !isTerminalPhase()) {
         LOG_W(TAG, "attempt %08x formed around us; retiring the bracket we hold",
               static_cast<unsigned>(epoch));

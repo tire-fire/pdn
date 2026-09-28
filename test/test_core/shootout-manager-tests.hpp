@@ -1420,6 +1420,37 @@ inline void aBracketHolderWithNoRosterCanStillBeRetired(ShootoutManagerTests* su
         << "a device with no roster of its own could not be told its tournament was over";
 }
 
+// The attempt identity is not enough on its own, because a device that reboots restarts
+// its counter and re-issues an identity a peer may still hold a bracket under. The model
+// builds exactly that: the coordinator resets, comes back, re-mints the same value and
+// announces a new attempt; the peer sees a matching identity, so it neither retires nor
+// confirms, and the head waits on a confirm that cannot come.
+// The sender answers what the identity cannot. A device announcing a ring holds no
+// bracket, so an announcement from the very coordinator whose bracket we hold says that
+// tournament is over whatever it is stamped with. The two rules cover different cases —
+// the identity catches a third device forming an attempt, which the sender cannot — so
+// this is a union, not a replacement.
+inline void ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity(
+    ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord, other}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    // The coordinator reboots and re-mints the identity it used before, then announces.
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord, other}, 0xC6000001u);
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a reused identity from our own coordinator left this device on a dead bracket";
+}
+
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
 // gated on a local confirm for exactly that reason, and the proposal bound has to
 // be too: without it an untouched latched ring aborts, shows ABORTED for two
