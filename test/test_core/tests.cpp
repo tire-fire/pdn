@@ -1888,7 +1888,6 @@ TEST_F(ChainDuelMultiDeviceFixture, shootoutFourDeviceTwoTournamentsBackToBack) 
 
 TEST_F(ShootoutManagerTests, coordinatorIsTheRingHeadThatDrew) { coordinatorIsTheRingHeadThatDrew(this); }
 TEST_F(ShootoutManagerTests, ringClosedAnnouncesRosterToMembers) { ringClosedAnnouncesRosterToMembers(this); }
-TEST_F(ShootoutManagerTests, ringClosureFromCoordinatorAnnouncesRing) { ringClosureFromCoordinatorAnnouncesRing(this); }
 TEST_F(ShootoutManagerTests, ringClosedBroadcastPromotesOnlyItsOwnMembers) { ringClosedBroadcastPromotesOnlyItsOwnMembers(this); }
 TEST_F(ShootoutManagerTests, openRingRefusesProposalDespiteLatchedRoster) { openRingRefusesProposalDespiteLatchedRoster(this); }
 TEST_F(ShootoutManagerTests, ringHeadLoopMembersComeFromRdcRoster) { ringHeadLoopMembersComeFromRdcRoster(this); }
@@ -1926,6 +1925,9 @@ TEST_F(ShootoutManagerTests, theMatchResultResendNamesTheSameBout) { theMatchRes
 TEST_F(ShootoutManagerTests, aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn) { aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(this); }
 TEST_F(ShootoutManagerTests, aFinishedTournamentStillRefusesANewBracket) { aFinishedTournamentStillRefusesANewBracket(this); }
 TEST_F(ShootoutManagerTests, adoptingANewAttemptRequiresAFreshPress) { adoptingANewAttemptRequiresAFreshPress(this); }
+TEST_F(ShootoutManagerTests, aFinishedAttemptsIdentityDoesNotOutliveIt) { aFinishedAttemptsIdentityDoesNotOutliveIt(this); }
+TEST_F(ShootoutManagerTests, aHeadWithNoAttemptMintsBeforeAnnouncing) { aHeadWithNoAttemptMintsBeforeAnnouncing(this); }
+TEST_F(ShootoutManagerTests, aBracketHolderWithNoRosterCanStillBeRetired) { aBracketHolderWithNoRosterCanStillBeRetired(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }

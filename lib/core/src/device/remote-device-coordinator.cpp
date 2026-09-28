@@ -161,7 +161,7 @@ void RemoteDeviceCoordinator::sync(Device* PDN) {
     // Three separate sites move the derived role: a link commits to CONNECTED in
     // the loop above, dies through the Idle mount inside it, or latches a ring
     // during HELLO parsing between ticks. Poll once per tick to catch all three.
-    // onRingClosed keeps firing at its own decision site, so a ring closure and
+    // The ring-closed callback fires at its own decision site, so a ring closure and
     // the RING role it implies can be up to one tick apart.
     maybeFireChainRoleChange();
 }

@@ -200,12 +200,11 @@ public:
     /// Index of the node that latched the ring, set by announceRing().
     size_t ringHeadIndex = 0;
 
-    /// Announces the roster from whichever node latched, which `closeRing()` makes
-    /// the last-indexed one. Production fires onRingClosed() only from that RDC
-    /// callback, so announcing from any other node is a state no device can reach. The roster is
-    /// injected because `dispatch()` has no kConnectionAnnounce case, so the
-    /// announces the RDC really sends fall through to `default:` and no roster
-    /// ever reaches a head here.
+    /// Announces the roster from whichever node latched, which `closeRing()` makes the
+    /// last-indexed one. Only that node reads ChainRole::RING, so announcing from any
+    /// other is a state no device can reach. The head's roster is injected because
+    /// `dispatch()` has no kConnectionAnnounce case, so the announces the RDC really
+    /// sends fall through to `default:` and no roster ever reaches a head here.
     void announceRing() {
         size_t headIndex = nodes.size();
         for (size_t i = 0; i < nodes.size(); ++i) {
@@ -223,7 +222,6 @@ public:
             roster.push_back(mac);
         }
         nodes[headIndex]->shootout->setLoopMembersForTest(roster);
-        nodes[headIndex]->shootout->onRingClosed();
         // The head announces on its first tick in the proposal, not on the closure
         // edge: the announcement carries the attempt identity startProposal mints,
         // so nothing can go out before then. Members join off that announcement.

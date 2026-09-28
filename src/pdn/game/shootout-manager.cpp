@@ -31,16 +31,9 @@ ShootoutManager::ShootoutManager(Player* player,
                const uint8_t* packet, size_t len) {
             onCommandAbandoned(seqId, targetMac, packet, len);
         });
-    if (rdc == nullptr) return;
-    // Subscribed here rather than by whoever builds this manager: see
-    // ChainDuelManager's constructor for the reasoning.
-    rdc->setOnRingClosed([this]() { onRingClosed(); });
 }
 
-ShootoutManager::~ShootoutManager() {
-    if (rdc == nullptr) return;
-    rdc->setOnRingClosed(nullptr);
-}
+ShootoutManager::~ShootoutManager() = default;
 
 bool ShootoutManager::active() const {
     return phase != Phase::IDLE;
@@ -244,6 +237,13 @@ void ShootoutManager::resetToIdle() {
     resetTournamentState();
     ringMembers.clear();
     ringClosedRebroadcastTimer.invalidate();
+    // The attempt dies with the tournament, which is why this is here and not in
+    // resetTournamentState: startProposal calls that one, and a member's adopted
+    // identity has to survive entering the proposal it belongs to. Carried past the end
+    // instead, a spent identity gets announced again by a device that re-proposes
+    // without minting, and the members still holding that attempt's bracket never
+    // confirm for it.
+    tournamentEpoch = 0;
 }
 
 void ShootoutManager::resetTournamentState() {
@@ -303,26 +303,6 @@ void ShootoutManager::startProposal() {
     phase = Phase::PROPOSAL;
 }
 
-void ShootoutManager::onRingClosed() {
-    if (phase != Phase::IDLE) {
-        LOG_W(TAG, "onRingClosed ignored; phase=%d", static_cast<int>(phase));
-        return;
-    }
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
-    if (selfMac == nullptr) {
-        LOG_E(TAG, "onRingClosed with no local MAC");
-        return;
-    }
-    // The RDC fires this on the device whose own MAC came back around the ring. It
-    // records the roster and nothing else: announcing it is sync()'s, on the first
-    // tick in PROPOSAL, which is after startProposal has minted the attempt the
-    // announcement belongs to. Who coordinates is read from ring detection when a
-    // bracket is drawn, because a second latch this same edge fired on can resolve
-    // away before then.
-    ringMembers = getLoopMembers();
-    LOG_W(TAG, "ring closed; members=%zu", ringMembers.size());
-}
-
 void ShootoutManager::onRingClosedReceived(
     const uint8_t* fromMac, const std::vector<std::array<uint8_t, 6>>& members,
     uint32_t epoch) {
@@ -336,10 +316,13 @@ void ShootoutManager::onRingClosedReceived(
     if (!containsMac(members, selfMac)) return;
     const uint8_t* head = ringHead();
     const bool fromOurHead = head != nullptr && memcmp(fromMac, head, 6) == 0;
-    // News of another attempt is only news from a device on the ring this device is on.
-    // An idle device is the exception below: with no ring of its own to check against,
-    // the roster is all it has.
-    const bool fromOurRing = containsMac(getLoopMembers(), fromMac);
+    // News of another attempt is only news from a device on the ring this device is on
+    // — where this device knows its ring. With an empty roster there is nothing to
+    // check against and the announcement is all it has, which is the same reason the
+    // idle branch below takes a roster from anyone: refusing here would leave a device
+    // holding a bracket and no roster unable to be told its tournament is over.
+    const std::vector<std::array<uint8_t, 6>> ourRing = getLoopMembers();
+    const bool fromOurRing = ourRing.empty() || containsMac(ourRing, fromMac);
     // A ring forming under an attempt this device is not in, announced by a device
     // on the ring this device is on. Whoever announced it is running no tournament:
     // RING_CLOSED goes out only from sync()'s PROPOSAL block, which startProposal
@@ -816,6 +799,11 @@ void ShootoutManager::sync() {
         const bool neverAnnounced = !ringClosedRebroadcastTimer.isRunning();
         if (headsRing() && (neverAnnounced ||
                             (ringClosedRebroadcastTimer.expired() && !everyoneIn))) {
+            // A device that came to head the ring after the proposal opened minted
+            // nothing and may have adopted nothing, and 0 is the value that means "no
+            // attempt": announcing under it would have every member refuse the frames
+            // that follow.
+            if (tournamentEpoch == 0) tournamentEpoch = mintEpoch();
             sendRingClosed();
         }
 

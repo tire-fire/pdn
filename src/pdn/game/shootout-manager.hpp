@@ -53,10 +53,6 @@ public:
     // Test-only: override the loop-member set. Pass an empty vector to clear.
     void setLoopMembersForTest(const std::vector<std::array<uint8_t, 6>>& members);
 
-    /// RDC ring-closed observer: records the ring roster. Announcing it is sync()'s,
-    /// once the proposal has minted the attempt the announcement belongs to. Who
-    /// coordinates is read from the RDC when a bracket is drawn.
-    void onRingClosed();
     /// Decodes one kShootoutCommand frame and routes it to the handler for its
     /// command byte. The wire layout lives here beside the builders that write it:
     /// GameSession and the multi-device test fixture both route through this, so a
