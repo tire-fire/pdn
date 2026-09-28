@@ -1878,6 +1878,9 @@ TEST_F(ChainDuelMultiDeviceFixture, shootoutEightDeviceFullTournament) {
 TEST_F(ChainDuelMultiDeviceFixture, shootoutFourDeviceConsensusAndMatchStart) {
     shootoutFourDeviceConsensusAndMatchStart(this);
 }
+TEST_F(ChainDuelMultiDeviceFixture, shootoutFourDeviceCoordinatorAbortReachesTheRing) {
+    shootoutFourDeviceCoordinatorAbortReachesTheRing(this);
+}
 TEST_F(ChainDuelMultiDeviceFixture, shootoutFourDeviceTwoTournamentsBackToBack) {
     shootoutFourDeviceTwoTournamentsBackToBack(this);
 }
@@ -1930,6 +1933,7 @@ TEST_F(ShootoutManagerTests, aHeadWithNoAttemptMintsBeforeAnnouncing) { aHeadWit
 TEST_F(ShootoutManagerTests, aBracketHolderWithNoRosterCanStillBeRetired) { aBracketHolderWithNoRosterCanStillBeRetired(this); }
 TEST_F(ShootoutManagerTests, ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity) { ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity(this); }
 TEST_F(ShootoutManagerTests, aRepeatedIdentityWouldAdmitTheLastAttemptsConfirm) { aRepeatedIdentityWouldAdmitTheLastAttemptsConfirm(this); }
+TEST_F(ShootoutManagerTests, theRingsAbortIsRecordedEvenAfterOurOwnBoundFired) { theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(this); }
 TEST_F(ShootoutManagerTests, anUntouchedRingSitsIdleRatherThanFlashing) { anUntouchedRingSitsIdleRatherThanFlashing(this); }
 TEST_F(ShootoutManagerTests, theEndingRepeatsWhileTheWinnerIsShown) { theEndingRepeatsWhileTheWinnerIsShown(this); }
 TEST_F(ShootoutManagerTests, aMemberThatMissedTheEndingTakesTheRepeat) { aMemberThatMissedTheEndingTakesTheRepeat(this); }

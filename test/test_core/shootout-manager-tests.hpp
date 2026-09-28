@@ -1269,8 +1269,15 @@ inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTest
     suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
-    // The head's roster completed a moment later and it drew, naming us.
-    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 4);
+    // The head's roster completed a moment later and it drew, naming us. Delivered as
+    // bytes through the decoder, not by calling the handler: the attempt gate lives in
+    // onShootoutFrame, so a direct call cannot see whether this frame would survive it —
+    // and for a day it did not.
+    std::vector<uint8_t> frame = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
+                                  0xC6, 0x00, 0x00, 0x01, 3};
+    for (const std::array<uint8_t, 6>& m : {me, head, other})
+        frame.insert(frame.end(), m.begin(), m.end());
+    suite->shootout->onShootoutFrame(head.data(), frame.data(), frame.size());
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
         << "a device that gave up refused the bracket that proves it was wrong to";
@@ -1485,6 +1492,38 @@ inline void aRepeatedIdentityWouldAdmitTheLastAttemptsConfirm(ShootoutManagerTes
     suite->shootout->startProposal();
     EXPECT_EQ(suite->shootout->getTournamentEpoch(), pinned)
         << "the fake is not pinning the value, so this case proves nothing";
+}
+
+// Order matters between a device's own bound and the ring's abort. A member whose clock
+// fired first is already ABORTED when the ABORT arrives, so it needs no second teardown —
+// but it does still need to record that the ring is what ended this tournament, or it will
+// take the next retry of the very bracket that abort retired.
+inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    // Our own bound fires first.
+    suite->shootout->giveUpLocallyForTest();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+
+    // Then the ring's abort lands on a device that has already left.
+    suite->shootout->onAbortReceived(head.data(), 7);
+
+    // A retry of the bracket that abort retired must not pull us back in.
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 1);
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a bracket the ring had already aborted pulled this device back into it";
 }
 
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is

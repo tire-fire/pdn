@@ -89,6 +89,9 @@ public:
     bool shouldEnterProposal() const;
 
     void startProposal();
+    /// Test-only: drives the local give-up that the proposal bound reaches, so a case can
+    /// order it against an inbound ABORT without waiting out the clock.
+    void giveUpLocallyForTest() { giveUpLocally(); }
     void confirmLocal();
     void sync();
     // [cmd, seqId, 4-byte attempt identity] — every kShootoutCommand frame opens with
@@ -245,9 +248,13 @@ private:
     // attempt before the reset counted toward the one after it. Never returns 0, which
     // means "no attempt".
     uint32_t mintEpoch();
-    // Writes the header into `out`, which must hold at least kHeaderLength bytes.
-    // Returns where the payload starts.
-    size_t writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const;
+    // Writes the header into `out`, which must hold at least kHeaderLength bytes, and
+    // returns where the payload starts. The attempt is a parameter rather than a read of
+    // the member: abortTournament builds its frame after the teardown that clears it, and
+    // a frame whose identity depends on when it happens to be written is a frame nobody
+    // can reason about.
+    size_t writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId,
+                       uint32_t epoch) const;
     // The body MATCH_START and MATCH_RESULT share, after the header: two MACs and the
     // match index. One declaration, so the builders, the decoder and the abandon
     // path's re-read of a kept frame cannot drift apart on an offset.

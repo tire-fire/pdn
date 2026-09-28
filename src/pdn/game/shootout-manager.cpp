@@ -107,7 +107,14 @@ bool ShootoutManager::isFromCoordinator(const uint8_t* mac) const {
 bool ShootoutManager::isRingMember(const uint8_t* mac) const {
     if (containsMac(bracket, mac)) return true;
     if (containsMac(confirmedSet, mac)) return true;
-    return containsMac(getLoopMembers(), mac);
+    if (containsMac(getLoopMembers(), mac)) return true;
+    // The head ring detection reports right now, which onBracketReceived already trusts
+    // as an author. Without it the two paths disagree about the same device: a device that
+    // gave up has all three rosters cleared, so its head can still hand it a bracket while
+    // it cannot hear that same head abort — and being re-joinable but un-abortable is the
+    // one pairing that must not happen.
+    const uint8_t* head = ringHead();
+    return head != nullptr && memcmp(mac, head, 6) == 0;
 }
 
 void ShootoutManager::broadcastCommand(const uint8_t* packet, size_t len) {
@@ -423,7 +430,16 @@ void ShootoutManager::giveUpLocally() {
     // screen — but nothing goes out. A fan-out from here would reach the fresh
     // proposal that this device is giving up in favour of, and onAbortReceived takes
     // one from any ring member.
+    //
+    // The attempt survives the reset, which resetToIdle otherwise clears. Leaving is not
+    // the same as never having been here: this device still has to recognise the
+    // tournament it just left, both to stamp the ABORT abortTournament fans out after
+    // calling this and to take the bracket that names it if the head drew a moment after
+    // the bound fired. The clear a spent identity needs happens when the terminal screen
+    // dismounts and calls resetToIdle itself, which is before anything can re-propose.
+    const uint32_t attemptWeAreLeaving = tournamentEpoch;
     resetToIdle();
+    tournamentEpoch = attemptWeAreLeaving;
     phase = Phase::ABORTED;
 }
 
@@ -611,13 +627,14 @@ uint32_t ShootoutManager::mintEpoch() {
     return minted == 0 ? 1 : minted;
 }
 
-size_t ShootoutManager::writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const {
+size_t ShootoutManager::writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId,
+                                   uint32_t epoch) const {
     out[0] = static_cast<uint8_t>(cmd);
     out[1] = seqId;
-    out[2] = static_cast<uint8_t>(tournamentEpoch >> 24);
-    out[3] = static_cast<uint8_t>(tournamentEpoch >> 16);
-    out[4] = static_cast<uint8_t>(tournamentEpoch >> 8);
-    out[5] = static_cast<uint8_t>(tournamentEpoch);
+    out[2] = static_cast<uint8_t>(epoch >> 24);
+    out[3] = static_cast<uint8_t>(epoch >> 16);
+    out[4] = static_cast<uint8_t>(epoch >> 8);
+    out[5] = static_cast<uint8_t>(epoch);
     return kHeaderLength;
 }
 
@@ -693,7 +710,7 @@ std::vector<uint8_t> ShootoutManager::buildMacListPacket(
     ShootoutCmd cmd, uint8_t seqId,
     const std::vector<std::array<uint8_t, 6>>& macs) const {
     std::vector<uint8_t> packet(kHeaderLength);
-    writeHeader(packet.data(), cmd, seqId);
+    writeHeader(packet.data(), cmd, seqId, tournamentEpoch);
     // The roster is the RDC's 64 plus self, so it can land one over what the
     // decoder accepts — and an over-long frame is dropped by every receiver, not
     // just the members past the cap. Truncating keeps the ring running.
@@ -738,7 +755,7 @@ void ShootoutManager::abortTournament() {
     // and no member's own ring-break guard will ever fire.
     const uint8_t seqId = nextSeqId();
     uint8_t packet[kHeaderLength];
-    writeHeader(packet, ShootoutCmd::ABORT, seqId);
+    writeHeader(packet, ShootoutCmd::ABORT, seqId, tournamentEpoch);
     sendReliablyToPeers(targets, seqId, packet, sizeof(packet));
     // Only if one actually went out. A ring of one names no recipients, so there
     // is no group to spare and a seqId recorded here would spare a later frame
@@ -749,7 +766,7 @@ void ShootoutManager::abortTournament() {
 void ShootoutManager::sendLocalConfirm() {
     // [header, 6-byte MAC, kNameLength-byte null-padded name]
     uint8_t payload[kHeaderLength + 6 + kNameLength];
-    const size_t mac = writeHeader(payload, ShootoutCmd::CONFIRM, 0);
+    const size_t mac = writeHeader(payload, ShootoutCmd::CONFIRM, 0, tournamentEpoch);
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     memcpy(&payload[mac], selfMac, 6);
     memset(&payload[mac + 6], 0, kNameLength);
@@ -885,7 +902,7 @@ ShootoutManager::getCurrentMatchPair() const {
 
 std::vector<uint8_t> ShootoutManager::buildMatchStartPacket(int matchIndex) const {
     std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId);
+    writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId, tournamentEpoch);
     MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
     memcpy(pair->a, currentRound[matchIndex * 2].data(), 6);
     memcpy(pair->b, currentRound[matchIndex * 2 + 1].data(), 6);
@@ -1074,7 +1091,7 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
 std::vector<uint8_t> ShootoutManager::buildMatchResultPacket(
     const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) const {
     std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId);
+    writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId, tournamentEpoch);
     MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
     memcpy(pair->a, winner, 6);
     memcpy(pair->b, loser, 6);
@@ -1142,7 +1159,7 @@ void ShootoutManager::onMatchResultReceived(
 
 void ShootoutManager::buildTournamentEndPacket(uint8_t* out, const uint8_t* winner,
                                               uint8_t seqId) const {
-    const size_t winnerAt = writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId);
+    const size_t winnerAt = writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId, tournamentEpoch);
     memcpy(out + winnerAt, winner, 6);
 }
 
@@ -1191,12 +1208,11 @@ void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
 }
 
 void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
-    // One broadcast reaches every device in radio range, other rings included.
-    // The ack stays behind this filter because a unicast takes one of the radio's
-    // 20 peer slots, evicting whatever sat there longest. A follower that already
-    // aborted fails it too, its rosters cleared, so the sender spends retries on a
-    // device that has stopped; a still-cabled head keeps answering, its roster
-    // coming live from the RDC.
+    // One broadcast reaches every device in radio range, other rings included. The ack
+    // stays behind this filter because a unicast takes one of the radio's 20 peer slots,
+    // evicting whatever sat there longest. A follower that already gave up still answers
+    // its own head — isRingMember reads that live — because it can still be handed a
+    // bracket by it, and it has to be able to hear the same device abort.
     if (!isRingMember(fromMac)) return;
     // Addressed to fromMac because any ring member may abort, not just the
     // coordinator.
@@ -1204,10 +1220,12 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // ENDED is refused here too, and reachably: a member that missed
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the
     // winner appears sends ABORT to devices already showing the result.
-    if (isTerminalPhase() || phase == Phase::IDLE) return;
-    giveUpLocally();
-    // After the reset, which clears it: this is what keeps a stale bracket retry from
-    // pulling us back into the tournament the ring just abandoned.
+    // Recorded whatever phase this device is in, and after any reset, which clears it. A
+    // device whose own bound fired a moment before this arrived is already ABORTED and
+    // takes no further teardown — but it still has to stop re-adopting the bracket this
+    // abort retired, which is the one thing the flag is for.
+    const bool alreadyOut = isTerminalPhase() || phase == Phase::IDLE;
+    if (!alreadyOut) giveUpLocally();
     abortedByRing = true;
 }
 

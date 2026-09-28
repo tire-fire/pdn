@@ -893,6 +893,52 @@ inline void shootoutEightDeviceFullTournament(ChainDuelMultiDeviceFixture* suite
     }
 }
 
+// The coordinator gives up and the ring has to hear it. This is the leg the fixture
+// never had, and its absence hid a regression for a day: ABORT was built after the
+// teardown that cleared the attempt identity, so every copy went out stamped "no
+// attempt" and every member dropped it at the decoder. The unit suite could not see it
+// because it calls onAbortReceived directly; only this fixture puts real bytes through
+// onShootoutFrame.
+inline void shootoutFourDeviceCoordinatorAbortReachesTheRing(
+    ChainDuelMultiDeviceFixture* suite) {
+    suite->spawnDevices(4);
+    suite->setAllHunters();
+    suite->connectLinearHunterChain();
+    suite->deliverAllPackets();
+    suite->syncAll();
+    suite->deliverAllPackets();
+    suite->closeRing();
+    suite->announceRing();
+    for (size_t i = 0; i < suite->nodeCount(); ++i) {
+        suite->node(i).shootout->confirmLocal();
+        suite->deliverAllPackets();
+    }
+    suite->deliverAllPackets();
+    suite->syncAll();
+    suite->deliverAllPackets();
+    suite->advanceClock(ShootoutManager::kBracketRevealMs + 100);
+    suite->syncAll();
+    suite->deliverAllPackets();
+
+    const size_t head = suite->ringHeadIndex;
+    ASSERT_FALSE(suite->node(head).shootout->getBracket().empty())
+        << "the head never drew, so there is no tournament to abort";
+    size_t holding = 0;
+    for (size_t i = 0; i < suite->nodeCount(); ++i)
+        if (!suite->node(i).shootout->getBracket().empty()) holding++;
+    ASSERT_EQ(holding, suite->nodeCount()) << "not every node joined the tournament";
+
+    suite->node(head).shootout->abortTournament();
+    suite->deliverAllPackets();
+    suite->syncAll();
+    suite->deliverAllPackets();
+
+    for (size_t i = 0; i < suite->nodeCount(); ++i) {
+        EXPECT_EQ(suite->node(i).shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+            << "node " << i << " never heard the coordinator give up";
+    }
+}
+
 // Two tournaments on one ring, with a reset between them. The ring has to
 // survive the whole first tournament, including its bracket-reveal wait, or the
 // second one has no members to bracket.
