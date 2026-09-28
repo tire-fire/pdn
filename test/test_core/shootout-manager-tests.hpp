@@ -37,7 +37,7 @@ public:
 
         rdc.setExternalConnectivityTask(true);
         rdc.initialize(device.wirelessManager, device.serialManager, &device);
-        shootout = new ShootoutManager(&player, device.wirelessManager, &rdc);
+        shootout = new ShootoutManager(&player, device.wirelessManager, &rdc, &entropy);
     }
 
     /// Feeds a peer's PdnConnectionContext in through the handler the reliable
@@ -126,7 +126,7 @@ public:
         memberRdc.chainRole = ChainRole::CHILD;
         memberRdc.ringHeadMac = head;
         delete shootout;
-        shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc);
+        shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
     }
 
     /// Puts this device at the head of a ring whose detection serves `served`.
@@ -136,7 +136,7 @@ public:
         memberRdc.chainRole = ChainRole::RING;
         memberRdc.chainMembers = served;
         delete shootout;
-        shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc);
+        shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
     }
 
     /// Both cables go quiet: the links lapse and the loop is provably open.
@@ -159,6 +159,7 @@ public:
     // byte callbacks, mirroring production where the drivers outlive the RDC.
     RemoteDeviceCoordinator rdc;
     FakeRingRemoteDeviceCoordinator memberRdc;
+    FakeEntropy entropy;
     Player player{"TEST", Allegiance::RESISTANCE, true};
     ShootoutManager* shootout = nullptr;
     FakePlatformClock* fakeClock = nullptr;
@@ -354,7 +355,7 @@ inline void ringHeadLoopMembersComeFromRdcRoster(ShootoutManagerTests* suite) {
 
     FakeRingRemoteDeviceCoordinator ringRdc;
     ringRdc.chainMembers = {{0x02, 0, 0, 0, 0, 0}, {0x03, 0, 0, 0, 0, 0}};
-    ShootoutManager ringShootout(&suite->player, suite->device.wirelessManager, &ringRdc);
+    ShootoutManager ringShootout(&suite->player, suite->device.wirelessManager, &ringRdc, &suite->entropy);
 
     std::vector<std::array<uint8_t, 6>> members = ringShootout.getLoopMembers();
     ASSERT_EQ(members.size(), 3u);
@@ -1451,6 +1452,41 @@ inline void ourCoordinatorsAnnouncementRetiresUsEvenUnderAReusedIdentity(
         << "a reused identity from our own coordinator left this device on a dead bracket";
 }
 
+// The identity comes from entropy rather than a counter because a counter restarts when
+// the device does. The model builds what follows from a repeat: a peer's confirm for the
+// attempt before the reset is stamped with the same value as the attempt after it, so the
+// head counts that peer, draws it into a bracket it never joined, and waits on it forever.
+// Reproduced here by handing the source the same value twice, which is what a restarted
+// counter amounts to.
+inline void aRepeatedIdentityWouldAdmitTheLastAttemptsConfirm(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->headRingServing({other});
+    suite->shootout->setLoopMembersForTest({me, other});
+
+    suite->shootout->startProposal();
+    const uint32_t first = suite->shootout->getTournamentEpoch();
+    suite->shootout->abortTournament();
+    suite->shootout->startProposal();
+
+    EXPECT_NE(suite->shootout->getTournamentEpoch(), first)
+        << "two attempts from one device share an identity";
+
+    // A source that repeats is the failure, and nothing downstream can tell: a confirm
+    // stamped with the previous attempt is indistinguishable from one for this attempt.
+    suite->entropy.nextValue = 0xD0D0D0D0u;
+    suite->shootout->abortTournament();
+    suite->shootout->startProposal();
+    const uint32_t pinned = suite->shootout->getTournamentEpoch();
+    suite->shootout->abortTournament();
+    suite->shootout->startProposal();
+    EXPECT_EQ(suite->shootout->getTournamentEpoch(), pinned)
+        << "the fake is not pinning the value, so this case proves nothing";
+}
+
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
 // gated on a local confirm for exactly that reason, and the proposal bound has to
 // be too: without it an untouched latched ring aborts, shows ABORTED for two
@@ -1652,7 +1688,7 @@ inline void abortedRingReclaimsWhileStillCabled(ShootoutManagerTests* suite) {
 
     FakeRingRemoteDeviceCoordinator ringRdc;
     ringRdc.chainMembers = {{0x02, 0, 0, 0, 0, 0}};
-    ShootoutManager ringShootout(&suite->player, suite->device.wirelessManager, &ringRdc);
+    ShootoutManager ringShootout(&suite->player, suite->device.wirelessManager, &ringRdc, &suite->entropy);
 
     ASSERT_TRUE(ringShootout.shouldEnterProposal());
 

@@ -24,7 +24,8 @@ const std::array<GameSession::PacketRoute, 6>& GameSession::packetRoutes() {
 GameSession::GameSession(Player* player,
                          Device* pdn,
                          QuickdrawWirelessManager* quickdrawWirelessManager,
-                         SymbolWirelessManager* symbolWirelessManager)
+                         SymbolWirelessManager* symbolWirelessManager,
+                         EntropyInterface* entropy)
     : player(player)
     , pdn(pdn)
     , wirelessManager(pdn->getWirelessManager())
@@ -33,7 +34,7 @@ GameSession::GameSession(Player* player,
     , symbolWirelessManager(symbolWirelessManager)
     , matchManager(new MatchManager())
     , chainDuelManager(new ChainDuelManager(player, wirelessManager, remoteDeviceCoordinator))
-    , shootoutManager(new ShootoutManager(player, wirelessManager, remoteDeviceCoordinator)) {
+    , shootoutManager(new ShootoutManager(player, wirelessManager, remoteDeviceCoordinator, entropy)) {
     this->shootoutManager->setMatchManager(matchManager);
     matchManager->setShootoutManager(shootoutManager);
 

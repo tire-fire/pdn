@@ -7,6 +7,7 @@
 #include "device/remote-device-coordinator.hpp"
 #include "wireless/resender.hpp"
 #include "device/drivers/peer-comms-types.hpp"
+#include "device/drivers/entropy-interface.hpp"
 #include "device/wireless-manager.hpp"
 #include "utils/debounced-condition.hpp"
 #include "utils/simple-timer.hpp"
@@ -32,9 +33,14 @@ public:
     /// callback is a single slot, so at most one ShootoutManager per coordinator:
     /// a second built on the same one takes the slot over, and whichever is
     /// destroyed first empties it for both.
+    /// `entropy` supplies each attempt's identity. Required, and required to survive a
+    /// reset: a device whose identities repeat after a reboot accepts a peer's confirm
+    /// from the attempt before it, counts that peer into a bracket it never joined, and
+    /// waits on it forever.
     ShootoutManager(Player* player,
                     WirelessManager* wirelessManager,
-                    RemoteDeviceCoordinator* rdc);
+                    RemoteDeviceCoordinator* rdc,
+                    EntropyInterface* entropy);
     /// Drops the coordinator subscriptions the constructor took, which hold `this`.
     ~ShootoutManager();
 
@@ -214,12 +220,12 @@ private:
     RemoteDeviceCoordinator* rdc;
     MatchManager* matchManager = nullptr;
     Phase phase = Phase::IDLE;
+    EntropyInterface* entropy;
     // The attempt every frame this device sends is stamped with, and the one it
     // accepts frames from. Deliberately outside resetTournamentState: a member
     // adopts it from RING_CLOSED before it enters the proposal that resets
     // everything else, and it has to survive that.
     uint32_t tournamentEpoch = 0;
-    uint8_t epochCounter = 0;
     // Why this device is in ABORTED: the ring told it to, rather than its own bound
     // running out. Only the first kind refuses a bracket that names it.
     bool abortedByRing = false;
@@ -232,14 +238,12 @@ private:
     void resetTournamentState();
 
     uint8_t nextSeqId();
-    // Mints the identity of a new attempt: the low three bytes of this device's MAC
-    // name the announcer, the counter names the attempt. The counter is a byte, so a
-    // device repeats a value every 256 attempts and again after a reboot — which is
-    // enough, because the value only ever has to tell the attempt a device is holding
-    // from a newer one, never from one 256 attempts ago. Two devices that close rings
-    // at the same moment cannot collide, which is the part that needs no agreement
-    // step. Never returns 0, which means "no attempt", unless this device has no MAC to
-    // name itself with.
+    // Mints the identity of a new attempt, straight from the entropy source, so it is
+    // distinct across attempts, across devices and across reboots with no agreement step
+    // and nothing stored. A counter was not enough on any of the three axes: it restarts
+    // at boot, and the model builds the failure that follows — a peer's confirm from the
+    // attempt before the reset counted toward the one after it. Never returns 0, which
+    // means "no attempt".
     uint32_t mintEpoch();
     // Writes the header into `out`, which must hold at least kHeaderLength bytes.
     // Returns where the payload starts.

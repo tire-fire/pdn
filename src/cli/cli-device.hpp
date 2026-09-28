@@ -8,6 +8,7 @@
 
 // Native drivers
 #include "device/drivers/native/native-logger-driver.hpp"
+#include "device/drivers/native/native-entropy-driver.hpp"
 #include "device/drivers/native/native-clock-driver.hpp"
 #include "device/drivers/native/native-display-driver.hpp"
 #include "device/drivers/native/native-button-driver.hpp"
@@ -238,11 +239,13 @@ public:
         );
 
         // Create the shared managers and the apps that read them
+        static NativeEntropyDriver entropySource;
         instance.gameSession = new GameSession(
             instance.player,
             instance.pdn,
             instance.quickdrawWirelessManager,
-            instance.symbolWirelessManager);
+            instance.symbolWirelessManager,
+            &entropySource);
 
         GameContext gameContext = instance.gameSession->getContext();
         instance.playerRegistrationApp = new PlayerRegistrationApp(

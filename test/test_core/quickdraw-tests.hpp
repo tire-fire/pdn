@@ -456,6 +456,7 @@ public:
     ChainDuelManager* chainDuelManager;
     GameContext ctx;
     FakePlatformClock* fakeClock;
+    FakeEntropy entropy;
 };
 
 // The shootout duel timeout forfeits the bout's HUNTER. Which side that is comes
@@ -471,7 +472,7 @@ inline void duelShootoutTimeoutForfeitsTheBoutHunter(DuelStateTests* suite) {
     suite->matchManager->clearCurrentMatch();
     uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
     ShootoutManager shootout(suite->player, suite->device.wirelessManager,
-                             &suite->device.fakeRemoteDeviceCoordinator);
+                             &suite->device.fakeRemoteDeviceCoordinator, &suite->entropy);
     std::array<uint8_t, 6> opponent = mountShootoutBoutWithBountySlot(
         shootout, suite->device, suite->matchManager, selfMac);
     suite->ctx.shootoutManager = &shootout;
@@ -862,6 +863,7 @@ public:
     MatchManager* matchManager;
     GameContext ctx;
     FakePlatformClock* fakeClock;
+    FakeEntropy entropy;
 };
 
 // Test: Hunter wins with faster time
@@ -1035,7 +1037,7 @@ inline void resultMatchFinalizedOnResult(DuelResultTests* suite) {
 inline void resultShootoutLoserDoesNotClaimTheWin(DuelResultTests* suite) {
     uint8_t selfMac[6] = {0x05, 0, 0, 0, 0, 0};
     ShootoutManager shootout(suite->player, suite->device.wirelessManager,
-                             &suite->device.fakeRemoteDeviceCoordinator);
+                             &suite->device.fakeRemoteDeviceCoordinator, &suite->entropy);
     std::array<uint8_t, 6> opponent = mountShootoutBoutWithBountySlot(
         shootout, suite->device, suite->matchManager, selfMac);
     suite->ctx.shootoutManager = &shootout;
@@ -1122,6 +1124,7 @@ public:
     ChainDuelManager* chainDuelManager;
     GameContext ctx;
     FakePlatformClock* fakeClock;
+    FakeEntropy entropy;
 };
 
 // Test: Idle state clears button callbacks on dismount
@@ -1469,7 +1472,7 @@ inline void duelReceivedResultDebouncesTransientDisconnect(StateCleanupTests* su
 // must be required instead.
 inline void countdownFreezesDisconnectDebounceDuringShootout(StateCleanupTests* suite) {
     ShootoutManager shootout(suite->player, suite->device.wirelessManager,
-                             &suite->device.fakeRemoteDeviceCoordinator);
+                             &suite->device.fakeRemoteDeviceCoordinator, &suite->entropy);
     shootout.startProposal();
     ASSERT_TRUE(shootout.active());
     suite->ctx.shootoutManager = &shootout;
@@ -1587,6 +1590,7 @@ public:
     uint8_t mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     PeerCommsInterface::PacketCallback chainGameEventHandler;
     void* chainGameEventCtx = nullptr;
+    FakeEntropy entropy;
 };
 
 // Create + destroy many GameSession instances; under ASAN (env:native_asan) a
@@ -1597,7 +1601,7 @@ public:
 // destructor failed to empty is called here with a freed `this`.
 inline void gameSessionCtorDtorDoesNotLeak(GameSessionLifecycleTests* suite) {
     for (int i = 0; i < 5; i++) {
-        GameSession* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr);
+        GameSession* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr, &suite->entropy);
         delete session;
         suite->device.loop();
     }
@@ -1626,7 +1630,7 @@ inline void gameSessionCountdownVoidsStandingConfirm(GameSessionLifecycleTests* 
             return 1;
         });
 
-    auto* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr);
+    auto* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr, &suite->entropy);
     ChainDuelManager* chainDuelManager = session->getContext().chainDuelManager;
 
     chainDuelManager->onRoleAnnounceReceived(champion, 1, champion, 1);
@@ -1664,7 +1668,7 @@ inline void gameSessionCountdownArmsMountedSupporter(GameSessionLifecycleTests* 
     rdc.setPeerMac(SerialIdentifier::OUTPUT_JACK, champion);
     EXPECT_CALL(*suite->device.mockPeerComms, sendData(_, _, _, _)).WillRepeatedly(Return(1));
 
-    GameSession* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr);
+    GameSession* session = new GameSession(suite->player, &suite->device, suite->qwm, nullptr, &suite->entropy);
     ChainDuelManager* chainDuelManager = session->getContext().chainDuelManager;
     chainDuelManager->onRoleAnnounceReceived(champion, 1, champion, 1);
     ASSERT_TRUE(chainDuelManager->isSupporter());

@@ -8,6 +8,7 @@
 #include "device/device.hpp"
 #include "device/remote-device-coordinator.hpp"
 #include "device/drivers/display.hpp"
+#include "device/drivers/entropy-interface.hpp"
 #include "device/drivers/button.hpp"
 #include "device/drivers/haptics.hpp"
 #include "device/drivers/http-client-interface.hpp"
@@ -264,6 +265,16 @@ public:
 
     ChainRole chainRole = ChainRole::RING;
     std::vector<std::array<uint8_t, 6>> chainMembers;
+};
+
+/// Entropy a case can predict. Hands out a counted sequence by default, so an attempt
+/// identity is stable enough to assert on; `nextValue` lets a case pin one, and repeating
+/// a value is how the reboot collision is reproduced.
+class FakeEntropy : public EntropyInterface {
+public:
+    uint32_t next32() override { return nextValue ? nextValue : ++counter; }
+    uint32_t nextValue = 0;
+    uint32_t counter = 0xE0000000u;
 };
 
 // Fake QuickdrawWirelessManager that captures outbound packets instead of transmitting them.

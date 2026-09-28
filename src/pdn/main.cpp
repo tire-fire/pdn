@@ -6,6 +6,7 @@
 
 #include "device/drivers/esp32-s3/esp32-s3-logger-driver.hpp"
 #include "device/drivers/esp32-s3/esp32-s3-clock-driver.hpp"
+#include "device/drivers/esp32-s3/esp32-s3-entropy-driver.hpp"
 #include "device/drivers/esp32-s3/esp32-s3-1-button-driver.hpp"
 #include "device/drivers/esp32-s3/ws2812b-fastled-driver.hpp"
 #include "device/drivers/esp32-s3/esp32-s3-haptics-driver.hpp"
@@ -124,6 +125,8 @@ void setup() {
     // Initialize platform abstractions immediately after constructing them
     g_logger = loggerDriver;
     SimpleTimer::setPlatformClock(clockDriver);
+    // Hardware RNG, so a tournament identity is fresh even after a reset.
+    static Esp32S3Entropy entropySource;
     esp_log_level_set("*", ESP_LOG_VERBOSE);
 
     // Now construct remaining drivers (safe to use logging and timers now)
@@ -184,7 +187,8 @@ void setup() {
     crashLogger = new CrashLogger(storageDriver, peerCommsDriver);
     crashLogger->capture();
 
-    gameSession = new GameSession(player, pdn, quickdrawWirelessManager, symbolWirelessManager);
+    gameSession = new GameSession(player, pdn, quickdrawWirelessManager, symbolWirelessManager,
+                                  &entropySource);
 
     GameContext gameContext = gameSession->getContext();
     playerRegistrationApp = new PlayerRegistrationApp(player, pdn->getWirelessManager(), gameContext.matchManager, remoteDebugManager);

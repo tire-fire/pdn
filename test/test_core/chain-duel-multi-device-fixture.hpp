@@ -48,6 +48,9 @@ struct MultiDeviceNode {
     std::unique_ptr<RemoteDeviceCoordinator> rdc;
     std::unique_ptr<Player> player;
     std::unique_ptr<ChainDuelManager> cdm;
+    /// One per node, so no two nodes mint the same attempt identity — the collision a
+    /// shared counter would produce is the one the identity exists to avoid.
+    FakeEntropy entropy;
     std::unique_ptr<ShootoutManager> shootout;
 
     // Per-device captured handlers (one slot per PktType the fixture routes).
@@ -126,9 +129,11 @@ public:
             node->cdm = std::make_unique<ChainDuelManager>(node->player.get(),
                                                           node->device->wirelessManager,
                                                           node->rdc.get());
+            node->entropy.counter = 0xE0000000u + static_cast<uint32_t>(i) * 0x00010000u;
             node->shootout = std::make_unique<ShootoutManager>(node->player.get(),
                                                                node->device->wirelessManager,
-                                                               node->rdc.get());
+                                                               node->rdc.get(),
+                                                               &node->entropy);
             wireChainEventHandlers(*node);
             wireShootoutHandlers(*node);
 

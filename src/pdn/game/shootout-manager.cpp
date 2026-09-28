@@ -21,10 +21,12 @@ void deriveShootoutMatchId(int matchIndex, char* out, size_t outSize) {
 
 ShootoutManager::ShootoutManager(Player* player,
                                  WirelessManager* wirelessManager,
-                                 RemoteDeviceCoordinator* rdc)
+                                 RemoteDeviceCoordinator* rdc,
+                                 EntropyInterface* entropy)
     : player(player)
     , wirelessManager(wirelessManager)
     , rdc(rdc)
+    , entropy(entropy)
     , resender(wirelessManager, Resender::BudgetPolicy::EVERY_ROUND) {
     resender.setAbandonCallback(
         [this](PktType, uint8_t seqId, const uint8_t* targetMac,
@@ -598,15 +600,15 @@ bool decodeMacList(const uint8_t* payload, size_t payloadLen,
 }  // namespace
 
 uint32_t ShootoutManager::mintEpoch() {
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
-    if (selfMac == nullptr) {
-        LOG_E(TAG, "mintEpoch with no local MAC");
+    if (entropy == nullptr) {
+        LOG_E(TAG, "mintEpoch with no entropy source");
         return 0;
     }
-    epochCounter++;
-    return (static_cast<uint32_t>(selfMac[3]) << 24) |
-           (static_cast<uint32_t>(selfMac[4]) << 16) |
-           (static_cast<uint32_t>(selfMac[5]) << 8) | epochCounter;
+    // 0 is reserved for "no attempt", so the one value the source must not hand back is
+    // retried rather than reserved out of the range.
+    uint32_t minted = entropy->next32();
+    if (minted == 0) minted = entropy->next32();
+    return minted == 0 ? 1 : minted;
 }
 
 size_t ShootoutManager::writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const {

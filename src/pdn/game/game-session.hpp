@@ -33,7 +33,8 @@ public:
     GameSession(Player* player,
                 Device* pdn,
                 QuickdrawWirelessManager* quickdrawWirelessManager,
-                SymbolWirelessManager* symbolWirelessManager);
+                SymbolWirelessManager* symbolWirelessManager,
+                EntropyInterface* entropy);
     /// Drops the callbacks that capture `this`, then frees the managers it owns.
     ~GameSession();
 
