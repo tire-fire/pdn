@@ -3737,6 +3737,10 @@ inline void theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(
             sendData(testing::_, testing::_, testing::_, testing::_))
         .WillByDefault(testing::Return(1));
 
+    // Before the context is built: followRingHead rebinds the manager, and the states
+    // below keep the pointer they are handed.
+    suite->followRingHead(coord);
+
     GameContext ctx;
     ctx.shootoutManager = suite->shootout;
     ShootoutApp shootoutApp(ctx);
@@ -3746,7 +3750,6 @@ inline void theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(
         if (state->getStateId() == SHOOTOUT_BRACKET_REVEAL) bracketReveal = state;
     ASSERT_NE(bracketReveal, nullptr);
 
-    suite->followRingHead(coord);
     suite->shootout->onRingClosedReceived(coord.data(), {me, coord}, 0xC6000001u);
     suite->shootout->startProposal();
     suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
