@@ -1619,7 +1619,9 @@ TEST(RDCHelloStandalone, chainTwoNodeRingCloses) {
 TEST(RDCHelloStandalone, ringMembershipReachesEveryMember) {
     rdcRingMembershipReachesEveryMember();
 }
-
+TEST(RDCHelloStandalone, ringMembershipChangeFiresOnEveryMember) {
+    rdcRingMembershipChangeFiresOnEveryMember();
+}
 TEST(RDCHelloStandalone, chainDualLatchSettlesByLowerMac) {
     rdcChainDualLatchSettlesByLowerMac();
 }

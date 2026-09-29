@@ -63,6 +63,7 @@ public:
     using MembershipChangeCallback = std::function<void()>;
     /// Head-only: fires when the ring fully closes.
     using RingClosedCallback = std::function<void()>;
+    using RingMembershipChangeCallback = std::function<void(bool inRing)>;
 
     /// Inert until initialize().
     RemoteDeviceCoordinator();
@@ -261,6 +262,13 @@ public:
         ringClosedCallback = std::move(callback);
     }
 
+    /// Registers the observer for isInRing() moving, on EVERY device on the loop.
+    /// Distinct from setOnChainRoleChange, which never reports this: RING is
+    /// head-only, so a member whose ring opens elsewhere keeps the role it had.
+    void setOnRingMembershipChange(RingMembershipChangeCallback callback) {
+        ringMembershipChangeCallback = std::move(callback);
+    }
+
     /// Registers an observer for any jack connect/disconnect. Coarser than
     /// setOnJackChange: it says the chain moved, not which jack or which way.
     void setChainChangeCallback(std::function<void()> callback);
@@ -281,6 +289,7 @@ private:
     ChainRoleChangeCallback chainRoleChangeCallback;
     MembershipChangeCallback membershipChangeCallback;
     RingClosedCallback ringClosedCallback;
+    RingMembershipChangeCallback ringMembershipChangeCallback;
 
     // ---- HELLO connectivity internals (#155) ----
     struct JackHelloLink {
@@ -411,6 +420,7 @@ private:
     mutable std::array<uint8_t, 6> headMacScratch{};
     // Last role reported to chainRoleChangeCallback, for edge-triggered firing.
     ChainRole lastChainRole = ChainRole::STANDALONE;
+    bool lastInRing = false;
     // The effective head the INPUT peer last advertised (all-zero = none), kept
     // apart from chainHeadState: a HELLO can advertise a head long before the
     // link carrying it is established, and only the latter may be acted on.
@@ -426,6 +436,7 @@ private:
     void adoptUpstreamHead();
     void onLinkLost(SerialIdentifier port);
     void maybeFireChainRoleChange();
+    void maybeFireRingMembershipChange();
     // Roster traffic is addressed to the head as head, so it dies with the role.
     // A surviving retransmit would address a device that is no longer the head.
     void cancelHeadRosterTraffic(uint64_t headMac48);

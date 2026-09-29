@@ -1135,6 +1135,7 @@ struct ChainRingNode {
         rdc.setExternalConnectivityTask(true);
         rdc.initialize(device.wirelessManager, device.serialManager, &device);
         rdc.setOnRingClosed([this]() { ringClosedCount++; });
+        rdc.setOnRingMembershipChange([this](bool inRing) { membership.push_back(inRing); });
     }
 
     MockDevice device;
@@ -1143,6 +1144,8 @@ struct ChainRingNode {
     RemoteDeviceCoordinator rdc;
     uint8_t mac[6] = {};
     int ringClosedCount = 0;
+    /// Every edge the ring-membership observer reported, in order.
+    std::vector<bool> membership;
 };
 
 // Two live RDCs cross-wired into a 2-device ring (A.out<->B.in, B.out<->A.in). A's
@@ -1365,6 +1368,59 @@ inline void rdcRingMembershipReachesEveryMember() {
     a.out.clearOutput();
     a.rdc.emitHello();
     EXPECT_EQ(parseEmittedHello(a.out.getOutput()).flags & HELLO_FLAG_RING_CLOSED, 0);
+
+    SimpleTimer::setPlatformClock(nullptr);
+}
+
+// Membership is the fact the game layer needs and the only one no observer reported.
+// ChainRole never becomes RING on a member, and the ring-closed observer is head-only,
+// so a device whose ring opens somewhere else got no event at all and every consumer had
+// to poll isInRing() for itself. Derived from four inputs, so it is reported the way the
+// chain role already is: recomputed once a tick and fired on the edge.
+inline void rdcRingMembershipChangeFiresOnEveryMember() {
+    FakePlatformClock clock;
+    SimpleTimer::setPlatformClock(&clock);
+    clock.setTime(1000);
+
+    const uint8_t macA[6] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x0A};
+    const uint8_t macB[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x0B};
+    const uint8_t macC[6] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x0C};
+    ChainRingNode a(macA);
+    ChainRingNode b(macB);
+    ChainRingNode c(macC);
+    const std::vector<ChainRingNode*> nodes = {&a, &b, &c};
+
+    std::vector<std::pair<size_t, size_t>> cables;
+    auto run = [&](int rounds) {
+        for (int i = 0; i < rounds; ++i) {
+            pumpChainCycle(nodes, cables);
+            clock.advance(RemoteDeviceCoordinator::HELLO_CADENCE_MS);
+        }
+    };
+
+    cables.push_back({0, 1});
+    run(4);
+    cables.push_back({1, 2});
+    run(4);
+    EXPECT_TRUE(a.membership.empty()) << "an open chain reported ring membership";
+    EXPECT_TRUE(b.membership.empty());
+    EXPECT_TRUE(c.membership.empty());
+
+    cables.push_back({2, 0});
+    run(6);
+    EXPECT_EQ(a.membership, std::vector<bool>{true}) << "the latching device got no event";
+    EXPECT_EQ(b.membership, std::vector<bool>{true}) << "the first relay got no event";
+    EXPECT_EQ(c.membership, std::vector<bool>{true}) << "the far side got no event";
+
+    // The edge that matters, and the one nothing else reports: B and C are CHILD
+    // throughout, so no chain-role change accompanies losing the ring.
+    cables.erase(cables.begin() + 1);
+    run(6);
+    EXPECT_EQ(b.membership, (std::vector<bool>{true, false}))
+        << "a member never heard that the ring it was on opened";
+    EXPECT_EQ(c.membership, (std::vector<bool>{true, false}));
+    EXPECT_EQ(b.rdc.getChainRole(), ChainRole::CHILD)
+        << "if the role moved, setOnChainRoleChange would already have covered this";
 
     SimpleTimer::setPlatformClock(nullptr);
 }

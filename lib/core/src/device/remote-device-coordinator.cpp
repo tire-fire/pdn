@@ -164,6 +164,11 @@ void RemoteDeviceCoordinator::sync(Device* PDN) {
     // The ring-closed callback fires at its own decision site, so a ring closure and
     // the RING role it implies can be up to one tick apart.
     maybeFireChainRoleChange();
+    // Same reason, more inputs: isInRing() is derived from the local latch, the head
+    // held, the OUTPUT jack's HELLO link and the relayed upstream flag, and three of
+    // those move on evidence expiring rather than on anything arriving. There is no
+    // instant to fire from, so it is recomputed here and reported on the edge.
+    maybeFireRingMembershipChange();
 }
 
 size_t RemoteDeviceCoordinator::portIndex(SerialIdentifier port) const {
@@ -791,6 +796,15 @@ void RemoteDeviceCoordinator::cancelHeadRosterTraffic(uint64_t headMac48) {
     if (connectionAnnounceChannel != nullptr) connectionAnnounceChannel->cancel(mac);
     if (disconnectReportChannel != nullptr) disconnectReportChannel->cancel(mac);
     if (headTransferChannel != nullptr) headTransferChannel->cancel(mac);
+}
+
+void RemoteDeviceCoordinator::maybeFireRingMembershipChange() {
+    const bool inRing = isInRing();
+    if (inRing == lastInRing) return;
+    lastInRing = inRing;
+    // Copied before the call; see the ring-closed dispatch for why.
+    RingMembershipChangeCallback membershipChange = ringMembershipChangeCallback;
+    if (membershipChange) membershipChange(inRing);
 }
 
 void RemoteDeviceCoordinator::maybeFireChainRoleChange() {
