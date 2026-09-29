@@ -100,7 +100,6 @@ struct DeviceInstance {
     PDN* pdn = nullptr;
     Player* player = nullptr;
     GameSession* gameSession = nullptr;
-    NativeEntropy* entropySource = nullptr;
     PlayerRegistrationApp* playerRegistrationApp = nullptr;
     HubApp* hubApp = nullptr;
     DuelApp* duelApp = nullptr;
@@ -240,16 +239,16 @@ public:
         );
 
         // Create the shared managers and the apps that read them
-        // Per device, like every sibling driver above: a shared source still hands out
-        // distinct values, but the sim distinguishes devices by the identities they mint,
-        // and one static would make a future seed() re-seed the whole fleet at once.
-        instance.entropySource = new NativeEntropy();
+        // One source for the whole sim. Distinctness is all an attempt identity asks
+        // of it, and a single stream hands out distinct values across devices as
+        // readily as one stream each — with nothing to own or tear down.
+        static NativeEntropy entropySource;
         instance.gameSession = new GameSession(
             instance.player,
             instance.pdn,
             instance.quickdrawWirelessManager,
             instance.symbolWirelessManager,
-            instance.entropySource);
+            &entropySource);
 
         GameContext gameContext = instance.gameSession->getContext();
         instance.playerRegistrationApp = new PlayerRegistrationApp(
