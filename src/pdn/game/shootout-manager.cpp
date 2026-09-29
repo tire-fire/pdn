@@ -606,14 +606,13 @@ uint32_t ShootoutManager::mintEpoch() {
     return minted == 0 ? 1 : minted;
 }
 
-size_t ShootoutManager::writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId,
-                                   uint32_t epoch) const {
+size_t ShootoutManager::writeHeader(uint8_t* out, ShootoutCmd cmd, uint8_t seqId) const {
     out[0] = static_cast<uint8_t>(cmd);
     out[1] = seqId;
-    out[2] = static_cast<uint8_t>(epoch >> 24);
-    out[3] = static_cast<uint8_t>(epoch >> 16);
-    out[4] = static_cast<uint8_t>(epoch >> 8);
-    out[5] = static_cast<uint8_t>(epoch);
+    out[2] = static_cast<uint8_t>(tournamentEpoch >> 24);
+    out[3] = static_cast<uint8_t>(tournamentEpoch >> 16);
+    out[4] = static_cast<uint8_t>(tournamentEpoch >> 8);
+    out[5] = static_cast<uint8_t>(tournamentEpoch);
     return kHeaderLength;
 }
 
@@ -689,7 +688,7 @@ std::vector<uint8_t> ShootoutManager::buildMacListPacket(
     ShootoutCmd cmd, uint8_t seqId,
     const std::vector<std::array<uint8_t, 6>>& macs) const {
     std::vector<uint8_t> packet(kHeaderLength);
-    writeHeader(packet.data(), cmd, seqId, tournamentEpoch);
+    writeHeader(packet.data(), cmd, seqId);
     // The roster is the RDC's 64 plus self, so it can land one over what the
     // decoder accepts — and an over-long frame is dropped by every receiver, not
     // just the members past the cap. Truncating keeps the ring running.
@@ -734,7 +733,7 @@ void ShootoutManager::abortTournament() {
     // and no member's own ring-break guard will ever fire.
     const uint8_t seqId = nextSeqId();
     uint8_t packet[kHeaderLength];
-    writeHeader(packet, ShootoutCmd::ABORT, seqId, tournamentEpoch);
+    writeHeader(packet, ShootoutCmd::ABORT, seqId);
     sendReliablyToPeers(targets, seqId, packet, sizeof(packet));
     // Only if one actually went out. A ring of one names no recipients, so there
     // is no group to spare and a seqId recorded here would spare a later frame
@@ -745,7 +744,7 @@ void ShootoutManager::abortTournament() {
 void ShootoutManager::sendLocalConfirm() {
     // [header, 6-byte MAC, kNameLength-byte null-padded name]
     uint8_t payload[kHeaderLength + 6 + kNameLength];
-    const size_t mac = writeHeader(payload, ShootoutCmd::CONFIRM, 0, tournamentEpoch);
+    const size_t mac = writeHeader(payload, ShootoutCmd::CONFIRM, 0);
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     memcpy(&payload[mac], selfMac, 6);
     memset(&payload[mac + 6], 0, kNameLength);
@@ -881,7 +880,7 @@ ShootoutManager::getCurrentMatchPair() const {
 
 std::vector<uint8_t> ShootoutManager::buildMatchStartPacket(int matchIndex) const {
     std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId, tournamentEpoch);
+    writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId);
     MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
     memcpy(pair->a, currentRound[matchIndex * 2].data(), 6);
     memcpy(pair->b, currentRound[matchIndex * 2 + 1].data(), 6);
@@ -1075,7 +1074,7 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
 std::vector<uint8_t> ShootoutManager::buildMatchResultPacket(
     const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) const {
     std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId, tournamentEpoch);
+    writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId);
     MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
     memcpy(pair->a, winner, 6);
     memcpy(pair->b, loser, 6);
@@ -1143,7 +1142,7 @@ void ShootoutManager::onMatchResultReceived(
 
 void ShootoutManager::buildTournamentEndPacket(uint8_t* out, const uint8_t* winner,
                                               uint8_t seqId) const {
-    const size_t winnerAt = writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId, tournamentEpoch);
+    const size_t winnerAt = writeHeader(out, ShootoutCmd::TOURNAMENT_END, seqId);
     memcpy(out + winnerAt, winner, 6);
 }
 
