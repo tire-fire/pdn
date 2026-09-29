@@ -1992,6 +1992,7 @@ TEST_F(ShootoutManagerTests, tournamentWithNoSurvivorsAbortsInsteadOfNamingNobod
 TEST_F(ShootoutManagerTests, frameFromANonCoordinatorIsRefused) { frameFromANonCoordinatorIsRefused(this); }
 TEST_F(ShootoutManagerTests, admittedFrameWithBadContentIsStillAcked) { admittedFrameWithBadContentIsStillAcked(this); }
 TEST_F(ShootoutManagerTests, settledRingBreakAbortsALiveTournament) { settledRingBreakAbortsALiveTournament(this); }
+TEST_F(ShootoutManagerTests, aDestroyedManagerIsNotCalledBackByTheRing) { aDestroyedManagerIsNotCalledBackByTheRing(this); }
 TEST_F(ShootoutManagerTests, abortIsAckedByItsRecipient) { abortIsAckedByItsRecipient(this); }
 TEST_F(ShootoutManagerTests, transientRingBreakDoesNotAbortATournament) { transientRingBreakDoesNotAbortATournament(this); }
 TEST_F(ShootoutManagerTests, aFreshTournamentGetsAFullGraceWindow) { aFreshTournamentGetsAFullGraceWindow(this); }

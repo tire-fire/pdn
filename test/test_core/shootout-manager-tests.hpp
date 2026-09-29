@@ -3483,6 +3483,24 @@ inline void transientRingBreakDoesNotAbortATournament(ShootoutManagerTests* suit
 
 // A settled break must abort even for a duelist mid-bout, who is inside the duel
 // app with no shootout state mounted to notice.
+// The RDC outlives every manager built on it: the CLI rebuilds one per device and this
+// fixture rebuilds one per case, while the coordinator is a member that stays. The
+// membership slot holds a lambda over the manager, so a destructor that does not give it
+// back leaves the RDC calling into freed memory on the next ring edge. Nothing below
+// asserts that, because the read is silent without a sanitizer — this case exists to put
+// the freed call on a path native_asan runs.
+inline void aDestroyedManagerIsNotCalledBackByTheRing(ShootoutManagerTests* suite) {
+    suite->closeRingOnJacks();
+    ASSERT_TRUE(suite->rdc.isInRing());
+
+    delete suite->shootout;
+    suite->shootout = nullptr;
+
+    suite->openRingOnJacks();
+    EXPECT_FALSE(suite->rdc.isInRing())
+        << "the ring never opened, so the observer edge never came due";
+}
+
 inline void settledRingBreakAbortsALiveTournament(ShootoutManagerTests* suite) {
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, testing::_, testing::_, testing::_))

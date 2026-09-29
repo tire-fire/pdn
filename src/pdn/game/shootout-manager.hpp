@@ -301,6 +301,8 @@ private:
     // belonged to the last one. Every branch of onRingClosedReceived that joins an
     // announcement ends here, so the three cannot drift apart on what joining means.
     void adoptAttempt(const std::vector<std::array<uint8_t, 6>>& members, uint32_t epoch);
+    /// Observer for RemoteDeviceCoordinator::isInRing() moving either way.
+    void onRingMembershipChanged(bool inRing);
     /// The peers a ring fan-out is addressed to: `peers` without this device.
     std::vector<std::array<uint8_t, 6>> peersExcludingSelf(
         const std::vector<std::array<uint8_t, 6>>& peers) const;
@@ -318,7 +320,9 @@ private:
     // Non-empty is also the "a ring closed" latch, and nothing retires it while
     // IDLE, so shouldEnterProposal pairs it with a liveness check.
     std::vector<std::array<uint8_t, 6>> ringMembers;
-    DebouncedCondition ringBreakDebounce;
+    // Armed by the ring-membership observer when the ring opens and invalidated when it
+    // closes again, so the window measures the break rather than being resampled.
+    SimpleTimer ringBreakTimer;
     DebouncedCondition shortRosterDebounce;
     SimpleTimer ringClosedRebroadcastTimer;
     void sendRingClosed();

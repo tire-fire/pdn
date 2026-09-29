@@ -33,9 +33,29 @@ ShootoutManager::ShootoutManager(Player* player,
                const uint8_t* packet, size_t len) {
             onCommandAbandoned(seqId, targetMac, packet, len);
         });
+    // Ring membership is the one RDC fact this manager cannot poll for itself without
+    // asking every tick: it is derived, and three of its inputs move on evidence
+    // expiring. The RDC recomputes it once per tick and reports the edge.
+    if (rdc != nullptr)
+        rdc->setOnRingMembershipChange([this](bool inRing) { onRingMembershipChanged(inRing); });
 }
 
-ShootoutManager::~ShootoutManager() = default;
+ShootoutManager::~ShootoutManager() {
+    // The slot holds a lambda over `this`, and the RDC outlives every manager built on
+    // it — the CLI rebuilds one per device and the tests rebuild one per case.
+    if (rdc != nullptr) rdc->setOnRingMembershipChange(nullptr);
+}
+
+void ShootoutManager::onRingMembershipChanged(bool inRing) {
+    // Debounced, not acted on: a ring can flicker while a cable seats, and the window
+    // is what tells a reseat from a pull. Rearming is not a concern, because the edge
+    // only reports a change — two falses cannot arrive without a true between them.
+    if (inRing) {
+        ringBreakTimer.invalidate();
+    } else {
+        ringBreakTimer.setTimer(LOOP_BREAK_DEBOUNCE_MS);
+    }
+}
 
 bool ShootoutManager::active() const {
     return phase != Phase::IDLE;
@@ -770,10 +790,11 @@ void ShootoutManager::sync() {
     // other jack cannot tell a ring-open from a chain getting shorter, so only
     // polling the ring flag sees it. The phase test sits inside the condition
     // because heldFor has to be sampled every tick or its window ages unwatched.
-    const bool ringBrokeDuringTournament = active() && !isTerminalPhase() &&
-                                           rdc != nullptr && !rdc->isInRing();
-    if (ringBreakDebounce.heldFor(ringBrokeDuringTournament, LOOP_BREAK_DEBOUNCE_MS)) {
-        abortTournament();
+    if (ringBreakTimer.expired()) {
+        // Spent either way: a window that ran out while nothing was running belongs to
+        // the ring that opened, not to whatever starts next.
+        ringBreakTimer.invalidate();
+        if (active() && !isTerminalPhase()) abortTournament();
     }
 
     if (phase == Phase::PROPOSAL) {
