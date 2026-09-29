@@ -231,6 +231,9 @@ void ShootoutApp::populateStateMap() {
     bracketReveal->addTransition(
         [bracketReveal]() { return bracketReveal->transitionToSpectator(); },
         spectator);
+    bracketReveal->addTransition(
+        [bracketReveal]() { return bracketReveal->transitionToFinalStandings(); },
+        finalStandings);
     bracketReveal->addTransition(phaseIsAborted, aborted);
 
     spectator->addAppTransition(

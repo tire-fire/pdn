@@ -437,12 +437,14 @@ public:
 
     bool transitionToDuelCountdown();
     bool transitionToSpectator();
+    bool transitionToFinalStandings();
 
 private:
     ShootoutManager* shootoutManager = nullptr;
 
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
+    bool shouldGoToFinalStandings = false;
 };
 
 class ShootoutSpectator : public TypedState<PDN> {

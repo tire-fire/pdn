@@ -85,7 +85,11 @@ inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_ED
     {UPLOAD_MATCHES, {SLEEP}},
     {SLEEP, {AWAKEN_SEQUENCE}},
     {SHOOTOUT_PROPOSAL, {SHOOTOUT_BRACKET_REVEAL, SHOOTOUT_ABORTED}},
-    {SHOOTOUT_BRACKET_REVEAL, {DUEL_COUNTDOWN, SHOOTOUT_SPECTATOR, SHOOTOUT_ABORTED}},
+    // SHOOTOUT_FINAL_STANDINGS before the abort edge, like the spectator and the
+    // eliminated screens: a tournament can end while this one is still up, and without
+    // that edge ENDED is a phase the device never leaves.
+    {SHOOTOUT_BRACKET_REVEAL,
+     {DUEL_COUNTDOWN, SHOOTOUT_SPECTATOR, SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_SPECTATOR,
      {DUEL_COUNTDOWN, SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_ELIMINATED, {SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
@@ -256,7 +260,7 @@ inline void quickdrawAppEdgesMatchPreSplitGraph() {
         }
         totalEdges += expected.second.size();
     }
-    EXPECT_EQ(totalEdges, 49u);
+    EXPECT_EQ(totalEdges, 50u);
 }
 
 // Which of those edges became hand-offs, and the app plus entry state each names.

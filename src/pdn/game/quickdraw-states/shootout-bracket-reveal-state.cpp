@@ -26,12 +26,18 @@ void ShootoutBracketReveal::onStateLoop(PDN* pdn) {
             shouldGoToSpectator_ = true;
         }
     }
+    // A device that lost every MATCH_START never leaves for a bout, and the ending
+    // repeats until one copy reaches it — so the tournament can finish while this
+    // screen is still showing the bracket it joined.
+    if (p == ShootoutManager::Phase::ENDED) shouldGoToFinalStandings = true;
 }
 
 void ShootoutBracketReveal::onStateDismounted(PDN* pdn) {
     shouldGoToDuelCountdown_ = false;
     shouldGoToSpectator_ = false;
+    shouldGoToFinalStandings = false;
 }
 
 bool ShootoutBracketReveal::transitionToDuelCountdown() { return shouldGoToDuelCountdown_; }
 bool ShootoutBracketReveal::transitionToSpectator() { return shouldGoToSpectator_; }
+bool ShootoutBracketReveal::transitionToFinalStandings() { return shouldGoToFinalStandings; }

@@ -1992,6 +1992,7 @@ TEST_F(ShootoutManagerTests, settledRingBreakAbortsALiveTournament) { settledRin
 TEST_F(ShootoutManagerTests, abortIsAckedByItsRecipient) { abortIsAckedByItsRecipient(this); }
 TEST_F(ShootoutManagerTests, transientRingBreakDoesNotAbortATournament) { transientRingBreakDoesNotAbortATournament(this); }
 TEST_F(ShootoutManagerTests, aFreshTournamentGetsAFullGraceWindow) { aFreshTournamentGetsAFullGraceWindow(this); }
+TEST_F(ShootoutManagerTests, theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds) { theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(this); }
 TEST_F(ShootoutManagerTests, abortRuleReachesEveryStateThatDeclaresIt) { abortRuleReachesEveryStateThatDeclaresIt(this); }
 TEST_F(ShootoutManagerTests, bracketFanOutIsOneFrameBeyondPeerTable) { bracketFanOutIsOneFrameBeyondPeerTable(this); }
 TEST_F(ShootoutManagerTests, bracketRetryIsOneFramePerRound) { bracketRetryIsOneFramePerRound(this); }

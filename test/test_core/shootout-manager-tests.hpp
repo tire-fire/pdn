@@ -3683,6 +3683,46 @@ inline void strayRingCommandsLeaveTournamentUntouched(ShootoutManagerTests* suit
 // and into ShootoutManager::sync(), which is the only place a bracket duelist
 // inside the duel app can be reached. The edges are still declared per state:
 // they carry the transition, and the manager carries the rule.
+// A tournament can end while the bracket screen is still up. A device that re-joined a
+// bracket and then lost every MATCH_START sits here to the last bout, and the ending
+// repeats until one copy lands — so ENDED arrives at a screen whose only exits are a
+// match starting and an abort. Without this edge it is a state the device never leaves:
+// resetToIdle runs on the standings screen's dismount, shouldEnterProposal needs IDLE,
+// and nothing else clears the phase, so the device joins no tournament again until it
+// reboots.
+inline void theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(
+    ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x06, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    GameContext ctx;
+    ctx.shootoutManager = suite->shootout;
+    ShootoutApp shootoutApp(ctx);
+    shootoutApp.populateStateMap();
+    State* bracketReveal = nullptr;
+    for (State* state : shootoutApp.getStateMap())
+        if (state->getStateId() == SHOOTOUT_BRACKET_REVEAL) bracketReveal = state;
+    ASSERT_NE(bracketReveal, nullptr);
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {me, coord}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->onBracketReceived(coord.data(), {me, coord}, 1);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    suite->shootout->onTournamentEndReceived(coord.data(), me.data(), 2);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ENDED);
+
+    // Sampled in the loop, the way every other shootout screen reads the phase. The
+    // state touches no device on this path, so a bare context is enough to drive it.
+    static_cast<ShootoutBracketReveal*>(bracketReveal)->onStateLoop(nullptr);
+    EXPECT_NE(bracketReveal->checkTransitions(), nullptr)
+        << "a device that ended while the bracket screen was up has nowhere to go";
+}
+
 inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite) {
     GameContext ctx;
     ctx.shootoutManager = suite->shootout;
@@ -3705,7 +3745,7 @@ inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite
         {DUEL_RECEIVED_RESULT, 0},
         {DUEL_RESULT, 0},
         {SHOOTOUT_PROPOSAL, 1},
-        {SHOOTOUT_BRACKET_REVEAL, 2},
+        {SHOOTOUT_BRACKET_REVEAL, 3},
         {SHOOTOUT_SPECTATOR, 2},
         {SHOOTOUT_ELIMINATED, 1},
     };
