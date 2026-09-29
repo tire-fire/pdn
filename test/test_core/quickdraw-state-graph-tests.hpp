@@ -59,9 +59,11 @@ inline const std::vector<int> GAMEPLAY_REGISTRATION_ORDER = {
     SYMBOL_MATCHED,
 };
 
-// Per-state transition targets, in the order they were added. 47 edges — the
-// pre-split graph's 48 less PlayerRegistration -> AwakenSequence, which moved off
-// the app object onto the state that triggered it (see
+// Per-state transition targets, in the order they were added. 50 edges — the
+// pre-split graph's 48, less PlayerRegistration -> AwakenSequence which moved off the
+// app object onto the state that triggered it, plus the three shootout edges this
+// branch added (Idle and ShootoutAborted into the bracket screen, and that screen into
+// the standings). See
 // registrationHandsOffFromWelcomeMessage below).
 inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_EDGES = {
     {AWAKEN_SEQUENCE, {IDLE}},

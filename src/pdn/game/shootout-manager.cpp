@@ -33,9 +33,10 @@ ShootoutManager::ShootoutManager(Player* player,
                const uint8_t* packet, size_t len) {
             onCommandAbandoned(seqId, targetMac, packet, len);
         });
-    // Ring membership is the one RDC fact this manager cannot poll for itself without
-    // asking every tick: it is derived, and three of its inputs move on evidence
-    // expiring. The RDC recomputes it once per tick and reports the edge.
+    // Taken as an edge rather than read, because the break window should measure the
+    // break. It buys no freshness: the RDC recomputes membership once per tick in its
+    // own sync(), which runs after this manager's, so the edge lands a tick after a
+    // direct read would have seen it. The window is 500ms, so that does not matter.
     if (rdc != nullptr)
         rdc->setOnRingMembershipChange([this](bool inRing) { onRingMembershipChanged(inRing); });
 }
@@ -250,10 +251,10 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::getLoopMembers() const {
     return buildLoopMemberSet();
 }
 
-// Everything an attempt leaves behind, and nothing that outlives one. startProposal
-// calls resetTournamentState directly because a member's adopted identity has to
-// survive entering the proposal it belongs to; the announce timer goes here because
-// it is armed per attempt.
+// Everything an attempt leaves behind, and nothing that outlives one. The only thing
+// separating this from resetTournamentState is the announce timer, which is armed per
+// attempt: startProposal calls the inner one because it is about to announce and reads
+// the timer to decide whether it already has.
 void ShootoutManager::leaveAttempt() {
     resetTournamentState();
     ringClosedRebroadcastTimer.invalidate();
@@ -786,10 +787,12 @@ void ShootoutManager::sendLocalConfirm() {
 }
 
 void ShootoutManager::sync() {
-    // No event means "the ring opened": a device still holding the peer on its
-    // other jack cannot tell a ring-open from a chain getting shorter, so only
-    // polling the ring flag sees it. The phase test sits inside the condition
-    // because heldFor has to be sampled every tick or its window ages unwatched.
+    // Armed by the membership observer, not sampled here, so the window starts at the
+    // break. The phase test is at expiry rather than in the arming, which is safe only
+    // because a tournament cannot begin off a ring: shouldEnterProposal needs
+    // headsRing() or a live ringHead(), and onBracketReceived resolves its author
+    // through ringHead() too, both of which need isInRing(). Let a bracket be adopted
+    // without consulting ringHead() and this guard goes quiet with no test failing.
     if (ringBreakTimer.expired()) {
         // Spent either way: a window that ran out while nothing was running belongs to
         // the ring that opened, not to whatever starts next.

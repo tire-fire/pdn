@@ -29,8 +29,12 @@ public:
         ABORTED = 6,
     };
 
-    /// Takes no RDC subscription: the ring latch is polled where it is used, because a
-    /// closure edge can be resolved away before anyone acts on it.
+    /// Subscribes to the coordinator's ring-membership edge when given one. That
+    /// callback is a single slot, so at most one ShootoutManager per coordinator: a
+    /// second built on the same one takes the slot over, and whichever is destroyed
+    /// first empties it for both. The edge is a diff against the coordinator's own last
+    /// reading, so a manager built after a ring has already closed hears nothing until
+    /// it next moves — construct before the coordinator is first synced.
     /// `entropy` supplies each attempt's identity. Required, and required to survive a
     /// reset: a device whose identities repeat after a reboot accepts a peer's confirm
     /// from the attempt before it, counts that peer into a bracket it never joined, and
@@ -39,6 +43,7 @@ public:
                     WirelessManager* wirelessManager,
                     RemoteDeviceCoordinator* rdc,
                     EntropyInterface* entropy);
+    /// Drops the coordinator subscription the constructor took, which holds `this`.
     ~ShootoutManager();
 
     /// Optional MatchManager injection. When set, Shootout primes the
