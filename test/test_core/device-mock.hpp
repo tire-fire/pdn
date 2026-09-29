@@ -263,6 +263,19 @@ public:
         return chainRole == ChainRole::RING || FakeRemoteDeviceCoordinator::isInRing();
     }
 
+    /// Moves the reported role and reports the membership edge it implies, the way a
+    /// real RDC's sync() would. Without this a manager built on a stand-in never hears
+    /// the ring open and its break guard is inert.
+    void setChainRoleAndReport(ChainRole role) {
+        chainRole = role;
+        maybeFireRingMembershipChange();
+    }
+
+    /// Reports the membership level as it stands, the way a real RDC's sync() does on
+    /// the tick after a subscriber appears. A subscriber that never hears the level go
+    /// true cannot hear it go false either, because the edge is a diff.
+    void reportMembership() { maybeFireRingMembershipChange(); }
+
     ChainRole chainRole = ChainRole::RING;
     std::vector<std::array<uint8_t, 6>> chainMembers;
 };

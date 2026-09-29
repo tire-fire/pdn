@@ -127,6 +127,10 @@ public:
         memberRdc.ringHeadMac = head;
         delete shootout;
         shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
+        // The level, once, the way a real RDC's first sync() after construction reports
+        // it. The membership edge is a diff, so a manager that never hears it go true
+        // cannot hear it go false and its break guard never arms.
+        memberRdc.reportMembership();
     }
 
     /// Puts this device at the head of a ring whose detection serves `served`.
@@ -137,6 +141,7 @@ public:
         memberRdc.chainMembers = served;
         delete shootout;
         shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
+        memberRdc.reportMembership();
     }
 
     void TearDown() override {
@@ -1317,6 +1322,40 @@ inline void aRejoinedMemberStillKnowsItsPeersNames(ShootoutManagerTests* suite) 
 
     EXPECT_EQ(suite->shootout->getNameForMac(other.data()), peerName)
         << "the re-joined device forgot who it is playing against";
+}
+
+// A member's ring breaking somewhere it cannot see. Every member-role case runs on a
+// stand-in RDC with no sync() of its own, so the membership edge has to be reported for
+// the break guard to exist at all — and the edge is a diff, so a subscriber that never
+// heard the level go true cannot hear it go false. This is the case that would have
+// caught that: without the report, the guard is silently inert on every such fixture.
+inline void aMemberAbortsWhenTheRingBreaksBehindIt(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
+
+    // The cable goes: detection drops the head it was relaying, so membership goes false.
+    suite->memberRdc.ringHeadMac = {};
+    suite->memberRdc.setChainRoleAndReport(ChainRole::STANDALONE);
+    ASSERT_FALSE(suite->memberRdc.isInRing());
+
+    suite->shootout->sync();
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)
+        << "the guard fired before its window was up";
+
+    suite->fakeClock->advance(ShootoutManager::LOOP_BREAK_DEBOUNCE_MS + 1);
+    suite->shootout->sync();
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
+        << "a member's tournament outlived the ring it was running on";
 }
 
 // The ring roster outlives the give-up, because giving up on a tournament does not

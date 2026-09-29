@@ -263,8 +263,12 @@ public:
     }
 
     /// Registers the observer for isInRing() moving, on EVERY device on the loop.
-    /// Distinct from setOnChainRoleChange, which never reports this: RING is
-    /// head-only, so a member whose ring opens elsewhere keeps the role it had.
+    /// Distinct from setOnChainRoleChange, which reports this only for the latching
+    /// head, whose role really does become RING: that role is head-only, so a member
+    /// whose ring opens elsewhere keeps the role it had and its observer stays silent.
+    /// Single slot, and no initial value — the edge is a diff against lastInRing, so a
+    /// subscriber that registers after membership is already true hears nothing until it
+    /// next moves.
     void setOnRingMembershipChange(RingMembershipChangeCallback callback) {
         ringMembershipChangeCallback = std::move(callback);
     }
@@ -436,7 +440,14 @@ private:
     void adoptUpstreamHead();
     void onLinkLost(SerialIdentifier port);
     void maybeFireChainRoleChange();
+
+protected:
+    /// Recomputes isInRing() and reports the edge. Protected rather than private
+    /// because isInRing() is virtual: a stand-in that overrides it has no sync() to
+    /// run, and without a way to drive this its subscribers never see an edge at all.
     void maybeFireRingMembershipChange();
+
+private:
     // Roster traffic is addressed to the head as head, so it dies with the role.
     // A surviving retransmit would address a device that is no longer the head.
     void cancelHeadRosterTraffic(uint64_t headMac48);
