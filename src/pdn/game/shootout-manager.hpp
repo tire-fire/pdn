@@ -169,6 +169,9 @@ public:
     // Reset all tournament state back to IDLE phase so a subsequent loop
     // closure triggers a fresh proposal. Called when the physical ring is
     // broken after TOURNAMENT_END or ABORTED.
+    /// Drops what this attempt leaves behind and keeps what outlives it: the ring
+    /// roster and the attempt identity. resetToIdle is the one that ends a tournament.
+    void leaveAttempt();
     void resetToIdle();
 
     /// Tears down, lands in Phase::ABORTED, and only then fans ABORT out to the
@@ -282,7 +285,11 @@ private:
     // Any of the three, because which set knows the ring depends on the phase:
     // the bracket after reveal, the confirmed set during the proposal, the
     // physical loop before either exists. A follower's bracket is not a subset
-    // of its confirmed set, so none of the three subsumes the others.
+    // of its confirmed set, so none of the three subsumes the others. The loop
+    // roster outlives a give-up, so a device that gave up and then took its head's
+    // bracket back is covered by it — reaching past these to whatever ring detection
+    // calls head right now would also let one coordinator's bracket be aborted by a
+    // different device, which is the disagreement this is meant to prevent.
     bool isRingMember(const uint8_t* mac) const;
     void broadcastCommand(const uint8_t* packet, size_t len);
     void broadcastToRing(const std::vector<std::array<uint8_t, 6>>& audience,

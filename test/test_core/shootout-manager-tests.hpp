@@ -1280,6 +1280,49 @@ inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTest
         << "the bracket went unacked, so the head abandons on us and aborts the ring";
 }
 
+// The ring roster outlives the give-up, because giving up on a tournament does not
+// unplug the cable. It is what says whether a closure announced around us is ours, and
+// a device holding a bracket with an empty one accepts that news from anybody: the
+// stranger below shares no ring with us, and retiring here would drop a bracket the
+// head is mid-fan-out on, which abandons on us and ends the tournament for everyone.
+inline void aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing(
+    ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> stranger = {0x09, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+
+    std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
+                                    0xC6, 0x00, 0x00, 0x01, 3};
+    for (const std::array<uint8_t, 6>& m : {me, head, other})
+        bracket.insert(bracket.end(), m.begin(), m.end());
+    suite->shootout->onShootoutFrame(head.data(), bracket.data(), bracket.size());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    // A ring we are not on, repeating a roster that still names us from some earlier
+    // cabling. Through the decoder, which lets RING_CLOSED past the attempt gate on
+    // purpose, so the roster check is the only thing standing between it and our bracket.
+    std::vector<uint8_t> closed = {static_cast<uint8_t>(ShootoutCmd::RING_CLOSED), 0,
+                                   0xDE, 0xAD, 0xBE, 0xEF, 2};
+    for (const std::array<uint8_t, 6>& m : {me, stranger})
+        closed.insert(closed.end(), m.begin(), m.end());
+    suite->shootout->onShootoutFrame(stranger.data(), closed.data(), closed.size());
+
+    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
+        << "a device we share no ring with retired the bracket we just re-joined";
+}
+
 // A tournament this device has finished still stays finished: ENDED keeps its bracket
 // and its winner on screen, and a bracket arriving there would zero both. Only the
 // aborted half of terminal re-joins.

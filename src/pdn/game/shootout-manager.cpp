@@ -107,14 +107,7 @@ bool ShootoutManager::isFromCoordinator(const uint8_t* mac) const {
 bool ShootoutManager::isRingMember(const uint8_t* mac) const {
     if (containsMac(bracket, mac)) return true;
     if (containsMac(confirmedSet, mac)) return true;
-    if (containsMac(getLoopMembers(), mac)) return true;
-    // The head ring detection reports right now, which onBracketReceived already trusts
-    // as an author. Without it the two paths disagree about the same device: a device that
-    // gave up has all three rosters cleared, so its head can still hand it a bracket while
-    // it cannot hear that same head abort — and being re-joinable but un-abortable is the
-    // one pairing that must not happen.
-    const uint8_t* head = ringHead();
-    return head != nullptr && memcmp(mac, head, 6) == 0;
+    return containsMac(getLoopMembers(), mac);
 }
 
 void ShootoutManager::broadcastCommand(const uint8_t* packet, size_t len) {
@@ -237,17 +230,26 @@ std::vector<std::array<uint8_t, 6>> ShootoutManager::getLoopMembers() const {
     return buildLoopMemberSet();
 }
 
+// Everything an attempt leaves behind, and nothing that outlives one. startProposal
+// calls resetTournamentState directly because a member's adopted identity has to
+// survive entering the proposal it belongs to; the announce timer goes here because
+// it is armed per attempt.
+void ShootoutManager::leaveAttempt() {
+    resetTournamentState();
+    ringClosedRebroadcastTimer.invalidate();
+}
+
 void ShootoutManager::resetToIdle() {
     LOG_W(TAG, "resetToIdle from phase=%d", static_cast<int>(phase));
-    resetTournamentState();
+    leaveAttempt();
+    // The ring and the attempt that named it die with the tournament, not with this
+    // device's part in one — which is the whole of the difference between here and
+    // giveUpLocally. The roster says whether a closure announced around us is ours, so
+    // a device that kept its bracket and lost its roster takes that news from anybody.
+    // The identity carried past the end instead gets announced again by a device that
+    // re-proposes without minting, and the members still holding that attempt's bracket
+    // never confirm for it. Both are refilled by the next RING_CLOSED.
     ringMembers.clear();
-    ringClosedRebroadcastTimer.invalidate();
-    // The attempt dies with the tournament, which is why this is here and not in
-    // resetTournamentState: startProposal calls that one, and a member's adopted
-    // identity has to survive entering the proposal it belongs to. Carried past the end
-    // instead, a spent identity gets announced again by a device that re-proposes
-    // without minting, and the members still holding that attempt's bracket never
-    // confirm for it.
     tournamentEpoch = 0;
 }
 
@@ -302,7 +304,7 @@ void ShootoutManager::startProposal() {
     // back the roster RING_CLOSED delivered, since that is what detection serves to a
     // member — so one line serves both roles. An announcement replaces the roster
     // outright later; this is only where an attempt starts from.
-    // Announcing it is sync()'s, on the first tick in PROPOSAL: resetToIdle invalidates
+    // Announcing it is sync()'s, on the first tick in PROPOSAL: leaveAttempt invalidates
     // the rebroadcast timer, and startProposal is the only way into the phase, so that
     // tick always finds nothing announced yet.
     ringMembers = getLoopMembers();
@@ -417,15 +419,12 @@ void ShootoutManager::giveUpLocally() {
     // proposal that this device is giving up in favour of, and onAbortReceived takes
     // one from any ring member.
     //
-    // The attempt survives the reset, which resetToIdle otherwise clears. Leaving is not
-    // the same as never having been here: this device still has to recognise the
-    // tournament it just left, both to stamp the ABORT abortTournament fans out after
-    // calling this and to take the bracket that names it if the head drew a moment after
-    // the bound fired. The clear a spent identity needs happens when the terminal screen
-    // dismounts and calls resetToIdle itself, which is before anything can re-propose.
-    const uint32_t attemptWeAreLeaving = tournamentEpoch;
-    resetToIdle();
-    tournamentEpoch = attemptWeAreLeaving;
+    // Leaving is not the same as never having been here, which is why this reaches for
+    // the attempt teardown and not resetToIdle: the device is still cabled into the same
+    // ring and still has to recognise the tournament it just left — to stamp the ABORT
+    // abortTournament fans out after calling this, and to take the bracket that names it
+    // if the head drew a moment after the bound fired.
+    leaveAttempt();
     phase = Phase::ABORTED;
 }
 
