@@ -4,14 +4,15 @@
 
 #include <random>
 
-/// Desktop stand-in. std::random_device is a real source here, unlike on ESP32 under
-/// newlib where it is deterministic — which is why the firmware does not use it.
-class NativeEntropyDriver : public EntropyInterface {
+/// Desktop stand-in. `std::random_device` is a real entropy source in this toolchain, so
+/// it seeds a generator once and draws from that. The firmware deliberately does not use
+/// it: on the target it can fall back to a deterministic sequence, which is the failure
+/// this whole interface exists to avoid.
+class NativeEntropy : public EntropyInterface {
 public:
     uint32_t next32() override { return distribution(generator); }
 
 private:
-    std::random_device seedSource;
-    std::mt19937 generator{seedSource()};
+    std::mt19937 generator{std::random_device{}()};
     std::uniform_int_distribution<uint32_t> distribution;
 };

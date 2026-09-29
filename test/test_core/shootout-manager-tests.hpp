@@ -1526,6 +1526,50 @@ inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTest
         << "a bracket the ring had already aborted pulled this device back into it";
 }
 
+// The retry budget is per bout, and a bout is not its index: the coordinator restarts the
+// index at 0 on every round, so match 0 of round two carries the same number as match 0 of
+// round one. A device that spent its one re-send on the first would go silent on the
+// second, and the coordinator advances only on receiving a result — so the bracket stalls
+// with nothing owed and nothing to notice it.
+inline void eachRoundGetsItsOwnResultRetryDespiteTheIndexRestarting(
+    ShootoutManagerTests* suite) {
+    uint8_t selfMac[6] = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> me = {0x02, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> coord = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x03, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> fourth = {0x04, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms, getMacAddress())
+        .WillByDefault(testing::Return(selfMac));
+    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(coord);
+    suite->shootout->onRingClosedReceived(coord.data(), {coord, me, other, fourth}, 0xC6000001u);
+    suite->shootout->startProposal();
+    for (const std::array<uint8_t, 6>& m : {coord, me, other, fourth})
+        suite->shootout->onConfirmReceived(m.data());
+    suite->shootout->onBracketReceived(coord.data(), {coord, me, other, fourth}, 1);
+
+    // Round one, match 0: this device wins and the coordinator never acks.
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), other.data(), 0, 2);
+    suite->shootout->reportLocalWin();
+    const uint8_t firstSeq = suite->shootout->getLastMatchResultSeqId();
+    suite->runRetryRounds(Resender::MAX_RETRIES + 1);
+    ASSERT_NE(suite->shootout->getLastMatchResultSeqId(), firstSeq)
+        << "the first bout was never recovered";
+
+    // Round two, match 0 — the same index, a different bout.
+    suite->shootout->onMatchStartReceived(coord.data(), me.data(), coord.data(), 0, 3);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::MATCH_IN_PROGRESS);
+    suite->shootout->reportLocalWin();
+    const uint8_t secondSeq = suite->shootout->getLastMatchResultSeqId();
+    suite->runRetryRounds(Resender::MAX_RETRIES + 1);
+
+    EXPECT_NE(suite->shootout->getLastMatchResultSeqId(), secondSeq)
+        << "the second round's match 0 got no retry; the budget was keyed on an index "
+           "that restarts, not on the bout";
+}
+
 // A ring nobody has touched must sit idle, not flash. The short-roster abort is
 // gated on a local confirm for exactly that reason, and the proposal bound has to
 // be too: without it an untouched latched ring aborts, shows ABORTED for two
@@ -2626,10 +2670,11 @@ inline void duplicateMatchResultDoesNotDoubleAdvance(ShootoutManagerTests* suite
     // MATCH_RESULT twice where neither winner nor loser is the coord itself.
     // With the coord in match 0, reportLocalWin (not onMatchResultReceived)
     // would be the real-world entry point, so the dedup path wouldn't fire.
-    // Under the current seed (fakeClock=1000 XOR selfMac=01 -> 1001), mt19937
-    // shuffles {01,02,03,04} to {04,03,01,02}, so match 0 = {04,03}. Guard
-    // against silent seed drift — if this fires, fix the MACs above so match
-    // 0 excludes the coordinator rather than masking the regression.
+    // The draw is seeded from the entropy source, which FakeEntropy makes deterministic,
+    // so match 0 excludes the coordinator here. Asserted rather than derived: the seed is
+    // the fake's business, and a case that recomputes it breaks whenever the source does.
+    // If this fires, fix the MACs above so match 0 excludes the coordinator rather than
+    // masking the regression.
     auto pair = suite->shootout->getCurrentMatchPair();
     ASSERT_NE(memcmp(pair.first.data(), me.data(), 6), 0)
         << "coordinator unexpectedly in match 0 — shuffle seed drifted";
@@ -3605,7 +3650,7 @@ inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite
     // Positions are pinned independently by quickdrawAppEdgesMatchPreSplitGraph, so
     // an edge inserted ahead of one of these fails there too, not only here.
     const std::vector<std::pair<int, size_t>> abortEdges = {
-        {IDLE, 3},
+        {IDLE, 4},
         {DUEL_COUNTDOWN, 0},
         {DUEL, 0},
         {DUEL_PUSHED, 0},
@@ -3641,7 +3686,14 @@ inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
     for (const std::pair<int, size_t>& edge : abortEdges) {
-        EXPECT_TRUE(byId[edge.first]->getTransitions()[edge.second]->isConditionMet())
+        // Bounds-checked like the loop above: a stale index here does not read past the
+        // end, it silently evaluates a different edge — and some of those dereference
+        // managers this fixture's bare context leaves null, which is a segfault rather
+        // than a failed expectation.
+        State* source = byId.count(edge.first) ? byId[edge.first] : nullptr;
+        ASSERT_NE(source, nullptr) << "state " << edge.first << " missing";
+        ASSERT_LT(edge.second, source->getTransitions().size());
+        EXPECT_TRUE(source->getTransitions()[edge.second]->isConditionMet())
             << "state " << edge.first << " ignores the abort";
     }
 }

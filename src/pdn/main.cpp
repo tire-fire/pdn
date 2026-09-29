@@ -125,7 +125,6 @@ void setup() {
     // Initialize platform abstractions immediately after constructing them
     g_logger = loggerDriver;
     SimpleTimer::setPlatformClock(clockDriver);
-    // Hardware RNG, so a tournament identity is fresh even after a reset.
     static Esp32S3Entropy entropySource;
     esp_log_level_set("*", ESP_LOG_VERBOSE);
 

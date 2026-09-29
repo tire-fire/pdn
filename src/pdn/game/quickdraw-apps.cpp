@@ -10,6 +10,19 @@ std::function<bool()> tournamentAbortedCondition(ShootoutManager* shootoutManage
     };
 }
 
+// A tournament this device holds a bracket for but has no screen showing. Reachable
+// two ways, both from onBracketReceived admitting a bracket outside the proposal: a
+// device that gave up and is still on the ABORTED screen when its head draws, and one
+// whose screen already dismounted when a later copy of that bracket lands. Without an
+// edge from each, the device holds a live bracket while showing the idle stats and only
+// recovers when the coordinator names it a duelist.
+std::function<bool()> tournamentDrewWhileAwayCondition(ShootoutManager* shootoutManager) {
+    return [shootoutManager]() {
+        return shootoutManager &&
+               shootoutManager->getPhase() == ShootoutManager::Phase::BRACKET_REVEAL;
+    };
+}
+
 // The abandoned-duel rule the three interruptible duel states share, in the same
 // shape as the abort rule above so neither can fork.
 std::function<bool()> duelAbandonedCondition(ConnectState<PDN>& duel,
@@ -42,6 +55,9 @@ void HubApp::populateStateMap() {
     idle->addAppTransition(
         [shootoutManager]() { return shootoutManager && shootoutManager->shouldEnterProposal(); },
         StateId(SHOOTOUT_APP_ID), StateId(SHOOTOUT_PROPOSAL));
+
+    idle->addAppTransition(tournamentDrewWhileAwayCondition(shootoutManager),
+                           StateId(SHOOTOUT_APP_ID), StateId(SHOOTOUT_BRACKET_REVEAL));
 
     idle->addAppTransition(
         [idle]() { return idle->transitionToDuelCountdown(); },
@@ -194,6 +210,7 @@ ShootoutApp::ShootoutApp(const GameContext& context)
     , context(context) {}
 
 void ShootoutApp::populateStateMap() {
+    ShootoutManager* shootoutManager = context.shootoutManager;
     ShootoutProposal* proposal = new ShootoutProposal(context);
     ShootoutBracketReveal* bracketReveal = new ShootoutBracketReveal(context);
     ShootoutSpectator* spectator = new ShootoutSpectator(context);
@@ -238,6 +255,11 @@ void ShootoutApp::populateStateMap() {
     finalStandings->addAppTransition(
         [finalStandings]() { return finalStandings->transitionToSleep(); },
         StateId(HUB_APP_ID), StateId(SLEEP));
+
+    // Ahead of the dwell timer, which can come due on the same tick: a bracket that
+    // named this device while the screen was up is the answer, and the screen's dismount
+    // deliberately leaves it standing.
+    aborted->addTransition(tournamentDrewWhileAwayCondition(shootoutManager), bracketReveal);
 
     aborted->addAppTransition(
         [aborted]() { return aborted->transitionToIdle(); },

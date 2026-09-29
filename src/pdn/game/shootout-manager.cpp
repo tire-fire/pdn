@@ -295,7 +295,9 @@ void ShootoutManager::startProposal() {
         // carries it, and the members adopt it from the announcement below. Minted
         // here rather than at the ring-closed edge because this is the one place a
         // new attempt begins — a reclaim off a standing latch gets no fresh edge.
-        // Head-only: everyone else adopts the identity from RING_CLOSED.
+        // Head-only: everyone else adopts the identity from RING_CLOSED. One of two mint
+        // sites — sync()'s announce block is the other, for a device that comes to head
+        // the ring after the proposal opened.
         tournamentEpoch = mintEpoch();
     }
     // A new tournament is a new roster. On a head that re-reads ring detection rather
@@ -548,18 +550,11 @@ bool ShootoutManager::isCoordinator() const {
 
 void ShootoutManager::generateBracket() {
     bracket = confirmedSet;
-    // std::random_device is deterministic under newlib on ESP32, so seed
-    // from platform clock XOR self-MAC to get real variation.
-    unsigned long seed = 0;
-    auto* clk = SimpleTimer::getPlatformClock();
-    if (clk != nullptr) seed = clk->milliseconds();
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
-    if (selfMac != nullptr) {
-        for (int i = 0; i < 6; i++) {
-            seed ^= static_cast<unsigned long>(selfMac[i]) << ((i % 4) * 8);
-        }
-    }
-    std::mt19937 rng(seed);
+    // The same source the attempt identity is minted from. This used to seed off the
+    // platform clock XOR the self-MAC, which the entropy interface exists precisely to
+    // replace — only the head draws, so there was never a cross-device collision for the
+    // MAC half to break, and the clock half is what reads the same either side of a reset.
+    std::mt19937 rng(entropy != nullptr ? entropy->next32() : 0);
     std::shuffle(bracket.begin(), bracket.end(), rng);
     currentRound = bracket;
 }
@@ -617,13 +612,14 @@ bool decodeMacList(const uint8_t* payload, size_t payloadLen,
 
 uint32_t ShootoutManager::mintEpoch() {
     if (entropy == nullptr) {
+        // Required at construction, so this is a wiring error, not a runtime case. It
+        // still must not return 0: that means "no attempt", and sync()'s announce block
+        // mints again whenever it sees 0, so the fleet would churn identities every tick
+        // and refuse every frame.
         LOG_E(TAG, "mintEpoch with no entropy source");
-        return 0;
+        return 1;
     }
-    // 0 is reserved for "no attempt", so the one value the source must not hand back is
-    // retried rather than reserved out of the range.
-    uint32_t minted = entropy->next32();
-    if (minted == 0) minted = entropy->next32();
+    const uint32_t minted = entropy->next32();
     return minted == 0 ? 1 : minted;
 }
 
@@ -1052,6 +1048,11 @@ void ShootoutManager::onMatchStartReceived(
     // remembered seqId, for the reason onBracketReceived gives about the sender's
     // counter.
     if (isSameMatch(matchIndex, duelistA, duelistB)) return;
+    // A different bout, so its result gets its own one re-send. Cleared here rather than
+    // left to the index to distinguish, because the coordinator restarts the index at 0
+    // every round: match 0 of round two is a different bout carrying the same number, and
+    // a device that spent its re-send on round one's would go quiet on it.
+    matchResultResentIndex = -1;
     currentMatchIndex = matchIndex;
     memcpy(currentDuelistA.data(), duelistA, 6);
     memcpy(currentDuelistB.data(), duelistB, 6);

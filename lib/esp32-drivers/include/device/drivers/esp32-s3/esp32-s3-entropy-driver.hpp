@@ -4,8 +4,11 @@
 
 #include <esp_random.h>
 
-/// Hardware RNG. Seeded from RF noise once the radio is up, which ESP-NOW guarantees
-/// here, so it owes nothing to the clock or to a stored counter.
+/// The SoC's hardware RNG. Continuously fed from RF noise while the radio is enabled, so
+/// each call draws afresh rather than running from a seed taken once at boot — which is
+/// what makes it usable for a value that must differ either side of a reset. With the
+/// radio disabled the output is still non-repeating but not certified random; every caller
+/// here runs long after radio init.
 class Esp32S3Entropy : public EntropyInterface {
 public:
     uint32_t next32() override { return esp_random(); }

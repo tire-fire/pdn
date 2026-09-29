@@ -29,10 +29,8 @@ public:
         ABORTED = 6,
     };
 
-    /// Subscribes to the coordinator's ring-closed edge when given one. That
-    /// callback is a single slot, so at most one ShootoutManager per coordinator:
-    /// a second built on the same one takes the slot over, and whichever is
-    /// destroyed first empties it for both.
+    /// Takes no RDC subscription: the ring latch is polled where it is used, because a
+    /// closure edge can be resolved away before anyone acts on it.
     /// `entropy` supplies each attempt's identity. Required, and required to survive a
     /// reset: a device whose identities repeat after a reboot accepts a peer's confirm
     /// from the attempt before it, counts that peer into a bracket it never joined, and
@@ -41,7 +39,6 @@ public:
                     WirelessManager* wirelessManager,
                     RemoteDeviceCoordinator* rdc,
                     EntropyInterface* entropy);
-    /// Drops the coordinator subscriptions the constructor took, which hold `this`.
     ~ShootoutManager();
 
     /// Optional MatchManager injection. When set, Shootout primes the
@@ -81,8 +78,8 @@ public:
     /// Minted by the head when its proposal opens and adopted from RING_CLOSED by
     /// everyone else, so it names one attempt fleet-wide without any agreement step.
     /// A device that comes to head the ring mid-proposal announces under the one it
-    /// adopted rather than minting a second — or under 0, if it entered the proposal off
-    /// its own closure and never adopted one.
+    /// adopted rather than minting a second; if it adopted none, sync() mints before it
+    /// announces, so nothing ever goes out under 0.
     uint32_t getTournamentEpoch() const { return tournamentEpoch; }
     /// True while this device sits on a closed ring and no tournament is running:
     /// the Idle -> ShootoutProposal transition predicate.
@@ -243,10 +240,9 @@ private:
     uint8_t nextSeqId();
     // Mints the identity of a new attempt, straight from the entropy source, so it is
     // distinct across attempts, across devices and across reboots with no agreement step
-    // and nothing stored. A counter was not enough on any of the three axes: it restarts
-    // at boot, and the model builds the failure that follows — a peer's confirm from the
-    // attempt before the reset counted toward the one after it. Never returns 0, which
-    // means "no attempt".
+    // and nothing stored. A counter covered the first axis only: it restarts at boot, and
+    // the model builds the failure that follows — a peer's confirm from the attempt before
+    // the reset counted toward the one after it. Never returns 0, which means "no attempt".
     uint32_t mintEpoch();
     // Writes the header into `out`, which must hold at least kHeaderLength bytes, and
     // returns where the payload starts. The attempt is a parameter rather than a read of
@@ -350,11 +346,11 @@ private:
     uint8_t lastBracketSeqId = 0;
     uint8_t nextShootoutSeqId = 1;
 
-    // Retransmits for every command family this manager sends. Owned here, not
-    // shared with the coordinator's: a fan-out armed by this manager must die
-    // with it rather than keep broadcasting for a tournament that is over.
-    // All five families ride one PktType, so the abandon callback reads which
-    // one gave up off the frame's own command byte.
+    // Retransmits the five command families that are sent reliably; CONFIRM and
+    // RING_CLOSED are repeated on a timer instead and never reach here. Owned by this
+    // manager, not shared with the coordinator's: a fan-out armed here must die with it
+    // rather than keep broadcasting for a tournament that is over. All five ride one
+    // PktType, so the abandon callback reads which one gave up off the command byte.
     Resender resender;
     void onCommandAbandoned(uint8_t seqId, const uint8_t* targetMac,
                             const uint8_t* packet, size_t len);
@@ -388,10 +384,10 @@ private:
     std::vector<std::array<uint8_t, 6>> eliminated;
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin = false;
-    // The match whose result this device has already re-sent once, or -1. Keyed
-    // on the bout rather than a flag, so it needs no clearing: a later match
-    // names a different index and gets its own attempt. A device flag would have
-    // to be reset wherever a match turns over, which differs by role.
+    // The match whose result this device has already re-sent once, or -1. The index alone
+    // cannot name a bout — the coordinator restarts it at 0 each round — so this is
+    // cleared wherever a device learns of a different bout, which for a member is
+    // onMatchStartReceived and for anyone adopting a bracket is that.
     int matchResultResentIndex = -1;
     uint8_t lastMatchResultSeqId = 0;
     void sendMatchResultToPeers(const uint8_t* winner, const uint8_t* loser,

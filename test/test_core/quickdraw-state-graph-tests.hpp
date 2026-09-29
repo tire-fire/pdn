@@ -65,8 +65,12 @@ inline const std::vector<int> GAMEPLAY_REGISTRATION_ORDER = {
 // registrationHandsOffFromWelcomeMessage below).
 inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_EDGES = {
     {AWAKEN_SEQUENCE, {IDLE}},
+    // SHOOTOUT_BRACKET_REVEAL sits second because a device holding a bracket it adopted
+    // while away has nowhere else to be shown it; nothing below it can be true at the
+    // same moment, so the position is for reading order rather than priority.
     {IDLE,
-     {SHOOTOUT_PROPOSAL, DUEL_COUNTDOWN, SUPPORTER_READY, SHOOTOUT_ABORTED, SYMBOL}},
+     {SHOOTOUT_PROPOSAL, SHOOTOUT_BRACKET_REVEAL, DUEL_COUNTDOWN, SUPPORTER_READY,
+      SHOOTOUT_ABORTED, SYMBOL}},
     {SUPPORTER_READY, {IDLE}},
     {DUEL_COUNTDOWN, {SHOOTOUT_ABORTED, DUEL, IDLE}},
     {DUEL,
@@ -86,7 +90,9 @@ inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_ED
      {DUEL_COUNTDOWN, SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_ELIMINATED, {SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_FINAL_STANDINGS, {SLEEP}},
-    {SHOOTOUT_ABORTED, {IDLE}},
+    // The bracket edge is first on purpose: it and the dwell timer can come due on the
+    // same tick, and a bracket that named this device is the answer.
+    {SHOOTOUT_ABORTED, {SHOOTOUT_BRACKET_REVEAL, IDLE}},
     {SYMBOL, {IDLE, SYMBOL_MATCHED}},
     {SYMBOL_MATCHED, {SYMBOL, IDLE}},
 };
@@ -99,9 +105,10 @@ inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_ED
 // All 24 were intra-app edges pre-split, when the whole game was one machine.
 inline const std::vector<std::pair<std::pair<int, size_t>, std::pair<int, int>>> CROSS_APP_EDGES = {
     {{IDLE, 0}, {SHOOTOUT_APP_ID, SHOOTOUT_PROPOSAL}},
-    {{IDLE, 1}, {DUEL_APP_ID, DUEL_COUNTDOWN}},
-    {{IDLE, 3}, {SHOOTOUT_APP_ID, SHOOTOUT_ABORTED}},
-    {{IDLE, 4}, {SYMBOL_APP_ID, SYMBOL}},
+    {{IDLE, 1}, {SHOOTOUT_APP_ID, SHOOTOUT_BRACKET_REVEAL}},
+    {{IDLE, 2}, {DUEL_APP_ID, DUEL_COUNTDOWN}},
+    {{IDLE, 4}, {SHOOTOUT_APP_ID, SHOOTOUT_ABORTED}},
+    {{IDLE, 5}, {SYMBOL_APP_ID, SYMBOL}},
     {{DUEL_COUNTDOWN, 0}, {SHOOTOUT_APP_ID, SHOOTOUT_ABORTED}},
     {{DUEL_COUNTDOWN, 2}, {HUB_APP_ID, IDLE}},
     {{DUEL, 0}, {SHOOTOUT_APP_ID, SHOOTOUT_ABORTED}},
@@ -119,7 +126,7 @@ inline const std::vector<std::pair<std::pair<int, size_t>, std::pair<int, int>>>
     {{SHOOTOUT_BRACKET_REVEAL, 0}, {DUEL_APP_ID, DUEL_COUNTDOWN}},
     {{SHOOTOUT_SPECTATOR, 0}, {DUEL_APP_ID, DUEL_COUNTDOWN}},
     {{SHOOTOUT_FINAL_STANDINGS, 0}, {HUB_APP_ID, SLEEP}},
-    {{SHOOTOUT_ABORTED, 0}, {HUB_APP_ID, IDLE}},
+    {{SHOOTOUT_ABORTED, 1}, {HUB_APP_ID, IDLE}},
     {{SYMBOL, 0}, {HUB_APP_ID, IDLE}},
     {{SYMBOL_MATCHED, 1}, {HUB_APP_ID, IDLE}},
 };
@@ -249,7 +256,7 @@ inline void quickdrawAppEdgesMatchPreSplitGraph() {
         }
         totalEdges += expected.second.size();
     }
-    EXPECT_EQ(totalEdges, 47u);
+    EXPECT_EQ(totalEdges, 49u);
 }
 
 // Which of those edges became hand-offs, and the app plus entry state each names.
