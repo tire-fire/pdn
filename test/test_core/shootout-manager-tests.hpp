@@ -1547,18 +1547,28 @@ inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTest
     suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
-    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 1);
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
 
-    // Our own bound fires first.
-    suite->shootout->giveUpLocallyForTest();
+    // Our own bound fires first, through the clock that really reaches it: the bound is
+    // sampled in PROPOSAL and nowhere else, so this is the only state a give-up can
+    // start from.
+    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
+    suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
-    // Then the ring's abort lands on a device that has already left.
-    suite->shootout->onAbortReceived(head.data(), 7);
+    // Then the ring's abort lands on a device that has already left. As bytes, because
+    // the attempt gate lives in onShootoutFrame: a device that left still holds the
+    // identity, and if it did not this frame would be dropped before the handler.
+    const std::vector<uint8_t> abort = {static_cast<uint8_t>(ShootoutCmd::ABORT), 7,
+                                        0xC6, 0x00, 0x00, 0x01};
+    suite->shootout->onShootoutFrame(head.data(), abort.data(), abort.size());
 
-    // A retry of the bracket that abort retired must not pull us back in.
-    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 1);
+    // A retry of the bracket that abort retired must not pull us back in — the one
+    // thing that separates this from a device whose head simply drew late.
+    std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 1,
+                                    0xC6, 0x00, 0x00, 0x01, 3};
+    for (const std::array<uint8_t, 6>& m : {me, head, other})
+        bracket.insert(bracket.end(), m.begin(), m.end());
+    suite->shootout->onShootoutFrame(head.data(), bracket.data(), bracket.size());
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
         << "a bracket the ring had already aborted pulled this device back into it";

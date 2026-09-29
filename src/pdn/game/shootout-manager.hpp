@@ -86,9 +86,6 @@ public:
     bool shouldEnterProposal() const;
 
     void startProposal();
-    /// Test-only: drives the local give-up that the proposal bound reaches, so a case can
-    /// order it against an inbound ABORT without waiting out the clock.
-    void giveUpLocallyForTest() { giveUpLocally(); }
     void confirmLocal();
     void sync();
     // [cmd, seqId, 4-byte attempt identity] — every kShootoutCommand frame opens with
