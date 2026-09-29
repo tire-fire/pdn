@@ -888,6 +888,13 @@ void ShootoutManager::sync() {
     // terminal phase: ENDED outlives the ring it was won on, so without this the
     // coordinator keeps broadcasting to a ring that no longer exists. Why it repeats
     // at all is on reannounceEnding's declaration.
+    //
+    // Read rather than taken from the membership observer, which the break guard above
+    // subscribes to. That observer reports edges, so it can drive something that happens
+    // when the ring moves; this asks where the ring stands at the moment a timer comes
+    // due, and the two are not the same question. A mirrored copy would also start wrong
+    // here: a manager built while the ring is already closed sees no edge, because
+    // nothing changed, and would hold false until the ring next opened and re-closed.
     if (phase == Phase::ENDED && isCoordinator() && rdc != nullptr && rdc->isInRing() &&
         endingRebroadcastTimer.expired()) {
         reannounceEnding();
