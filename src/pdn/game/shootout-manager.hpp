@@ -297,6 +297,10 @@ private:
     void giveUpLocally();
     // Drops what the local press bought for one attempt, leaving the phase alone.
     void forgetAttemptConsent();
+    // Takes a ring's roster and the attempt it belongs to, dropping the consent that
+    // belonged to the last one. Every branch of onRingClosedReceived that joins an
+    // announcement ends here, so the three cannot drift apart on what joining means.
+    void adoptAttempt(const std::vector<std::array<uint8_t, 6>>& members, uint32_t epoch);
     /// The peers a ring fan-out is addressed to: `peers` without this device.
     std::vector<std::array<uint8_t, 6>> peersExcludingSelf(
         const std::vector<std::array<uint8_t, 6>>& peers) const;

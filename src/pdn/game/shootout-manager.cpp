@@ -355,9 +355,9 @@ void ShootoutManager::onRingClosedReceived(
               static_cast<unsigned>(epoch));
         giveUpLocally();
         // Adopted as we retire, so the repeats of this same announcement do not read
-        // as one more attempt to give up on.
-        tournamentEpoch = epoch;
-        ringMembers = members;
+        // as one more attempt to give up on. The consent this drops was already gone:
+        // giveUpLocally cleared it a line above.
+        adoptAttempt(members, epoch);
         return;
     }
     // The roster, and the attempt it belongs to. A device idle, or still in a
@@ -365,12 +365,7 @@ void ShootoutManager::onRingClosedReceived(
     // latch that ring detection has since resolved away.
     if (phase == Phase::IDLE ||
         (phase == Phase::PROPOSAL && epoch != tournamentEpoch && fromOurRing)) {
-        // A press belongs to the attempt it was made in: carrying it across would have
-        // the head count this device and draw it into a bracket the player never
-        // pressed for.
-        if (epoch != tournamentEpoch) forgetAttemptConsent();
-        ringMembers = members;
-        tournamentEpoch = epoch;
+        adoptAttempt(members, epoch);
         LOG_W(TAG, "ring closed by %s members=%zu attempt=%08x", MacToString(fromMac),
               members.size(), static_cast<unsigned>(epoch));
         return;
@@ -381,9 +376,7 @@ void ShootoutManager::onRingClosedReceived(
     // identity to be corrected, and leaving it would stamp every later CONFIRM with
     // something the head drops.
     if (phase == Phase::PROPOSAL && fromOurHead) {
-        if (epoch != tournamentEpoch) forgetAttemptConsent();
-        ringMembers = members;
-        tournamentEpoch = epoch;
+        adoptAttempt(members, epoch);
     }
 }
 
@@ -416,6 +409,16 @@ void ShootoutManager::forgetAttemptConsent() {
     confirmedSet.clear();
     proposalTimer.invalidate();
     shortRosterDebounce.reset();
+}
+
+void ShootoutManager::adoptAttempt(const std::vector<std::array<uint8_t, 6>>& members,
+                                   uint32_t epoch) {
+    // The press belongs to the attempt it was made in: carried across, the head counts
+    // this device and draws it into a bracket the player never pressed for. Skipped when
+    // the attempt is the same one, so a repeat of our own closure costs nothing.
+    if (epoch != tournamentEpoch) forgetAttemptConsent();
+    ringMembers = members;
+    tournamentEpoch = epoch;
 }
 
 void ShootoutManager::giveUpLocally() {
