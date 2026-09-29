@@ -22,6 +22,16 @@ std::function<bool()> tournamentAbortedCondition(ShootoutManager* shootoutManage
 // The aborted one is not what makes that reachable, for the same reason: without it the
 // dwell timer falls through to Idle and the edge above takes it. It saves those two
 // seconds and a flash through the idle screen.
+// The ending, as an edge condition. Three shootout screens leave for the standings on
+// it and all three read this, the way the abort rule is shared above. Read live rather
+// than latched in each state's loop: a phase this terminal does not move again, so
+// there is nothing for a latch to protect against.
+std::function<bool()> tournamentEndedCondition(ShootoutManager* shootoutManager) {
+    return [shootoutManager]() {
+        return shootoutManager && shootoutManager->getPhase() == ShootoutManager::Phase::ENDED;
+    };
+}
+
 std::function<bool()> tournamentDrewWhileAwayCondition(ShootoutManager* shootoutManager) {
     return [shootoutManager]() {
         return shootoutManager &&
@@ -224,7 +234,8 @@ void ShootoutApp::populateStateMap() {
     ShootoutFinalStandings* finalStandings = new ShootoutFinalStandings(context);
     ShootoutAborted* aborted = new ShootoutAborted(context);
 
-    std::function<bool()> phaseIsAborted = tournamentAbortedCondition(context.shootoutManager);
+    std::function<bool()> phaseIsAborted = tournamentAbortedCondition(shootoutManager);
+    std::function<bool()> tournamentEnded = tournamentEndedCondition(shootoutManager);
 
     proposal->addTransition(
         [proposal]() { return proposal->transitionToBracketReveal(); },
@@ -237,22 +248,16 @@ void ShootoutApp::populateStateMap() {
     bracketReveal->addTransition(
         [bracketReveal]() { return bracketReveal->transitionToSpectator(); },
         spectator);
-    bracketReveal->addTransition(
-        [bracketReveal]() { return bracketReveal->transitionToFinalStandings(); },
-        finalStandings);
+    bracketReveal->addTransition(tournamentEnded, finalStandings);
     bracketReveal->addTransition(phaseIsAborted, aborted);
 
     spectator->addAppTransition(
         [spectator]() { return spectator->transitionToDuelCountdown(); },
         StateId(DUEL_APP_ID), StateId(DUEL_COUNTDOWN));
-    spectator->addTransition(
-        [spectator]() { return spectator->transitionToFinalStandings(); },
-        finalStandings);
+    spectator->addTransition(tournamentEnded, finalStandings);
     spectator->addTransition(phaseIsAborted, aborted);
 
-    eliminated->addTransition(
-        [eliminated]() { return eliminated->transitionToFinalStandings(); },
-        finalStandings);
+    eliminated->addTransition(tournamentEnded, finalStandings);
     eliminated->addTransition(phaseIsAborted, aborted);
 
     // Cable-event reset after TOURNAMENT_END: when the physical ring opens,

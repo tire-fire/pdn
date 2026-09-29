@@ -437,14 +437,12 @@ public:
 
     bool transitionToDuelCountdown();
     bool transitionToSpectator();
-    bool transitionToFinalStandings();
 
 private:
     ShootoutManager* shootoutManager = nullptr;
 
     bool shouldGoToDuelCountdown_ = false;
     bool shouldGoToSpectator_ = false;
-    bool shouldGoToFinalStandings = false;
 };
 
 class ShootoutSpectator : public TypedState<PDN> {
@@ -455,12 +453,10 @@ public:
     void onStateDismounted(PDN* pdn) override;
 
     bool transitionToDuelCountdown();
-    bool transitionToFinalStandings();
 
 private:
     ShootoutManager* shootout_;
     bool shouldGoToDuelCountdown_ = false;
-    bool shouldGoToFinalStandings_ = false;
     std::array<uint8_t, 6> lastDisplayedA_{};
     std::array<uint8_t, 6> lastDisplayedB_{};
 };
@@ -469,14 +465,6 @@ class ShootoutEliminated : public TypedState<PDN> {
 public:
     explicit ShootoutEliminated(const GameContext& ctx);
     void onStateMounted(PDN* pdn) override;
-    void onStateLoop(PDN* pdn) override;
-    void onStateDismounted(PDN* pdn) override;
-
-    bool transitionToFinalStandings();
-
-private:
-    ShootoutManager* shootout_;
-    bool shouldGoToFinalStandings_ = false;
 };
 
 class ShootoutFinalStandings : public TypedState<PDN> {

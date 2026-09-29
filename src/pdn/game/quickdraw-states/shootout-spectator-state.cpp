@@ -36,7 +36,6 @@ void ShootoutSpectator::onStateLoop(PDN* pdn) {
     if (p == ShootoutManager::Phase::MATCH_IN_PROGRESS && shootout_->isLocalDuelist()) {
         shouldGoToDuelCountdown_ = true;
     }
-    if (p == ShootoutManager::Phase::ENDED) shouldGoToFinalStandings_ = true;
 
     auto pair = shootout_->getCurrentMatchPair();
     // A teardown zeroes the pair, and an all-zero MAC names no duelist. Without
@@ -54,8 +53,6 @@ void ShootoutSpectator::onStateLoop(PDN* pdn) {
 
 void ShootoutSpectator::onStateDismounted(PDN* pdn) {
     shouldGoToDuelCountdown_ = false;
-    shouldGoToFinalStandings_ = false;
 }
 
 bool ShootoutSpectator::transitionToDuelCountdown() { return shouldGoToDuelCountdown_; }
-bool ShootoutSpectator::transitionToFinalStandings() { return shouldGoToFinalStandings_; }

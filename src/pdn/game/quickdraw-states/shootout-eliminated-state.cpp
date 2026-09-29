@@ -2,8 +2,7 @@
 #include "device/device.hpp"
 
 ShootoutEliminated::ShootoutEliminated(const GameContext& ctx)
-    : TypedState<PDN>(SHOOTOUT_ELIMINATED)
-    , shootout_(ctx.shootoutManager) {}
+    : TypedState<PDN>(SHOOTOUT_ELIMINATED) {}
 
 void ShootoutEliminated::onStateMounted(PDN* pdn) {
     pdn->getPrimaryButton()->removeButtonCallbacks();
@@ -17,13 +16,4 @@ void ShootoutEliminated::onStateMounted(PDN* pdn) {
     d->render();
 }
 
-void ShootoutEliminated::onStateLoop(PDN* pdn) {
-    auto p = shootout_->getPhase();
-    if (p == ShootoutManager::Phase::ENDED) shouldGoToFinalStandings_ = true;
-}
 
-void ShootoutEliminated::onStateDismounted(PDN* pdn) {
-    shouldGoToFinalStandings_ = false;
-}
-
-bool ShootoutEliminated::transitionToFinalStandings() { return shouldGoToFinalStandings_; }
