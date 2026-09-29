@@ -11,8 +11,8 @@
 class EntropyInterface {
 public:
     virtual ~EntropyInterface() = default;
-    /// A fresh 32-bit value. Repeats are possible and their likelihood is the
-    /// implementation's to state; whether that likelihood is small enough is the caller's
-    /// to judge.
+    /// A fresh 32-bit value. Repeats are permitted, and the bar an implementation has to
+    /// clear is that two of them landing on the same pair of live tournaments is not worth
+    /// designing against. Nothing here is a uniqueness guarantee.
     virtual uint32_t next32() = 0;
 };

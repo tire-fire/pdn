@@ -894,11 +894,10 @@ inline void shootoutEightDeviceFullTournament(ChainDuelMultiDeviceFixture* suite
 }
 
 // The coordinator gives up and the ring has to hear it. This is the leg the fixture
-// never had, and its absence hid a regression for a day: ABORT was built after the
-// teardown that cleared the attempt identity, so every copy went out stamped "no
-// attempt" and every member dropped it at the decoder. The unit suite could not see it
-// because it calls onAbortReceived directly; only this fixture puts real bytes through
-// onShootoutFrame.
+// never had, and its absence hid a regression: ABORT was built after the teardown that
+// cleared the attempt identity, so every copy went out stamped "no attempt" and every
+// member dropped it at the decoder. Only this leg puts an ABORT on the wire and reads it
+// back on four devices, which is what a wrongly stamped frame needs to be caught.
 inline void shootoutFourDeviceCoordinatorAbortReachesTheRing(
     ChainDuelMultiDeviceFixture* suite) {
     suite->spawnDevices(4);

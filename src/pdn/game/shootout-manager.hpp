@@ -166,9 +166,6 @@ public:
     // Reset all tournament state back to IDLE phase so a subsequent loop
     // closure triggers a fresh proposal. Called when the physical ring is
     // broken after TOURNAMENT_END or ABORTED.
-    /// Drops what this attempt leaves behind and keeps what outlives it: the ring
-    /// roster and the attempt identity. resetToIdle is the one that ends a tournament.
-    void leaveAttempt();
     void resetToIdle();
 
     /// Tears down, lands in Phase::ABORTED, and only then fans ABORT out to the
@@ -231,18 +228,24 @@ private:
     bool abortedByRing = false;
 
     void primeMatchManagerForMatch();
-    // resetToIdle() clears the ring roster on top of this and invalidates the
-    // ring-closed rebroadcast timer, which is what makes sync()'s never-announced case
-    // fire for the next attempt; startProposal() reseeds the roster from ring
-    // detection instead.
+    // Drops what an attempt leaves behind and keeps the two things that outlive one:
+    // the ring roster and the attempt identity. resetToIdle is the one that ends a
+    // tournament and clears those too.
+    void leaveAttempt();
+    // leaveAttempt() invalidates the ring-closed rebroadcast timer on top of this,
+    // which is what makes sync()'s never-announced case fire for the next attempt;
+    // resetToIdle() drops the ring roster as well, and startProposal() reseeds it from
+    // ring detection instead.
     void resetTournamentState();
 
     uint8_t nextSeqId();
-    // Mints the identity of a new attempt, straight from the entropy source, so it is
-    // distinct across attempts, across devices and across reboots with no agreement step
-    // and nothing stored. A counter covered the first axis only: it restarts at boot, and
-    // the model builds the failure that follows — a peer's confirm from the attempt before
-    // the reset counted toward the one after it. Never returns 0, which means "no attempt".
+    // Mints the identity of a new attempt, straight from the entropy source, so it
+    // separates attempts, devices and reboots with no agreement step and nothing stored.
+    // Distinctness is only as good as the bar EntropyInterface sets, which is what makes
+    // a collision between two live tournaments not worth designing against rather than
+    // impossible. A counter covered the first axis only: it restarts at boot, and
+    // the failure that follows is a peer's confirm from the attempt before the reset
+    // counting toward the one after it. Never returns 0, which means "no attempt".
     uint32_t mintEpoch();
     // Writes the header into `out`, which must hold at least kHeaderLength bytes, and
     // returns where the payload starts. Every frame is stamped with the attempt this

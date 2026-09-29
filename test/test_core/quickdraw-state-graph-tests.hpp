@@ -66,8 +66,9 @@ inline const std::vector<int> GAMEPLAY_REGISTRATION_ORDER = {
 inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_EDGES = {
     {AWAKEN_SEQUENCE, {IDLE}},
     // SHOOTOUT_BRACKET_REVEAL sits second because a device holding a bracket it adopted
-    // while away has nowhere else to be shown it; nothing below it can be true at the
-    // same moment, so the position is for reading order rather than priority.
+    // while away has nowhere else to be shown it, and DUEL_COUNTDOWN below it can be true
+    // on the same tick: adjacent hunter and bounty in a closed ring look like a normal
+    // duel initiation. So this position is priority, not reading order.
     {IDLE,
      {SHOOTOUT_PROPOSAL, SHOOTOUT_BRACKET_REVEAL, DUEL_COUNTDOWN, SUPPORTER_READY,
       SHOOTOUT_ABORTED, SYMBOL}},
@@ -94,8 +95,8 @@ inline const std::vector<std::pair<int, std::vector<int>>> PRE_SPLIT_GAMEPLAY_ED
      {DUEL_COUNTDOWN, SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_ELIMINATED, {SHOOTOUT_FINAL_STANDINGS, SHOOTOUT_ABORTED}},
     {SHOOTOUT_FINAL_STANDINGS, {SLEEP}},
-    // The bracket edge is first on purpose: it and the dwell timer can come due on the
-    // same tick, and a bracket that named this device is the answer.
+    // The bracket edge is first on purpose, for the reason the transition itself gives
+    // where it is declared.
     {SHOOTOUT_ABORTED, {SHOOTOUT_BRACKET_REVEAL, IDLE}},
     {SYMBOL, {IDLE, SYMBOL_MATCHED}},
     {SYMBOL_MATCHED, {SYMBOL, IDLE}},

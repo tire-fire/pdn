@@ -139,7 +139,6 @@ public:
         shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
     }
 
-
     void TearDown() override {
         delete shootout;
         shootout = nullptr;
@@ -1266,8 +1265,7 @@ inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTest
 
     // The head's roster completed a moment later and it drew, naming us. Delivered as
     // bytes through the decoder, not by calling the handler: the attempt gate lives in
-    // onShootoutFrame, so a direct call cannot see whether this frame would survive it —
-    // and for a day it did not.
+    // onShootoutFrame, so a direct call cannot see whether this frame would survive it.
     std::vector<uint8_t> frame = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
                                   0xC6, 0x00, 0x00, 0x01, 3};
     for (const std::array<uint8_t, 6>& m : {me, head, other})
@@ -1384,7 +1382,7 @@ inline void adoptingANewAttemptRequiresAFreshPress(ShootoutManagerTests* suite) 
 }
 
 // An attempt's identity dies with the attempt. Carrying a spent one into the next
-// proposal is a deadlock the model found: this device finishes an attempt, re-enters a
+// proposal is a deadlock: this device finishes an attempt, re-enters a
 // proposal while ring detection has the head elsewhere so it mints nothing, then comes
 // back to head the ring — and announces a new attempt under an identity its members
 // already hold a bracket for. They never confirm, because they are not proposing, and
@@ -3774,10 +3772,11 @@ inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
     for (const std::pair<int, size_t>& edge : abortEdges) {
-        // Bounds-checked like the loop above: a stale index here does not read past the
-        // end, it silently evaluates a different edge — and some of those dereference
-        // managers this fixture's bare context leaves null, which is a segfault rather
-        // than a failed expectation.
+        // Bounds-checked like the loop above. It catches only the index that ran off the
+        // end; an in-range stale one still evaluates a different edge, silently, and some
+        // of those dereference managers this fixture's bare context leaves null. That is
+        // what quickdrawAppEdgesMatchPreSplitGraph pins these positions against — an edge
+        // inserted ahead of one of these fails there first.
         State* source = byId.count(edge.first) ? byId[edge.first] : nullptr;
         ASSERT_NE(source, nullptr) << "state " << edge.first << " missing";
         ASSERT_LT(edge.second, source->getTransitions().size());

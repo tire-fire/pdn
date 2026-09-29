@@ -276,6 +276,7 @@ void ShootoutManager::resetTournamentState() {
     proposalTimer.invalidate();
     endingRebroadcastTimer.invalidate();
     reportedLocalWin = false;
+    matchResultResentIndex = -1;
     abortedByRing = false;
     names.clear();
     currentMatchIndex = -1;
@@ -339,8 +340,10 @@ void ShootoutManager::onRingClosedReceived(
     // coordinator that aborted while the head sat elsewhere can never announce again; the
     // sender catches our own coordinator announcing, which says our tournament is over
     // whatever the frame is stamped with — including an identity that happens to match.
-    // The rest reads off the code, bar one: ENDED is excluded because it keeps its bracket
-    // standing on purpose and retiring it would zero the winner on screen.
+    // Of the rest, two do not read off the code. ENDED is excluded because it keeps its
+    // bracket standing on purpose and retiring it would zero the winner on screen. The
+    // coordinator is excluded because it is the one device that knows its own tournament
+    // is alive: it is the one running it.
     // Giving up is local: an ABORT fan-out would reach that fresh proposal, which takes
     // one from any ring member.
     const bool differentAttempt = epoch != tournamentEpoch && fromOurRing;
@@ -596,9 +599,8 @@ bool decodeMacList(const uint8_t* payload, size_t payloadLen,
 uint32_t ShootoutManager::mintEpoch() {
     if (entropy == nullptr) {
         // Required at construction, so this is a wiring error, not a runtime case. It
-        // still must not return 0: that means "no attempt", and sync()'s announce block
-        // mints again whenever it sees 0, so the fleet would churn identities every tick
-        // and refuse every frame.
+        // still must not return 0, which means "no attempt" and would be minted over
+        // again on the next announce.
         LOG_E(TAG, "mintEpoch with no entropy source");
         return 1;
     }
@@ -721,7 +723,7 @@ void ShootoutManager::abortTournament() {
     if (isTerminalPhase()) return;
     LOG_W(TAG, "abortTournament from phase=%d", static_cast<int>(phase));
 
-    // Copied before resetToIdle clears bracket and confirmedSet.
+    // Copied before the teardown below clears bracket and confirmedSet.
     const std::vector<std::array<uint8_t, 6>> targets =
         bracket.empty() ? confirmedSet : bracket;
 
@@ -1033,7 +1035,11 @@ void ShootoutManager::onMatchStartReceived(
     // A different bout, so its result gets its own one re-send. Cleared here rather than
     // left to the index to distinguish, because the coordinator restarts the index at 0
     // every round: match 0 of round two is a different bout carrying the same number, and
-    // a device that spent its re-send on round one's would go quiet on it.
+    // a device that spent its re-send on round one's would go quiet on it. The budget is
+    // one per bout this device learns of, not one per bout: the last bout's fan-out can
+    // still be in flight here, and if it abandons after this clear it gets a second
+    // send. Bounded by the number of bouts announced, and the duplicate is absorbed by
+    // the eliminated check on receipt.
     matchResultResentIndex = -1;
     currentMatchIndex = matchIndex;
     memcpy(currentDuelistA.data(), duelistA, 6);
@@ -1194,8 +1200,8 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // One broadcast reaches every device in radio range, other rings included. The ack
     // stays behind this filter because a unicast takes one of the radio's 20 peer slots,
     // evicting whatever sat there longest. A follower that already gave up still answers
-    // its own head — isRingMember reads that live — because it can still be handed a
-    // bracket by it, and it has to be able to hear the same device abort.
+    // its own head, because the ring roster outlives a give-up: it can still be handed a
+    // bracket by that head, and it has to be able to hear the same device abort.
     if (!isRingMember(fromMac)) return;
     // Addressed to fromMac because any ring member may abort, not just the
     // coordinator.
@@ -1203,7 +1209,8 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // ENDED is refused here too, and reachably: a member that missed
     // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the
     // winner appears sends ABORT to devices already showing the result.
-    // Recorded whatever phase this device is in, and after any reset, which clears it. A
+    // Recorded whatever phase this device is in, and after giveUpLocally's teardown,
+    // which is the reset that clears it. A
     // device whose own bound fired a moment before this arrived is already ABORTED and
     // takes no further teardown — but it still has to stop re-adopting the bracket this
     // abort retired, which is the one thing the flag is for.
