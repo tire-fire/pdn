@@ -248,8 +248,11 @@ void ShootoutManager::resetToIdle() {
     // a device that kept its bracket and lost its roster takes that news from anybody.
     // The identity carried past the end instead gets announced again by a device that
     // re-proposes without minting, and the members still holding that attempt's bracket
-    // never confirm for it. Both are refilled by the next RING_CLOSED.
+    // never confirm for it. Both are refilled by the next RING_CLOSED. Names go with
+    // them: CONFIRM is the only frame that carries one, and it flies only in a proposal,
+    // so a device that dropped them mid-tournament shows hex MAC suffixes to the end.
     ringMembers.clear();
+    names.clear();
     tournamentEpoch = 0;
 }
 
@@ -278,7 +281,6 @@ void ShootoutManager::resetTournamentState() {
     reportedLocalWin = false;
     matchResultResentIndex = -1;
     abortedByRing = false;
-    names.clear();
     currentMatchIndex = -1;
     memset(tournamentWinner.data(), 0, 6);
     memset(opponentMac.data(), 0, 6);
@@ -409,9 +411,9 @@ void ShootoutManager::forgetAttemptConsent() {
     // phase stays as it is: the device is still in a proposal, just a different one's,
     // and dropping to IDLE here would strand it in a mounted state it cannot confirm
     // from. The bound goes with the consent — a clock armed in the last attempt would
-    // otherwise fire seconds into this one.
+    // otherwise fire seconds into this one. Names are not part of it: who a MAC belongs
+    // to is not something the press bought, and CONFIRM only carries it in a proposal.
     confirmedSet.clear();
-    names.clear();
     proposalTimer.invalidate();
     shortRosterDebounce.reset();
 }

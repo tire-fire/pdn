@@ -1278,6 +1278,47 @@ inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTest
         << "the bracket went unacked, so the head abandons on us and aborts the ring";
 }
 
+// Names outlive the give-up for the same reason the roster does: who a MAC belongs to
+// is not something this attempt bought, and CONFIRM only carries it during a proposal.
+// A device that gave up and then re-joined would spend the rest of the tournament
+// showing hex MAC suffixes where the spectator screen wants player names.
+inline void aRejoinedMemberStillKnowsItsPeersNames(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, testing::_, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+
+    std::vector<uint8_t> confirm = {static_cast<uint8_t>(ShootoutCmd::CONFIRM), 0,
+                                    0xC6, 0x00, 0x00, 0x01};
+    confirm.insert(confirm.end(), other.begin(), other.end());
+    const std::string peerName = "NOVA";
+    confirm.insert(confirm.end(), peerName.begin(), peerName.end());
+    confirm.resize(confirm.size() + ShootoutManager::kNameLength - peerName.size(), 0);
+    suite->shootout->onShootoutFrame(other.data(), confirm.data(), confirm.size());
+    ASSERT_EQ(suite->shootout->getNameForMac(other.data()), peerName);
+
+    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
+    suite->shootout->sync();
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+
+    std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
+                                    0xC6, 0x00, 0x00, 0x01, 3};
+    for (const std::array<uint8_t, 6>& m : {me, head, other})
+        bracket.insert(bracket.end(), m.begin(), m.end());
+    suite->shootout->onShootoutFrame(head.data(), bracket.data(), bracket.size());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    EXPECT_EQ(suite->shootout->getNameForMac(other.data()), peerName)
+        << "the re-joined device forgot who it is playing against";
+}
+
 // The ring roster outlives the give-up, because giving up on a tournament does not
 // unplug the cable. It is what says whether a closure announced around us is ours, and
 // a device holding a bracket with an empty one accepts that news from anybody: the

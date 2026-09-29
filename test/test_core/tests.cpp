@@ -1927,6 +1927,7 @@ TEST_F(ShootoutManagerTests, aHeadCountsAConfirmFromAMemberDetectionHasPruned) {
 TEST_F(ShootoutManagerTests, theMatchResultResendNamesTheSameBout) { theMatchResultResendNamesTheSameBout(this); }
 TEST_F(ShootoutManagerTests, aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn) { aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(this); }
 TEST_F(ShootoutManagerTests, aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing) { aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing(this); }
+TEST_F(ShootoutManagerTests, aRejoinedMemberStillKnowsItsPeersNames) { aRejoinedMemberStillKnowsItsPeersNames(this); }
 TEST_F(ShootoutManagerTests, aFinishedTournamentStillRefusesANewBracket) { aFinishedTournamentStillRefusesANewBracket(this); }
 TEST_F(ShootoutManagerTests, adoptingANewAttemptRequiresAFreshPress) { adoptingANewAttemptRequiresAFreshPress(this); }
 TEST_F(ShootoutManagerTests, aFinishedAttemptsIdentityDoesNotOutliveIt) { aFinishedAttemptsIdentityDoesNotOutliveIt(this); }
