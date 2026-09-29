@@ -11,13 +11,17 @@ std::function<bool()> tournamentAbortedCondition(ShootoutManager* shootoutManage
 }
 
 // A tournament this device holds a bracket for but has no screen showing. Both edges
-// come from onBracketReceived admitting a bracket outside the proposal. From ABORTED it
-// is the ordinary case: a device that gave up, still on that screen when its head draws.
-// From IDLE it is narrow, because the screen's dismount retires the attempt identity and
-// a later bracket is then dropped at the decoder: it needs the head to announce and draw
-// in one sync() pass, so a RING_CLOSED re-seeds the identity in the same tick the bracket
-// arrives. Without an edge from each, the device holds a live bracket while showing the
-// idle stats and only recovers when the coordinator names it a duelist.
+// come from onBracketReceived admitting a bracket outside the proposal.
+//
+// The idle one is the backstop, and it is the load-bearing one. A device that adopts a
+// bracket while showing the idle stats has nowhere else to be shown it and would sit
+// there until the coordinator named it a duelist. It also catches whatever the aborted
+// screen hands over, because that screen's dismount only resets a phase that is still
+// ABORTED and so leaves an adopted bracket standing.
+//
+// The aborted one is not what makes that reachable, for the same reason: without it the
+// dwell timer falls through to Idle and the edge above takes it. It saves those two
+// seconds and a flash through the idle screen.
 std::function<bool()> tournamentDrewWhileAwayCondition(ShootoutManager* shootoutManager) {
     return [shootoutManager]() {
         return shootoutManager &&
