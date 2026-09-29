@@ -139,11 +139,6 @@ public:
         shootout = new ShootoutManager(&player, device.wirelessManager, &memberRdc, &entropy);
     }
 
-    /// Both cables go quiet: the links lapse and the loop is provably open.
-    void loseTheRing() {
-        fakeClock->advance(RemoteDeviceCoordinator::HELLO_SILENT_LINK_MS + 1);
-        rdc.sync(&device);
-    }
 
     void TearDown() override {
         delete shootout;
@@ -334,7 +329,7 @@ inline void openRingRefusesProposalDespiteLatchedRoster(ShootoutManagerTests* su
     ASSERT_EQ(suite->shootout->getLoopMembers().size(), 3u)
         << "the roster never arrived; nothing below would be testing anything";
 
-    suite->loseTheRing();
+    suite->openRingOnJacks();
     ASSERT_FALSE(suite->rdc.isInRing());
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::IDLE);
 

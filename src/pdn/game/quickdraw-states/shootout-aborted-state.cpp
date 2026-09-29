@@ -22,7 +22,7 @@ void ShootoutAborted::onStateLoop(PDN* pdn) {
 
 void ShootoutAborted::onStateDismounted(PDN* pdn) {
     // Only if the tournament is still the aborted one. A bracket naming this device
-    // can land inside the two seconds this screen is up — its head drew a moment after
+    // can land inside ABORTED_DISPLAY_MS, while this screen is up — its head drew just after
     // our bound fired — and onBracketReceived adopts it rather than leaving the head to
     // abandon on us. Resetting unconditionally would throw that away.
     if (shootout_ && shootout_->getPhase() == ShootoutManager::Phase::ABORTED)

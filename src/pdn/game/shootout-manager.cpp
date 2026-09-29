@@ -180,8 +180,6 @@ void ShootoutManager::onCommandAbandoned(uint8_t seqId, const uint8_t* targetMac
     // keeps retrying a silent recipient for over a second — so by the time it is
     // given up on, currentDuelist* may already name a different match, and a
     // finished tournament still names its final pair.
-    // Read off the frame the resender kept, through the same declaration the builders
-    // write and the decoder reads.
     const size_t pairLen = kHeaderLength + sizeof(MatchPairBody);
     const MatchPairBody* pair =
         len >= pairLen ? reinterpret_cast<const MatchPairBody*>(packet + kHeaderLength)
@@ -203,8 +201,6 @@ void ShootoutManager::onCommandAbandoned(uint8_t seqId, const uint8_t* targetMac
         if (matchResultResentIndex != static_cast<int>(pair->index)) {
             matchResultResentIndex = static_cast<int>(pair->index);
             LOG_W(TAG, "coordinator missed our match result; re-sending");
-            // Off the abandoned frame, not current state: a fan-out outlives the
-            // match it announced, so by now currentDuelist* can name another one.
             sendMatchResultToPeers(pair->a, pair->b, pair->index);
         }
     }
@@ -327,38 +323,26 @@ void ShootoutManager::onRingClosedReceived(
     if (!containsMac(members, selfMac)) return;
     const uint8_t* head = ringHead();
     const bool fromOurHead = head != nullptr && memcmp(fromMac, head, 6) == 0;
-    // News of another attempt is only news from a device on the ring this device is on
-    // — where this device knows its ring. With an empty roster there is nothing to
-    // check against and the announcement is all it has, which is the same reason the
-    // idle branch below takes a roster from anyone: refusing here would leave a device
-    // holding a bracket and no roster unable to be told its tournament is over.
+    // A device we unplugged from goes on repeating a roster that still names us, so news
+    // of another attempt counts only from a device on the ring we are on — except with an
+    // empty roster, where there is nothing to check against and the announcement is all we
+    // have. That is the same reason the idle branch below takes a roster from anyone.
     const std::vector<std::array<uint8_t, 6>> ourRing = getLoopMembers();
     const bool fromOurRing = ourRing.empty() || containsMac(ourRing, fromMac);
-    // A ring forming under an attempt this device is not in, announced by a device
-    // on the ring this device is on. Whoever announced it is running no tournament:
-    // RING_CLOSED goes out only from sync()'s PROPOSAL block, which startProposal
-    // reached through resetTournamentState, so the sender's bracket is empty. A device
-    // cannot be in two tournaments, so the attempt held here is over. Each conjunct:
-    //   a newer attempt, or our own coordinator announcing — two rules, because neither
-    //     covers the other. The identity catches a third device forming an attempt,
-    //     which the sender cannot: a coordinator that aborted while the ring head sat
-    //     elsewhere can never announce again, so the device that does is one that never
-    //     ran our tournament. The sender catches an identity reused after a reboot,
-    //     which the identity cannot: a device announcing a ring holds no bracket, so our
-    //     own coordinator announcing says our tournament is over whatever it is stamped
-    //     with.
-    //   on our ring — a device we unplugged from goes on repeating a roster that still
-    //     names us, and it must not speak for the tournament we joined after leaving.
-    //   not coordinating — the coordinator is the one device that knows its own
-    //     tournament is alive, because it is the one running it.
-    //   not terminal — ENDED keeps the bracket standing on purpose, and retiring it
-    //     would zero the winner on screen.
-    //   holding a bracket — with none there is nothing to retire, and the branch below
-    //     is the one that wants the roster.
-    // Giving up is local: an ABORT fan-out would reach that fresh proposal, which
-    // takes one from any ring member.
-    const bool newerAttempt = epoch != tournamentEpoch && fromOurRing;
-    if ((newerAttempt || isFromCoordinator(fromMac)) && !bracket.empty() &&
+    // Whoever announces a ring is running no tournament: RING_CLOSED goes out only from
+    // sync()'s PROPOSAL block, which startProposal reached through resetTournamentState,
+    // so the sender's bracket is empty. A device cannot be in two, so the attempt held
+    // here is over. Two rules rather than one, because neither covers the other: the
+    // identity catches a third device forming an attempt, which the sender cannot, since a
+    // coordinator that aborted while the head sat elsewhere can never announce again; the
+    // sender catches our own coordinator announcing, which says our tournament is over
+    // whatever the frame is stamped with — including an identity that happens to match.
+    // The rest reads off the code, bar one: ENDED is excluded because it keeps its bracket
+    // standing on purpose and retiring it would zero the winner on screen.
+    // Giving up is local: an ABORT fan-out would reach that fresh proposal, which takes
+    // one from any ring member.
+    const bool differentAttempt = epoch != tournamentEpoch && fromOurRing;
+    if ((differentAttempt || isFromCoordinator(fromMac)) && !bracket.empty() &&
         !isCoordinator() && !isTerminalPhase()) {
         LOG_W(TAG, "attempt %08x formed around us; retiring the bracket we hold",
               static_cast<unsigned>(epoch));
