@@ -483,8 +483,8 @@ inline void eachTournamentReReadsTheRosterFromRingDetection(ShootoutManagerTests
 }
 
 // A device can see every confirm while it is not the head, and so wait in the proposal
-// for a bracket only the head can draw — until its own bound fires. Drawing is the head's standing duty: once
-// this device heads the ring, it draws.
+// for a bracket only the head can draw. Drawing is the head's standing duty: once this
+// device heads the ring, it draws.
 inline void deviceThatComesToHeadTheRingDrawsTheBracket(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
@@ -684,30 +684,6 @@ inline void joiningTheNextBracketClearsTheLastOnesEliminations(ShootoutManagerTe
         << "a fresh tournament started part-way through the last one's bracket";
 }
 
-// Ring detection can serve a name for a device that already left: a disconnect
-// report still in flight when the ring closed. Nothing else ends that wait — the
-// name answers nothing, the ring is intact so the break guard is quiet, and the
-// roster is above the floor the short-roster abort watches.
-inline void aProposalNobodyCanCompleteGivesUp(ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> gone = {0x03, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->headRingServing({peer, gone});
-    suite->shootout->startProposal();
-    suite->shootout->confirmLocal();
-    suite->shootout->onConfirmReceived(peer.data());
-    suite->shootout->sync();
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
-
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
-        << "a proposal waiting on a name that answers nothing never gave up";
-}
-
 // The bound is for players, not for frames: a ring whose members take their time
 // pressing confirm is the normal case and must outlast nothing.
 inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite) {
@@ -719,8 +695,8 @@ inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite)
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
 
-    // A plausible pause while the second player finds their button. Absolute, not
-    // relative to the bound, so shortening the bound fails this.
+    // A plausible pause while the second player finds their button. Nothing should end
+    // the wait: a ring is allowed to sit in a lobby as long as its players like.
     suite->fakeClock->advance(20000);
     suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
@@ -739,8 +715,8 @@ inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite)
 // silently, so its fan-out abandons and it aborts itself
 // (bracketRetriesThreeTimesThenAborts covers that side). The rival's own ABORT does
 // not reach this device: it is stamped with the rival's attempt and dropped, so this
-// head waits out its own bound rather than aborting alongside. Both ends reach the
-// ABORTED screen and the players press again, just not together.
+// head does not abort alongside: it keeps proposing, and the players sort it out by
+// pressing again. Nothing puts a clock on that.
 // Deliberate: the alternative is a bracket every device derives identically, from a
 // nonce each carries in its CONFIRM, so rival heads draw the same one and there is
 // nothing to reconcile. Not taken — the window closes as soon as the lower head's claim
@@ -974,8 +950,9 @@ inline void theFirstPressOnAnOldRingStartsATournament(ShootoutManagerTests* suit
     suite->shootout->setLoopMembersForTest({me, other});
     suite->shootout->startProposal();
 
-    // Nobody touches it for well past the bound.
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 2000);
+    // Nobody touches it for a good while. A ring is allowed to sit as long as it
+    // likes, so nothing here should move it.
+    suite->fakeClock->advance(62000);
     suite->shootout->sync();
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
 
@@ -984,64 +961,6 @@ inline void theFirstPressOnAnOldRingStartsATournament(ShootoutManagerTests* suit
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)
         << "the first press on a ring left cabled a while was answered with ABORTED";
-}
-
-// The bound and the roster completing can land on the same tick. A complete roster
-// is the answer the wait was waiting for, so it wins: giving up on a tick that could
-// draw throws away a whole tournament everyone has already confirmed for.
-inline void aRosterCompletingOnTheBoundTickDrawsRatherThanAborting(
-    ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> third = {0x03, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->headRingServing({other, third});
-    suite->shootout->setLoopMembersForTest({me, other, third});
-    suite->shootout->startProposal();
-    suite->shootout->confirmLocal();
-    suite->shootout->onConfirmReceived(other.data());
-
-    // The last confirm arrives on the tick the bound comes due.
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->onConfirmReceived(third.data());
-    suite->shootout->sync();
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
-        << "a complete roster was given up on instead of drawn";
-}
-
-// A member's own patience running out is news about that member, not about the ring.
-// It has no roster authority and no way to know whether the head is about to draw,
-// so it leaves quietly: an ABORT fan-out from here ends the tournament for everyone
-// on the strength of one device's clock.
-inline void aMembersProposalGiveUpStaysLocal(ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
-    int abortFrames = 0;
-    ON_CALL(*suite->device.mockPeerComms,
-            sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
-        .WillByDefault(testing::Invoke(
-            [&abortFrames](const uint8_t*, PktType, const uint8_t* data, const size_t) {
-                if (data[0] == static_cast<uint8_t>(ShootoutCmd::ABORT)) abortFrames++;
-                return 1;
-            }));
-
-    suite->followRingHead(head);
-    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
-    suite->shootout->startProposal();
-    suite->shootout->confirmLocal();
-    suite->shootout->onConfirmReceived(other.data());
-
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
-        << "a member waited on a proposal with no bound of its own";
-    EXPECT_EQ(abortFrames, 0)
-        << "a member ended the whole ring's tournament off its own clock";
 }
 
 // The ending repeats for as long as the standings are up, but a ring that has opened
@@ -1110,35 +1029,6 @@ inline void aBracketFromOurCoordinatorThatOmitsUsIsRefused(ShootoutManagerTests*
     EXPECT_EQ(suite->shootout->getBracket().size(), 3u);
     EXPECT_TRUE(suite->shootout->getBracket()[0] == me)
         << "this device joined a bracket it is not in, so it can never be paired";
-}
-
-// A member's own bound has to survive its roster looking complete. Every member
-// hears every CONFIRM, so a member reaches "everyone I know has confirmed" as a
-// matter of course and then waits on a bracket only the head can draw. If that
-// branch swallows the tick, the bound is dead for the rest of the attempt and a
-// member whose coordinator has stopped reaching it waits forever.
-inline void aMemberWithAFullRosterStillGivesUpEventually(ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->followRingHead(head);
-    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
-    suite->shootout->startProposal();
-    suite->shootout->confirmLocal();
-    suite->shootout->onConfirmReceived(head.data());
-    suite->shootout->onConfirmReceived(other.data());
-    // Every name this device holds has confirmed, and no bracket is coming.
-    ASSERT_EQ(suite->shootout->getConfirmedCount(), 3u);
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL);
-
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
-        << "a full roster on a member swallowed the tick its own bound needed";
 }
 
 // Our head's repeat is authoritative for the attempt as well as the roster. A device
@@ -1240,14 +1130,13 @@ inline void theMatchResultResendNamesTheSameBout(ShootoutManagerTests* suite) {
     EXPECT_EQ(memcmp(&resent[body + 6], other.data(), 6), 0) << "the loser moved";
 }
 
-// A device that gave up must not take the ring down with it. Giving up lands in
-// ABORTED, and the head's bracket still names this device because it confirmed before
-// the bound fired — so a silent refusal makes the head's fan-out abandon on us, and
-// onCommandAbandoned ends the tournament for everyone. The retry span is shorter than
-// the ABORTED screen, so every copy lands inside the window. Re-joining is what
+// A device whose bracket was retired must not take the next tournament down with it.
+// Its head announcing a fresh attempt lands it in ABORTED, and that head's new bracket
+// still names it — so a silent refusal makes the fan-out abandon on us, and
+// onCommandAbandoned ends the tournament for everyone. Re-joining is what
 // onBracketReceived already documents: a different bracket from our coordinator is a
-// new tournament, and joining it is how a member it gave up on gets back in.
-inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTests* suite) {
+// new tournament, and joining it is how a member that left one gets into the next.
+inline void aMemberThatLeftStillJoinsTheBracketItIsNamedIn(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
@@ -1264,23 +1153,67 @@ inline void aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(ShootoutManagerTest
     suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 3);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    // That tournament is over: our head is announcing a fresh attempt, which retires
+    // the bracket we hold and leaves us on the ABORTED screen with the ring intact.
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000002u);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
-    // The head's roster completed a moment later and it drew, naming us. Delivered as
+    // The new attempt's roster completed and its head drew, naming us. Delivered as
     // bytes through the decoder, not by calling the handler: the attempt gate lives in
     // onShootoutFrame, so a direct call cannot see whether this frame would survive it.
     std::vector<uint8_t> frame = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
-                                  0xC6, 0x00, 0x00, 0x01, 3};
+                                  0xC6, 0x00, 0x00, 0x02, 3};
     for (const std::array<uint8_t, 6>& m : {me, head, other})
         frame.insert(frame.end(), m.begin(), m.end());
     suite->shootout->onShootoutFrame(head.data(), frame.data(), frame.size());
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
-        << "a device that gave up refused the bracket that proves it was wrong to";
+        << "a device that left refused the bracket that brings it back";
     EXPECT_GT(acks, 0)
         << "the bracket went unacked, so the head abandons on us and aborts the ring";
+}
+
+// The ring roster outlives a give-up because it is cable topology, not attempt state,
+// and the ack is what needs it: a device that left still has to answer the retries of
+// the ABORT that told it to. isRingMember has only the roster left to recognise the
+// sender by, because the bracket and the confirmed set went with the teardown — so with
+// the roster gone too, the aborting head spends its whole retry budget on a device that
+// heard it the first time.
+inline void anAbortRetryIsStillAckedAfterTheFirstOneLanded(ShootoutManagerTests* suite) {
+    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
+    int acks = 0;
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, PktType::kShootoutCommandAck, testing::_, testing::_))
+        .WillByDefault(testing::Invoke([&acks](const uint8_t*, PktType, const uint8_t*,
+                                               const size_t) { acks++; return 1; }));
+    ON_CALL(*suite->device.mockPeerComms,
+            sendData(testing::_, PktType::kShootoutCommand, testing::_, testing::_))
+        .WillByDefault(testing::Return(1));
+
+    suite->followRingHead(head);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
+    suite->shootout->startProposal();
+    suite->shootout->confirmLocal();
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 3);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+
+    const std::vector<uint8_t> abort = {static_cast<uint8_t>(ShootoutCmd::ABORT), 7,
+                                        0xC6, 0x00, 0x00, 0x01};
+    suite->shootout->onShootoutFrame(head.data(), abort.data(), abort.size());
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+    const int afterFirst = acks;
+    ASSERT_GT(afterFirst, 0) << "the first abort went unacked";
+
+    // The head did not hear that ack and sends the same frame again.
+    suite->shootout->onShootoutFrame(head.data(), abort.data(), abort.size());
+
+    EXPECT_GT(acks, afterFirst)
+        << "a device that left stopped answering its head, so the head retries to exhaustion";
 }
 
 // Names outlive the give-up for the same reason the roster does: who a MAC belongs to
@@ -1309,12 +1242,13 @@ inline void aRejoinedMemberStillKnowsItsPeersNames(ShootoutManagerTests* suite) 
     suite->shootout->onShootoutFrame(other.data(), confirm.data(), confirm.size());
     ASSERT_EQ(suite->shootout->getNameForMac(other.data()), peerName);
 
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 3);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
+    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000002u);
     ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
 
     std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
-                                    0xC6, 0x00, 0x00, 0x01, 3};
+                                    0xC6, 0x00, 0x00, 0x02, 3};
     for (const std::array<uint8_t, 6>& m : {me, head, other})
         bracket.insert(bracket.end(), m.begin(), m.end());
     suite->shootout->onShootoutFrame(head.data(), bracket.data(), bracket.size());
@@ -1356,49 +1290,6 @@ inline void aMemberAbortsWhenTheRingBreaksBehindIt(ShootoutManagerTests* suite) 
     suite->shootout->sync();
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED)
         << "a member's tournament outlived the ring it was running on";
-}
-
-// The ring roster outlives the give-up, because giving up on a tournament does not
-// unplug the cable. It is what says whether a closure announced around us is ours, and
-// a device holding a bracket with an empty one accepts that news from anybody: the
-// stranger below shares no ring with us, and retiring here would drop a bracket the
-// head is mid-fan-out on, which abandons on us and ends the tournament for everyone.
-inline void aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing(
-    ShootoutManagerTests* suite) {
-    std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
-    std::array<uint8_t, 6> stranger = {0x09, 0, 0, 0, 0, 0};
-    ON_CALL(*suite->device.mockPeerComms,
-            sendData(testing::_, testing::_, testing::_, testing::_))
-        .WillByDefault(testing::Return(1));
-
-    suite->followRingHead(head);
-    suite->shootout->onRingClosedReceived(head.data(), {me, head, other}, 0xC6000001u);
-    suite->shootout->startProposal();
-    suite->shootout->confirmLocal();
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
-
-    std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 4,
-                                    0xC6, 0x00, 0x00, 0x01, 3};
-    for (const std::array<uint8_t, 6>& m : {me, head, other})
-        bracket.insert(bracket.end(), m.begin(), m.end());
-    suite->shootout->onShootoutFrame(head.data(), bracket.data(), bracket.size());
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
-
-    // A ring we are not on, repeating a roster that still names us from some earlier
-    // cabling. Through the decoder, which lets RING_CLOSED past the attempt gate on
-    // purpose, so the roster check is the only thing standing between it and our bracket.
-    std::vector<uint8_t> closed = {static_cast<uint8_t>(ShootoutCmd::RING_CLOSED), 0,
-                                   0xDE, 0xAD, 0xBE, 0xEF, 2};
-    for (const std::array<uint8_t, 6>& m : {me, stranger})
-        closed.insert(closed.end(), m.begin(), m.end());
-    suite->shootout->onShootoutFrame(stranger.data(), closed.data(), closed.size());
-
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL)
-        << "a device we share no ring with retired the bracket we just re-joined";
 }
 
 // A tournament this device has finished still stays finished: ENDED keeps its bracket
@@ -1453,12 +1344,6 @@ inline void adoptingANewAttemptRequiresAFreshPress(ShootoutManagerTests* suite) 
     EXPECT_FALSE(suite->shootout->hasConfirmed(selfMac))
         << "a press made for the last attempt was counted for this one";
     EXPECT_EQ(suite->shootout->getConfirmedCount(), 0u);
-
-    // And the bound is the new attempt's, not the old one's.
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-    EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)
-        << "a clock armed in the last attempt gave up on this one";
 }
 
 // An attempt's identity dies with the attempt. Carrying a spent one into the next
@@ -1626,16 +1511,12 @@ inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTest
     suite->shootout->startProposal();
     suite->shootout->confirmLocal();
 
-    // Our own bound fires first, through the clock that really reaches it: the bound is
-    // sampled in PROPOSAL and nowhere else, so this is the only state a give-up can
-    // start from.
-    suite->fakeClock->advance(ShootoutManager::PROPOSAL_TIMEOUT_MS + 1);
-    suite->shootout->sync();
-    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::ABORTED);
+    suite->shootout->onBracketReceived(head.data(), {me, head, other}, 3);
+    ASSERT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::BRACKET_REVEAL);
 
-    // Then the ring's abort lands on a device that has already left. As bytes, because
-    // the attempt gate lives in onShootoutFrame: a device that left still holds the
-    // identity, and if it did not this frame would be dropped before the handler.
+    // The ring's abort lands on a device already holding its bracket. As bytes, because
+    // the attempt gate lives in onShootoutFrame: the frame has to survive that gate
+    // before the flag it sets can matter.
     const std::vector<uint8_t> abort = {static_cast<uint8_t>(ShootoutCmd::ABORT), 7,
                                         0xC6, 0x00, 0x00, 0x01};
     suite->shootout->onShootoutFrame(head.data(), abort.data(), abort.size());
@@ -1696,9 +1577,9 @@ inline void eachRoundGetsItsOwnResultRetryDespiteTheIndexRestarting(
            "that restarts, not on the bout";
 }
 
-// A ring nobody has touched must sit idle, not flash. The short-roster abort is
-// gated on a local confirm for exactly that reason, and the proposal bound has to
-// be too: without it an untouched latched ring aborts, shows ABORTED for two
+// A ring nobody has touched must sit idle, not flash. The short-roster abort is the
+// only thing here that could fire, and it is gated on a local confirm for exactly that
+// reason: without the gate an untouched latched ring aborts, shows ABORTED for two
 // seconds, returns to Idle, re-proposes off its standing latch, and does it again
 // forever.
 inline void anUntouchedRingSitsIdleRatherThanFlashing(ShootoutManagerTests* suite) {
@@ -1710,8 +1591,9 @@ inline void anUntouchedRingSitsIdleRatherThanFlashing(ShootoutManagerTests* suit
     suite->headRingServing({peer});
     suite->shootout->startProposal();
 
-    // Nobody presses anything, for twice the window.
-    suite->fakeClock->advance(2 * ShootoutManager::PROPOSAL_TIMEOUT_MS);
+    // Nobody presses anything, for two minutes. The short-roster abort is the only
+    // thing that could fire here, and its own confirm gate is what stops it.
+    suite->fakeClock->advance(120000);
     suite->shootout->sync();
 
     EXPECT_EQ(suite->shootout->getPhase(), ShootoutManager::Phase::PROPOSAL)

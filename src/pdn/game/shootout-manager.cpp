@@ -297,7 +297,6 @@ void ShootoutManager::resetTournamentState() {
     // Sampled only while the phase is PROPOSAL, so a tournament that leaves that
     // phase mid-window would carry a part-aged timer into the next one.
     shortRosterDebounce.reset();
-    proposalTimer.invalidate();
     endingRebroadcastTimer.invalidate();
     reportedLocalWin = false;
     matchResultResentIndex = -1;
@@ -428,7 +427,6 @@ void ShootoutManager::forgetAttemptConsent() {
     // otherwise fire seconds into this one. Names are not part of it: who a MAC belongs
     // to is not something the press bought, and CONFIRM only carries it in a proposal.
     confirmedSet.clear();
-    proposalTimer.invalidate();
     shortRosterDebounce.reset();
 }
 
@@ -452,7 +450,7 @@ void ShootoutManager::giveUpLocally() {
     // the attempt teardown and not resetToIdle: the device is still cabled into the same
     // ring and still has to recognise the tournament it just left — to stamp the ABORT
     // abortTournament fans out after calling this, and to take the bracket that names it
-    // if the head drew a moment after the bound fired.
+    // when the attempt that retired the last one draws.
     leaveAttempt();
     phase = Phase::ABORTED;
 }
@@ -471,12 +469,6 @@ void ShootoutManager::confirmLocal() {
     if (player != nullptr) {
         recordName(selfMac, player->getName().c_str());
     }
-    // The bound starts here, because this is where the wait starts: everything
-    // before the press is a ring sitting idle, which is allowed to sit as long as it
-    // likes. Armed at the phase edge instead, it aged through the whole window its
-    // answer was ignored in, and the first press on a ring left cabled through a lull
-    // was answered with ABORTED.
-    proposalTimer.setTimer(PROPOSAL_TIMEOUT_MS);
     sendLocalConfirm();
 }
 
@@ -847,11 +839,11 @@ void ShootoutManager::sync() {
             sendLocalConfirm();
         }
 
-        // A roster below the floor never satisfies everyoneIn, so without this the
-        // head waits out PROPOSAL_TIMEOUT_MS to reach the same answer a great deal
-        // later. Held over a window because the roster is still filling just after a
-        // ring closes, and gated on a local confirm — the same gate the bound below
-        // carries, so an untouched self-cabled device sits idle rather than flashing.
+        // A roster below the floor never satisfies everyoneIn, and nothing else ends
+        // that wait: a ring too small to play has no answer coming. Held over a window
+        // because the roster is still filling just after a ring closes, and gated on a
+        // local confirm so an untouched self-cabled device sits idle rather than
+        // flashing ABORTED at a player who never asked for a tournament.
         const bool ringTooSmallToPlay =
             headsRing() && confirmedLocally && members.size() < MIN_PARTICIPANTS;
         if (shortRosterDebounce.heldFor(ringTooSmallToPlay, SHORT_ROSTER_TIMEOUT_MS)) {
@@ -862,28 +854,10 @@ void ShootoutManager::sync() {
             LOG_E(TAG, "ring has too few participants to draw a bracket; aborting");
             abortTournament();
         } else if (everyoneIn && headsRing()) {
-            // Ahead of the bound below, which can come due on this same tick: a
-            // complete roster is the answer that wait was waiting for. Head-gated
-            // because only a head can answer it — drawBracket() is a no-op elsewhere,
-            // so without the gate a member reaching "everyone I know has confirmed"
-            // would spend the tick its own bound needed, and every tick after it.
-            // Polled rather than taken on the CONFIRM that completes the roster, for
-            // the reason drawBracket() gives.
+            // Head-gated because only a head can answer it: drawBracket() is a no-op
+            // elsewhere. Polled rather than taken on the CONFIRM that completes the
+            // roster, for the reason drawBracket() gives.
             drawBracket();
-        } else if (proposalTimer.expired()) {
-            // Nothing else ends this wait: a roster name for a device that has left
-            // answers nothing, and the ring is intact so the break guard stays quiet.
-            // The timer runs only from the local press, so an untouched ring reaches
-            // this with nothing armed and sits idle rather than flashing ABORTED.
-            LOG_E(TAG, "no roster this ring can complete; giving up");
-            // Only the device that would have drawn takes the ring with it. A member
-            // has no roster authority and cannot tell whether the head is about to
-            // draw, so its own patience running out is news about itself.
-            if (headsRing()) {
-                abortTournament();
-            } else {
-                giveUpLocally();
-            }
         }
     }
 
@@ -1247,9 +1221,9 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     // winner appears sends ABORT to devices already showing the result.
     // Recorded whatever phase this device is in, and after giveUpLocally's teardown,
     // which is the reset that clears it. A
-    // device whose own bound fired a moment before this arrived is already ABORTED and
-    // takes no further teardown — but it still has to stop re-adopting the bracket this
-    // abort retired, which is the one thing the flag is for.
+    // device that is already ABORTED, because its own head retired its bracket a moment
+    // before this arrived, takes no further teardown — but it still has to stop
+    // re-adopting the bracket this abort retired, which is the one thing the flag is for.
     const bool alreadyOut = isTerminalPhase() || phase == Phase::IDLE;
     if (!alreadyOut) giveUpLocally();
     abortedByRing = true;

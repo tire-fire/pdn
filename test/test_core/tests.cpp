@@ -1909,7 +1909,6 @@ TEST_F(ShootoutManagerTests, aBracketRetransmitDoesNotRewindALiveMatch) { aBrack
 TEST_F(ShootoutManagerTests, aMemberJoinsItsCoordinatorsNextBracket) { aMemberJoinsItsCoordinatorsNextBracket(this); }
 TEST_F(ShootoutManagerTests, aNewHeadMidProposalStillRebroadcastsTheRoster) { aNewHeadMidProposalStillRebroadcastsTheRoster(this); }
 TEST_F(ShootoutManagerTests, joiningTheNextBracketClearsTheLastOnesEliminations) { joiningTheNextBracketClearsTheLastOnesEliminations(this); }
-TEST_F(ShootoutManagerTests, aProposalNobodyCanCompleteGivesUp) { aProposalNobodyCanCompleteGivesUp(this); }
 TEST_F(ShootoutManagerTests, aSlowButCompletingProposalIsNotCutShort) { aSlowButCompletingProposalIsNotCutShort(this); }
 TEST_F(ShootoutManagerTests, aRingClosureLeavesAFinishedTournamentAlone) { aRingClosureLeavesAFinishedTournamentAlone(this); }
 TEST_F(ShootoutManagerTests, eachAttemptGetsItsOwnIdentity) { eachAttemptGetsItsOwnIdentity(this); }
@@ -1919,17 +1918,14 @@ TEST_F(ShootoutManagerTests, aForeignAttemptsRingClosureRetiresTheTournamentWeHo
 TEST_F(ShootoutManagerTests, aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure) { aCoordinatorKeepsItsOwnTournamentThroughAForeignRingClosure(this); }
 TEST_F(ShootoutManagerTests, aFrameFromADeadAttemptIsDropped) { aFrameFromADeadAttemptIsDropped(this); }
 TEST_F(ShootoutManagerTests, theFirstPressOnAnOldRingStartsATournament) { theFirstPressOnAnOldRingStartsATournament(this); }
-TEST_F(ShootoutManagerTests, aRosterCompletingOnTheBoundTickDrawsRatherThanAborting) { aRosterCompletingOnTheBoundTickDrawsRatherThanAborting(this); }
-TEST_F(ShootoutManagerTests, aMembersProposalGiveUpStaysLocal) { aMembersProposalGiveUpStaysLocal(this); }
 TEST_F(ShootoutManagerTests, theEndingStopsRepeatingOnceTheRingOpens) { theEndingStopsRepeatingOnceTheRingOpens(this); }
 TEST_F(ShootoutManagerTests, aBracketFromOurCoordinatorThatOmitsUsIsRefused) { aBracketFromOurCoordinatorThatOmitsUsIsRefused(this); }
-TEST_F(ShootoutManagerTests, aMemberWithAFullRosterStillGivesUpEventually) { aMemberWithAFullRosterStillGivesUpEventually(this); }
 TEST_F(ShootoutManagerTests, ourHeadsRepeatCorrectsTheAttemptAsWellAsTheRoster) { ourHeadsRepeatCorrectsTheAttemptAsWellAsTheRoster(this); }
 TEST_F(ShootoutManagerTests, aHeadCountsAConfirmFromAMemberDetectionHasPruned) { aHeadCountsAConfirmFromAMemberDetectionHasPruned(this); }
 TEST_F(ShootoutManagerTests, theMatchResultResendNamesTheSameBout) { theMatchResultResendNamesTheSameBout(this); }
-TEST_F(ShootoutManagerTests, aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn) { aMemberThatGaveUpStillJoinsTheBracketItIsNamedIn(this); }
-TEST_F(ShootoutManagerTests, aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing) { aRejoinedMemberKeepsItsBracketWhenAStrangerAnnouncesARing(this); }
+TEST_F(ShootoutManagerTests, aMemberThatLeftStillJoinsTheBracketItIsNamedIn) { aMemberThatLeftStillJoinsTheBracketItIsNamedIn(this); }
 TEST_F(ShootoutManagerTests, aMemberAbortsWhenTheRingBreaksBehindIt) { aMemberAbortsWhenTheRingBreaksBehindIt(this); }
+TEST_F(ShootoutManagerTests, anAbortRetryIsStillAckedAfterTheFirstOneLanded) { anAbortRetryIsStillAckedAfterTheFirstOneLanded(this); }
 TEST_F(ShootoutManagerTests, aRejoinedMemberStillKnowsItsPeersNames) { aRejoinedMemberStillKnowsItsPeersNames(this); }
 TEST_F(ShootoutManagerTests, aFinishedTournamentStillRefusesANewBracket) { aFinishedTournamentStillRefusesANewBracket(this); }
 TEST_F(ShootoutManagerTests, adoptingANewAttemptRequiresAFreshPress) { adoptingANewAttemptRequiresAFreshPress(this); }

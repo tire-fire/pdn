@@ -196,14 +196,6 @@ public:
     /// announcing themselves to the head, which nothing here drives or can
     /// predict. Raise it if a venue's larger rings are seen to fill slower.
     static constexpr unsigned long SHORT_ROSTER_TIMEOUT_MS = 3000;
-    /// How long a device waits, from its own press, for a roster above the floor to
-    /// finish confirming. Ring detection can serve a name for a device that has
-    /// already left, and that name answers nothing, so an absent confirm is the only
-    /// signal there is. On a member this is the only bound there is, at any roster
-    /// size: the short-roster path below is head-gated. Paced for players: firing early
-    /// costs a screen they can retry, never firing costs a ring that hangs until
-    /// someone unplugs it.
-    static constexpr unsigned long PROPOSAL_TIMEOUT_MS = 60000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
     // Packet-validation clamp on an inbound BRACKET's member count. A ring can
@@ -228,8 +220,10 @@ private:
     // adopts it from RING_CLOSED before it enters the proposal that resets
     // everything else, and it has to survive that.
     uint32_t tournamentEpoch = 0;
-    // Why this device is in ABORTED: the ring told it to, rather than its own bound
-    // running out. Only the first kind refuses a bracket that names it.
+    // Why this device is in ABORTED: the ring told it to, rather than its own head
+    // retiring the bracket it held by announcing a fresh attempt. Only the first kind
+    // refuses a bracket that names it; the second is how a member gets into the next
+    // tournament.
     bool abortedByRing = false;
 
     void primeMatchManagerForMatch();
@@ -359,7 +353,6 @@ private:
 
     SimpleTimer confirmRebroadcastTimer;
     SimpleTimer endingRebroadcastTimer;
-    SimpleTimer proposalTimer;
 
     uint8_t lastBracketSeqId = 0;
     uint8_t nextShootoutSeqId = 1;
