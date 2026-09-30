@@ -256,8 +256,8 @@ inline void ringClosedAnnouncesRosterToMembers(ShootoutManagerTests* suite) {
 
     EXPECT_FALSE(suite->shootout->shouldEnterProposal());
 
-    // Head a chain out of OUTPUT, then take our own MAC back on INPUT: the RDC
-    // latches the ring on that and calls the manager back.
+    // Head a chain out of OUTPUT, then take our own MAC back on INPUT: the RDC latches
+    // the ring on that, and the manager finds it by polling, not by being told.
     const uint8_t upstream[6] = {0x03, 0x00, 0x00, 0x00, 0x00, 0x00};
     suite->connectJackTo(suite->outJack, suite->peerMac);
     suite->connectJackTo(suite->inJack, upstream, suite->localMac);
@@ -1499,7 +1499,7 @@ inline void aRepeatedIdentityWouldAdmitTheLastAttemptsConfirm(ShootoutManagerTes
 // fired first is already ABORTED when the ABORT arrives, so it needs no second teardown —
 // but it does still need to record that the ring is what ended this tournament, or it will
 // take the next retry of the very bracket that abort retired.
-inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTests* suite) {
+inline void theRingsAbortRefusesTheBracketItRetired(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> head = {0x06, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
@@ -1522,7 +1522,8 @@ inline void theRingsAbortIsRecordedEvenAfterOurOwnBoundFired(ShootoutManagerTest
     suite->shootout->onShootoutFrame(head.data(), abort.data(), abort.size());
 
     // A retry of the bracket that abort retired must not pull us back in — the one
-    // thing that separates this from a device whose head simply drew late.
+    // thing that separates this from a device whose head retired its bracket by
+    // announcing a fresh attempt, which it should join.
     std::vector<uint8_t> bracket = {static_cast<uint8_t>(ShootoutCmd::BRACKET), 1,
                                     0xC6, 0x00, 0x00, 0x01, 3};
     for (const std::array<uint8_t, 6>& m : {me, head, other})
@@ -1760,9 +1761,9 @@ inline void aBracketRetransmitDoesNotRewindALiveMatch(ShootoutManagerTests* suit
         << "a repeat of the bracket already in hand rewound a bout in progress";
 }
 
-// An abort from retry exhaustion drops the ring roster with the cables still in
-// place, and the RDC latch is edge-triggered so it never fires again. The head
-// has to notice the ring is still there and re-announce it, or the whole ring
+// An abort from retry exhaustion drops the ring roster with the cables still in place.
+// The RDC latch is level state and stays set, but nothing re-delivers it: the head has
+// to notice the ring is still there by polling, and re-announce it, or the whole ring
 // waits for someone to unplug.
 inline void abortedRingReclaimsWhileStillCabled(ShootoutManagerTests* suite) {
     uint8_t selfMac[6] = {0x01, 0, 0, 0, 0, 0};
@@ -1783,8 +1784,9 @@ inline void abortedRingReclaimsWhileStillCabled(ShootoutManagerTests* suite) {
 
     ASSERT_TRUE(ringShootout.shouldEnterProposal());
 
-    // Abort back to idle without touching a cable. The RDC latch stays set and is
-    // edge-triggered, so it will never announce this ring again.
+    // Abort back to idle without touching a cable. The latch stays set, and nothing
+    // announces it again on its own: shouldEnterProposal polling headsRing() is what
+    // brings this ring back.
     ringShootout.resetToIdle();
     ASSERT_EQ(ringRdc.getChainRole(), ChainRole::RING);
 
@@ -3127,9 +3129,10 @@ inline void aRosterThatFillsInsideTheWindowStillRuns(ShootoutManagerTests* suite
         << "a roster that filled before the deadline was still given up on";
 }
 
-// A device that has already ended its tournament stays ended. The coordinator can
-// still be retransmitting BRACKET to some other silent member, and nothing but the
-// terminal phase tells that retransmit from a new bracket.
+// A device the ring aborted stays aborted. The coordinator can still be retransmitting
+// BRACKET to some other silent member, and abortedByRing is what tells that retransmit
+// from the bracket of a fresh attempt, which this device would be right to join. Reached
+// by direct handler calls; the sibling below does the same thing as bytes.
 inline void aBracketDoesNotReopenAnEndedTournament(ShootoutManagerTests* suite) {
     // The MACs are arbitrary. Nothing here compares them: this device follows the
     // head ring detection gives it, and adopts the bracket that head drew.
@@ -3402,8 +3405,6 @@ inline void transientRingBreakDoesNotAbortATournament(ShootoutManagerTests* suit
         << "a healed break still aborted once its original window elapsed";
 }
 
-// A settled break must abort even for a duelist mid-bout, who is inside the duel
-// app with no shootout state mounted to notice.
 // The RDC outlives every manager built on it: the CLI rebuilds one per device and this
 // fixture rebuilds one per case, while the coordinator is a member that stays. The
 // membership slot holds a lambda over the manager, so a destructor that does not give it
@@ -3422,6 +3423,8 @@ inline void aDestroyedManagerIsNotCalledBackByTheRing(ShootoutManagerTests* suit
         << "the ring never opened, so the observer edge never came due";
 }
 
+// A settled break must abort even for a duelist mid-bout, who is inside the duel
+// app with no shootout state mounted to notice.
 inline void settledRingBreakAbortsALiveTournament(ShootoutManagerTests* suite) {
     ON_CALL(*suite->device.mockPeerComms,
             sendData(testing::_, testing::_, testing::_, testing::_))
@@ -3655,19 +3658,6 @@ inline void strayRingCommandsLeaveTournamentUntouched(ShootoutManagerTests* suit
 // state losing its edge or ceasing to honour the condition, which on hardware is a
 // ring that will not tear down.
 //
-// Note for anyone auditing #167 against this: the issue asked for abort to reach
-// every shootout state through a shared guard and for the per-state edges to go
-// away. The guard did move, further than #167 asked — out of the states entirely
-// and into ShootoutManager::sync(), which is the only place a bracket duelist
-// inside the duel app can be reached. The edges are still declared per state:
-// they carry the transition, and the manager carries the rule.
-// A tournament can end while the bracket screen is still up. A device that re-joined a
-// bracket and then lost every MATCH_START sits here to the last bout, and the ending
-// repeats until one copy lands — so ENDED arrives at a screen whose only exits are a
-// match starting and an abort. Without this edge it is a state the device never leaves:
-// resetToIdle runs on the standings screen's dismount, shouldEnterProposal needs IDLE,
-// and nothing else clears the phase, so the device joins no tournament again until it
-// reboots.
 inline void theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(
     ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
@@ -3704,6 +3694,19 @@ inline void theBracketScreenLeavesForTheStandingsWhenTheTournamentEnds(
         << "a device that ended while the bracket screen was up has nowhere to go";
 }
 
+// Note for anyone auditing #167 against this: the issue asked for abort to reach
+// every shootout state through a shared guard and for the per-state edges to go
+// away. The guard did move, further than #167 asked — out of the states entirely
+// and into ShootoutManager::sync(), which is the only place a bracket duelist
+// inside the duel app can be reached. The edges are still declared per state:
+// they carry the transition, and the manager carries the rule.
+// A tournament can end while the bracket screen is still up. A device that re-joined a
+// bracket and then lost every MATCH_START sits here to the last bout, and the ending
+// repeats until one copy lands — so ENDED arrives at a screen whose only exits are a
+// match starting and an abort. Without this edge it is a state the device never leaves:
+// resetToIdle runs on the standings screen's dismount, shouldEnterProposal needs IDLE,
+// and nothing else clears the phase, so the device joins no tournament again until it
+// reboots.
 inline void abortRuleReachesEveryStateThatDeclaresIt(ShootoutManagerTests* suite) {
     GameContext ctx;
     ctx.shootoutManager = suite->shootout;

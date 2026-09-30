@@ -710,10 +710,11 @@ void RemoteDeviceCoordinator::applyUpstreamHead(const HelloPayload& hello) {
         pendingReportMac.fill(0);
         pendingReportSeqId = 0;
         cancelHeadRosterTraffic(formingHead);
-        // Copied before the call, as the chain-change dispatch is:
-        // the subscriber is a game-layer manager that clears this slot in its own
-        // destructor, so a handler reaching a teardown would free the std::function
-        // whose operator() frame is still live.
+        // Copied before the call, as the chain-change dispatch is: a subscriber that
+        // clears this slot from inside its handler would otherwise free the
+        // std::function whose operator() frame is still live. No production subscriber
+        // holds this one today — the shootout reads membership instead — so the
+        // discipline is here for the next one rather than for a live consumer.
         RingClosedCallback ringClosed = ringClosedCallback;
         if (ringClosed) ringClosed();
         return;

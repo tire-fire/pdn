@@ -48,8 +48,9 @@ struct MultiDeviceNode {
     std::unique_ptr<RemoteDeviceCoordinator> rdc;
     std::unique_ptr<Player> player;
     std::unique_ptr<ChainDuelManager> cdm;
-    /// One per node, so no two nodes mint the same attempt identity — the collision a
-    /// shared counter would produce is the one the identity exists to avoid.
+    /// One per node so each can be given its own base in spawnDevices; the counter
+    /// alone would hand every node the same sequence, which is what would collide. A
+    /// real shared source would not: one stream still yields distinct values.
     FakeEntropy entropy;
     std::unique_ptr<ShootoutManager> shootout;
 
