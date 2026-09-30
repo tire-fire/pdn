@@ -117,11 +117,12 @@ enum class ShootoutCmd : uint8_t {
     RING_CLOSED = 6,
 };
 
-// The one shootout frame with no attempt identity on it.
+// The one shootout frame with no attempt identity on it. The seqId is the whole
+// payload: nextSeqId() allocates across every command family, so the number names the
+// fan-out being answered without help from a command byte.
 struct ShootoutAckPayload
 {
-    ShootoutCmd cmd;
-    uint8_t     seqId;
+    uint8_t seqId;
 } __attribute__((packed));
 
 // ---- Head roster management (#158) ----

@@ -700,8 +700,8 @@ void ShootoutManager::onShootoutFrame(const uint8_t* fromMac, const uint8_t* dat
 
 void ShootoutManager::onShootoutAckFrame(const uint8_t* fromMac, const uint8_t* data,
                                          size_t dataLen) {
-    if (dataLen < 2) return;
-    onCommandAckReceived(fromMac, data[1]);
+    if (dataLen < sizeof(ShootoutAckPayload)) return;
+    onCommandAckReceived(fromMac, data[0]);
 }
 
 std::vector<uint8_t> ShootoutManager::buildMacListPacket(
@@ -709,9 +709,10 @@ std::vector<uint8_t> ShootoutManager::buildMacListPacket(
     const std::vector<std::array<uint8_t, 6>>& macs) const {
     std::vector<uint8_t> packet(kHeaderLength);
     writeHeader(packet.data(), cmd, seqId);
-    // The roster is the RDC's 64 plus self, so it can land one over what the
-    // decoder accepts — and an over-long frame is dropped by every receiver, not
-    // just the members past the cap. Truncating keeps the ring running.
+    // The cap is the roster's own size, head included, so nothing here can exceed it.
+    // Still clamped rather than asserted: an over-long frame is dropped by every
+    // receiver, not just the members past the cap, so truncating keeps the ring running
+    // if the two ever drift apart.
     size_t count = macs.size();
     if (count > MAX_BRACKET_SIZE) {
         LOG_E(TAG, "mac list %zu over cap %u; truncating", count,
@@ -890,20 +891,24 @@ ShootoutManager::getCurrentMatchPair() const {
     return {currentDuelistA, currentDuelistB};
 }
 
-std::vector<uint8_t> ShootoutManager::buildMatchStartPacket(int matchIndex) const {
+std::vector<uint8_t> ShootoutManager::buildMatchPairPacket(
+    ShootoutCmd cmd, uint8_t seqId, const uint8_t* a, const uint8_t* b,
+    uint8_t matchIndex) const {
     std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_START, lastMatchStartSeqId);
+    writeHeader(packet.data(), cmd, seqId);
     MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
-    memcpy(pair->a, currentRound[matchIndex * 2].data(), 6);
-    memcpy(pair->b, currentRound[matchIndex * 2 + 1].data(), 6);
-    pair->index = static_cast<uint8_t>(matchIndex);
+    memcpy(pair->a, a, 6);
+    memcpy(pair->b, b, 6);
+    pair->index = matchIndex;
     return packet;
 }
 
 void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
     lastMatchStartSeqId = nextSeqId();
 
-    auto packet = buildMatchStartPacket(matchIndex);
+    auto packet = buildMatchPairPacket(
+        ShootoutCmd::MATCH_START, lastMatchStartSeqId, currentRound[matchIndex * 2].data(),
+        currentRound[matchIndex * 2 + 1].data(), static_cast<uint8_t>(matchIndex));
     const uint8_t* selfMac = wirelessManager->getMacAddress();
     const std::array<uint8_t, 6>& a = currentRound[matchIndex * 2];
     const std::array<uint8_t, 6>& b = currentRound[matchIndex * 2 + 1];
@@ -997,7 +1002,7 @@ void ShootoutManager::onBracketReceived(
     // same coordinator is a new tournament, and joining it is how a member it gave
     // up on gets back in.
     if (bracket == offeredBracket) {
-        sendShootoutAck(ShootoutCmd::BRACKET, seqId, coordinatorMac.data());
+        sendShootoutAck(seqId, coordinatorMac.data());
         return;
     }
     // Adopting a bracket is the one way into a tournament that runs no reset, so
@@ -1013,7 +1018,7 @@ void ShootoutManager::onBracketReceived(
     currentRound = offeredBracket;
     memcpy(coordinatorMac.data(), fromMac, 6);
     phase = Phase::BRACKET_REVEAL;
-    sendShootoutAck(ShootoutCmd::BRACKET, seqId, coordinatorMac.data());
+    sendShootoutAck(seqId, coordinatorMac.data());
 }
 
 void ShootoutManager::onMatchStartReceived(
@@ -1026,7 +1031,7 @@ void ShootoutManager::onMatchStartReceived(
     // would admit a fresh-seqId bout into a finished tournament.
     if (isTerminalPhase()) return;
     // Admitted on the sender, so the ack is owed however the payload reads.
-    sendShootoutAck(ShootoutCmd::MATCH_START, seqId, coordinatorMac.data());
+    sendShootoutAck(seqId, coordinatorMac.data());
     if (!containsMac(bracket, duelistA) || !containsMac(bracket, duelistB)) {
         LOG_E(TAG, "MATCH_START from coordinator names a duelist outside our bracket");
         return;
@@ -1064,8 +1069,8 @@ void ShootoutManager::onMatchStartReceived(
     }
 }
 
-void ShootoutManager::sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint8_t* toMac) {
-    ShootoutAckPayload ack{cmd, seqId};
+void ShootoutManager::sendShootoutAck(uint8_t seqId, const uint8_t* toMac) {
+    ShootoutAckPayload ack{seqId};
     wirelessManager->sendEspNowData(toMac, PktType::kShootoutCommandAck,
                                     reinterpret_cast<uint8_t*>(&ack), sizeof(ack));
 }
@@ -1087,21 +1092,11 @@ void ShootoutManager::applyMatchResult(const uint8_t* winner, const uint8_t* los
     phase = Phase::BETWEEN_MATCHES;
 }
 
-std::vector<uint8_t> ShootoutManager::buildMatchResultPacket(
-    const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) const {
-    std::vector<uint8_t> packet(kHeaderLength + sizeof(MatchPairBody));
-    writeHeader(packet.data(), ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId);
-    MatchPairBody* pair = reinterpret_cast<MatchPairBody*>(packet.data() + kHeaderLength);
-    memcpy(pair->a, winner, 6);
-    memcpy(pair->b, loser, 6);
-    pair->index = matchIndex;
-    return packet;
-}
-
 void ShootoutManager::sendMatchResultToPeers(
     const uint8_t* winner, const uint8_t* loser, uint8_t matchIndex) {
     lastMatchResultSeqId = nextSeqId();
-    auto packet = buildMatchResultPacket(winner, loser, matchIndex);
+    auto packet = buildMatchPairPacket(ShootoutCmd::MATCH_RESULT, lastMatchResultSeqId,
+                                      winner, loser, matchIndex);
     // Targets bracket, not confirmedSet. Both reach eliminated players — only
     // currentRound shrinks — but confirmedSet is each device's own tally of the
     // CONFIRMs it happened to hear, and those are unacked broadcasts sent once
@@ -1136,7 +1131,7 @@ void ShootoutManager::onMatchResultReceived(
     // whatever sat there longest.
     if (!containsMac(bracket, fromMac)) return;
     // Always ack so the sender stops retrying, even when this is a duplicate.
-    sendShootoutAck(ShootoutCmd::MATCH_RESULT, seqId, fromMac);
+    sendShootoutAck(seqId, fromMac);
     if (!containsMac(bracket, winner) || !containsMac(bracket, loser)) {
         LOG_E(TAG, "MATCH_RESULT from ring member names a device outside our bracket");
         return;
@@ -1197,7 +1192,7 @@ void ShootoutManager::onTournamentEndReceived(const uint8_t* fromMac,
     if (!isFromCoordinator(fromMac)) return;
     // Admitted on the sender, so the ack is owed however the payload reads — except
     // for seqId 0, which marks the unreliable repeat nobody is waiting on.
-    if (seqId != 0) sendShootoutAck(ShootoutCmd::TOURNAMENT_END, seqId, coordinatorMac.data());
+    if (seqId != 0) sendShootoutAck(seqId, coordinatorMac.data());
     if (!containsMac(bracket, winner)) {
         LOG_E(TAG, "TOURNAMENT_END from coordinator names a winner outside our bracket");
         return;
@@ -1215,15 +1210,14 @@ void ShootoutManager::onAbortReceived(const uint8_t* fromMac, uint8_t seqId) {
     if (!isRingMember(fromMac)) return;
     // Addressed to fromMac because any ring member may abort, not just the
     // coordinator.
-    if (seqId != 0) sendShootoutAck(ShootoutCmd::ABORT, seqId, fromMac);
-    // ENDED is refused here too, and reachably: a member that missed
-    // TOURNAMENT_END is still in BETWEEN_MATCHES, so a cable pulled after the
-    // winner appears sends ABORT to devices already showing the result.
-    // Recorded whatever phase this device is in, and after giveUpLocally's teardown,
-    // which is the reset that clears it. A
-    // device that is already ABORTED, because its own head retired its bracket a moment
-    // before this arrived, takes no further teardown — but it still has to stop
-    // re-adopting the bracket this abort retired, which is the one thing the flag is for.
+    if (seqId != 0) sendShootoutAck(seqId, fromMac);
+    // Terminal and IDLE devices take no further teardown, and ENDED reaches here
+    // reachably: a member that missed TOURNAMENT_END is still in BETWEEN_MATCHES, so a
+    // cable pulled after the winner appears sends ABORT to devices already showing the
+    // result. What is skipped is only the teardown. The flag below is set whatever the
+    // phase, and after giveUpLocally's reset, which is what clears it — a device already
+    // ABORTED because its own head retired its bracket a moment earlier still has to
+    // stop re-adopting the bracket this abort retired, which is the one thing it is for.
     const bool alreadyOut = isTerminalPhase() || phase == Phase::IDLE;
     if (!alreadyOut) giveUpLocally();
     abortedByRing = true;

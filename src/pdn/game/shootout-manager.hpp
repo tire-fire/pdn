@@ -198,10 +198,12 @@ public:
     static constexpr unsigned long SHORT_ROSTER_TIMEOUT_MS = 3000;
     static constexpr unsigned long kConfirmRebroadcastMs = 1000;
     static constexpr unsigned long kBracketRevealMs = 5000;
-    // Packet-validation clamp on an inbound BRACKET's member count. A ring can
-    // hold as many devices as the chain does, so it tracks MAX_CHAIN_MEMBERS;
-    // one ESP-NOW v2 frame carries that bracket several times over.
-    static constexpr uint8_t MAX_BRACKET_SIZE = MAX_CHAIN_MEMBERS;
+    // Packet-validation clamp on an inbound BRACKET's member count. A ring holds as
+    // many devices as the chain does plus the head itself, which getChainMembers()
+    // never reports: at MAX_CHAIN_MEMBERS the roster this has to encode is 65, and a cap
+    // of 64 would drop a member out of a roster its head is still waiting on. One
+    // ESP-NOW v2 frame carries all of it several times over.
+    static constexpr uint8_t MAX_BRACKET_SIZE = MAX_CHAIN_MEMBERS + 1;
 
 private:
     struct NameEntry {
@@ -270,12 +272,14 @@ private:
     static void addMac(std::vector<std::array<uint8_t, 6>>& set, const uint8_t* mac);
     /// True when `mac` is the coordinator this device is following.
     bool isFromCoordinator(const uint8_t* mac) const;
-    /// True in the two phases a tournament ends in. Every handler that would
-    /// advance a tournament refuses them, so a late frame cannot reopen one; the
-    /// two terminal screens end them deliberately, via resetToIdle on dismount.
-    /// ENDED leaves the coordinator anchor and the bracket standing, so its
-    /// coordinator's frames still pass the sender checks; an abort clears both,
-    /// so a retransmitted BRACKET would otherwise be adopted afresh.
+    /// True in the two phases a tournament ends in. The handlers that advance a
+    /// tournament refuse them, so a late frame cannot reopen one; the two terminal
+    /// screens end them deliberately, via resetToIdle on dismount. onBracketReceived is
+    /// not one of the callers: it refuses ENDED outright and admits ABORTED unless
+    /// abortedByRing is set, because a member that left has to be able to join the
+    /// attempt that replaced the one it left. ENDED also keeps the coordinator anchor
+    /// and the bracket standing, so its coordinator's frames still pass the sender
+    /// checks; an abort clears both.
     bool isTerminalPhase() const {
         return phase == Phase::ENDED || phase == Phase::ABORTED;
     }
@@ -377,7 +381,7 @@ private:
     std::array<uint8_t, 6> coordinatorMac{};
 
     std::array<uint8_t, 6> opponentMac{};
-    void sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint8_t* toMac);
+    void sendShootoutAck(uint8_t seqId, const uint8_t* toMac);
 
     int currentMatchIndex = -1;
     // bracket shrinks on round advancement (coordinator only), so cache the
@@ -390,7 +394,12 @@ private:
     /// caller on the packet path would need its own guard against double-advance.
     void maybeStartNextMatch();
     void sendMatchStartToPeers(int matchIndex);
-    std::vector<uint8_t> buildMatchStartPacket(int matchIndex) const;
+    /// The MATCH_START and MATCH_RESULT frames, which differ only in the command, the
+    /// seqId and where the pair comes from. One builder so the header and the body
+    /// cannot drift between them.
+    std::vector<uint8_t> buildMatchPairPacket(ShootoutCmd cmd, uint8_t seqId,
+                                              const uint8_t* a, const uint8_t* b,
+                                              uint8_t matchIndex) const;
 
     std::vector<std::array<uint8_t, 6>> eliminated;
     bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
@@ -408,10 +417,6 @@ private:
     /// this device out of the one it is fighting now.
     void applyMatchResult(const uint8_t* winner, const uint8_t* loser,
                           bool endsCurrentBout = true);
-    std::vector<uint8_t> buildMatchResultPacket(const uint8_t* winner,
-                                                const uint8_t* loser,
-                                                uint8_t matchIndex) const;
-
     std::array<uint8_t, 6> tournamentWinner{};
     uint8_t lastTournamentEndSeqId = 0;
     // The ABORT or TOURNAMENT_END this device sent to report the tournament
