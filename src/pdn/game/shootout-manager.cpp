@@ -423,9 +423,10 @@ void ShootoutManager::forgetAttemptConsent() {
     // Everything the local press bought for the attempt this device is leaving. The
     // phase stays as it is: the device is still in a proposal, just a different one's,
     // and dropping to IDLE here would strand it in a mounted state it cannot confirm
-    // from. The bound goes with the consent — a clock armed in the last attempt would
-    // otherwise fire seconds into this one. Names are not part of it: who a MAC belongs
-    // to is not something the press bought, and CONFIRM only carries it in a proposal.
+    // from. The short-roster window goes with the consent, because it is gated on a
+    // local confirm and would otherwise carry part-aged into the attempt being joined.
+    // Names are not part of it: who a MAC belongs to is not something the press bought,
+    // and CONFIRM only carries it in a proposal.
     confirmedSet.clear();
     shortRosterDebounce.reset();
 }
@@ -906,12 +907,11 @@ std::vector<uint8_t> ShootoutManager::buildMatchPairPacket(
 void ShootoutManager::sendMatchStartToPeers(int matchIndex) {
     lastMatchStartSeqId = nextSeqId();
 
-    auto packet = buildMatchPairPacket(
-        ShootoutCmd::MATCH_START, lastMatchStartSeqId, currentRound[matchIndex * 2].data(),
-        currentRound[matchIndex * 2 + 1].data(), static_cast<uint8_t>(matchIndex));
-    const uint8_t* selfMac = wirelessManager->getMacAddress();
     const std::array<uint8_t, 6>& a = currentRound[matchIndex * 2];
     const std::array<uint8_t, 6>& b = currentRound[matchIndex * 2 + 1];
+    auto packet = buildMatchPairPacket(ShootoutCmd::MATCH_START, lastMatchStartSeqId,
+                                      a.data(), b.data(), static_cast<uint8_t>(matchIndex));
+    const uint8_t* selfMac = wirelessManager->getMacAddress();
     bool sameMatch = isSameMatch(matchIndex, a.data(), b.data());
     currentDuelistA = a;
     currentDuelistB = b;
@@ -975,11 +975,10 @@ void ShootoutManager::onBracketReceived(
     // A tournament this device has already *finished* stays finished: ENDED keeps its
     // bracket and its winner standing on purpose, and nothing below tells a retransmit
     // aimed at some other silent member from a new bracket. ABORTED deliberately does
-    // not refuse. A device that gave up is still named in the head's bracket, because
-    // it confirmed before its bound fired, so a silent refusal here makes the head's
-    // fan-out abandon on this device and end the tournament for the whole ring — and
-    // the retry span is shorter than the ABORTED screen, so every copy lands inside
-    // the window. Re-joining is what the comment below already promises.
+    // not refuse. A device whose bracket its head retired by announcing a fresh attempt
+    // is still named in the bracket that attempt draws, so a silent refusal here makes
+    // the head's fan-out abandon on this device and end the tournament for the whole
+    // ring. Re-joining is what the comment below already promises.
     if (phase == Phase::ENDED) return;
     // A device the ring aborted stays out, though. The coordinator that sent that
     // ABORT cannot have drawn afterwards, so a bracket arriving now is a retransmit of

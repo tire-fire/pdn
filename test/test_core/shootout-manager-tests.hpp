@@ -684,8 +684,9 @@ inline void joiningTheNextBracketClearsTheLastOnesEliminations(ShootoutManagerTe
         << "a fresh tournament started part-way through the last one's bracket";
 }
 
-// The bound is for players, not for frames: a ring whose members take their time
-// pressing confirm is the normal case and must outlast nothing.
+// A ring whose members take their time pressing confirm is the normal case, and
+// nothing may cut it short: the only clock left in a proposal is the short-roster
+// window, and a roster above the floor never arms it.
 inline void aSlowButCompletingProposalIsNotCutShort(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> peer = {0x02, 0, 0, 0, 0, 0};
     ON_CALL(*suite->device.mockPeerComms, sendData(testing::_, testing::_, testing::_, testing::_))
@@ -935,11 +936,10 @@ inline void aFrameFromADeadAttemptIsDropped(ShootoutManagerTests* suite) {
         << "a match from a dead attempt started in this one";
 }
 
-// The bound is on the wait, and the wait starts at the press. A ring left cabled
-// through a lull is the normal case at an event: the timer used to be armed when the
-// proposal opened and read behind the local confirm, so it aged through the whole
-// window its answer was ignored in, and the first press on that ring was answered
-// with ABORTED instead of a tournament.
+// A ring left cabled through a lull is the normal case at an event, and the first press
+// on it must start a tournament. This once failed twice over: a proposal bound armed at
+// the phase edge aged through the whole lull, and before that the short-roster window
+// did the same. Only the second guard is left, and its confirm gate is what holds.
 inline void theFirstPressOnAnOldRingStartsATournament(ShootoutManagerTests* suite) {
     std::array<uint8_t, 6> me = {0x01, 0, 0, 0, 0, 0};
     std::array<uint8_t, 6> other = {0x02, 0, 0, 0, 0, 0};
