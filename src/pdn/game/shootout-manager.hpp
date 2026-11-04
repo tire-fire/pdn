@@ -205,6 +205,11 @@ private:
         std::string name;
     };
 
+    struct RxSeqEntry {
+        std::array<uint8_t, 6> mac;
+        uint8_t lastSeqId;
+    };
+
     Player* player;
     WirelessManager* wirelessManager;
     RemoteDeviceCoordinator* rdc;
@@ -215,6 +220,8 @@ private:
     void resetTournamentState();
 
     uint8_t nextSeqId();
+    bool isDuplicateRx(const uint8_t* fromMac, uint8_t seqId);
+    std::vector<RxSeqEntry> rxSeqBySender;
     static bool containsMac(const std::vector<std::array<uint8_t, 6>>& set,
                             const uint8_t* mac);
     /** True when `mac` is the coordinator this device is following. */
@@ -299,6 +306,7 @@ private:
     void sendShootoutAck(ShootoutCmd cmd, uint8_t seqId, const uint8_t* toMac);
 
     int currentMatchIndex = -1;
+    int roundPairIndex = -1;
     // bracket shrinks on round advancement (coordinator only), so cache the
     // player pair separately to stay valid on non-coordinators too.
     std::array<uint8_t, 6> currentPlayerA{};
@@ -310,11 +318,12 @@ private:
      * caller on the packet path would need its own guard against double-advance.
      */
     void maybeStartNextMatch();
-    void sendMatchStartToPeers(int matchIndex);
-    std::vector<uint8_t> buildMatchStartPacket(int matchIndex) const;
+    void sendMatchStartToPeers(int matchIndex, const std::array<uint8_t, 6>& a,
+                               const std::array<uint8_t, 6>& b);
+    std::vector<uint8_t> buildMatchStartPacket(int matchIndex, const std::array<uint8_t, 6>& a,
+                                               const std::array<uint8_t, 6>& b) const;
 
     std::vector<std::array<uint8_t, 6>> eliminated;
-    bool isSameMatch(int matchIndex, const uint8_t* a, const uint8_t* b) const;
     bool reportedLocalWin = false;
     // The match whose result this device has already re-sent once, or -1. Keyed
     // on the match rather than a flag, so it needs no clearing: a later match
