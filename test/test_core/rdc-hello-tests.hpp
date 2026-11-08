@@ -2857,3 +2857,89 @@ inline void rdcHeadTransferCarriesFullCapRoster(RDCHelloTests* suite) {
 
     EXPECT_EQ(suite->rdc.getChainMembers().size(), static_cast<size_t>(MAX_CHAIN_MEMBERS));
 }
+
+// An FDN on a PDN's jack is a valid jack peer (Symbol Match, provisioning) and
+// never a chain link: a PDN cabled only to an FDN stays STANDALONE, never
+// adopts an upstream head from an FDN, and never closes a ring through one.
+inline void rdcFdnPeerOnJackDoesNotCountAsChainOrRingLink(RDCHelloTests* suite) {
+    const uint8_t outFdn[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+    const uint8_t inFdn[6] = {0xB1, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    HelloPayload outHello{};
+    memcpy(outHello.source, outFdn, 6);
+    outHello.deviceType = static_cast<uint8_t>(DeviceType::FDN);
+    suite->deliverHello(suite->outJack, encodeFramed(outHello));
+    suite->rdc.sync(&suite->device);
+
+    FdnConnectionContext fdnCtx{};
+    fdnCtx.seqId = 1;
+    suite->transport()->deliverIncoming(PktType::kFdnConnectionContext, outFdn,
+                                        reinterpret_cast<const uint8_t*>(&fdnCtx), sizeof(fdnCtx));
+    suite->rdc.sync(&suite->device);
+
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::OUTPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    EXPECT_EQ(suite->rdc.getChainRole(), ChainRole::STANDALONE);
+
+    HelloPayload inHello{};
+    memcpy(inHello.source, inFdn, 6);
+    memcpy(inHello.headMac, suite->localMac, 6);
+    inHello.deviceType = static_cast<uint8_t>(DeviceType::FDN);
+    suite->deliverHello(suite->inJack, encodeFramed(inHello));
+    suite->rdc.sync(&suite->device);
+
+    fdnCtx.seqId = 2;
+    suite->transport()->deliverIncoming(PktType::kFdnConnectionContext, inFdn,
+                                        reinterpret_cast<const uint8_t*>(&fdnCtx), sizeof(fdnCtx));
+    suite->rdc.sync(&suite->device);
+
+    ASSERT_EQ(suite->rdc.getHelloLinkState(SerialIdentifier::INPUT_JACK),
+              RemoteDeviceCoordinator::HelloLinkState::CONNECTED);
+    EXPECT_EQ(suite->rdc.getChainRole(), ChainRole::STANDALONE);
+    EXPECT_FALSE(suite->rdc.isInRing());
+    EXPECT_EQ(suite->rdc.getHeadMac(), nullptr);
+}
+
+// An FDN device itself is never a chain member or ring coordinator, even when
+// cabled between PDN peers on both jacks.
+inline void rdcFdnSelfNeverEntersChainOrRing() {
+    class MockFdnDevice : public MockDevice {
+    public:
+        /** @return DeviceType::FDN for the FDN self-role test. */
+        DeviceType getDeviceType() override { return DeviceType::FDN; }
+    };
+
+    FakePlatformClock clock;
+    SimpleTimer::setPlatformClock(&clock);
+    clock.setTime(1000);
+
+    MockFdnDevice fdnDevice;
+    uint8_t fdnMac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+    wireRadioDefaults(fdnDevice, fdnMac);
+    NativeSerialDriver outJack{"fdn-out"};
+    NativeSerialDriver inJack{"fdn-in"};
+    fdnDevice.serialManager->setOutputJack(&outJack);
+    fdnDevice.serialManager->setInputJack(&inJack);
+
+    RemoteDeviceCoordinator fdnRdc;
+    fdnRdc.setExternalConnectivityTask(true);
+    fdnRdc.initialize(fdnDevice.wirelessManager, fdnDevice.serialManager, &fdnDevice);
+
+    const uint8_t pdnOut[6] = {0xA1, 0x02, 0x03, 0x04, 0x05, 0x06};
+    const uint8_t pdnIn[6] = {0xB1, 0x02, 0x03, 0x04, 0x05, 0x06};
+    deliverFrame(outJack, chainHelloFrame(pdnOut, nullptr));
+    fdnRdc.sync(&fdnDevice);
+    fdnRdc.onContextExchangeComplete(SerialIdentifier::OUTPUT_JACK);
+    fdnRdc.sync(&fdnDevice);
+
+    deliverFrame(inJack, chainHelloFrame(pdnIn, fdnMac, HELLO_FLAG_RING_CLOSED));
+    fdnRdc.sync(&fdnDevice);
+    fdnRdc.onContextExchangeComplete(SerialIdentifier::INPUT_JACK);
+    fdnRdc.sync(&fdnDevice);
+
+    EXPECT_EQ(fdnRdc.getChainRole(), ChainRole::STANDALONE);
+    EXPECT_FALSE(fdnRdc.isInRing());
+    EXPECT_EQ(fdnRdc.getHeadMac(), nullptr);
+
+    SimpleTimer::setPlatformClock(nullptr);
+}

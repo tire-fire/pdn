@@ -286,10 +286,14 @@ void RemoteDeviceCoordinator::enableHelloConnectivity() {
         context.onLinkDown = [this, jack](SerialIdentifier j, const std::array<uint8_t, 6>& mac) {
             helloByJack[jackIndex(jack)].parser.requestReset();
             if (MacToUInt64(mac.data()) != 0) {
+                const bool wasPdnPeer = helloByJack[jackIndex(j)].peerDeviceType == DeviceType::PDN;
                 releaseHelloPeer(j, mac.data());
                 // Downstream (OUTPUT) departures are this device's to report: it
-                // is the only node that sees that HELLO go silent.
-                if (j == SerialIdentifier::OUTPUT_JACK) reportDownstreamLoss(mac.data());
+                // is the only node that sees that HELLO go silent. Only PDN peers
+                // are chain members.
+                if (j == SerialIdentifier::OUTPUT_JACK && wasPdnPeer) {
+                    reportDownstreamLoss(mac.data());
+                }
             }
             onLinkLost(jack);
             // This is where a link death is reported: Idle is mounted, so the jack
@@ -350,10 +354,12 @@ void RemoteDeviceCoordinator::onHelloReceived(SerialIdentifier jack, const Hello
     JackHelloLink& link = helloByJack[jackIndex(jack)];
     if (link.machine) link.machine->onHelloReceived(hello);
 
-    // Head inheritance + ring detection are directional: only the upstream (INPUT)
-    // jack drives them, so the head's MAC cascades downstream. The FDN secondary
-    // input jack is a symbol link and takes no part in the chain.
-    if (jack == SerialIdentifier::INPUT_JACK) {
+    // Head inheritance + ring detection are directional and PDN-only: only the
+    // upstream (INPUT) jack between two PDNs drives them, so the head's MAC
+    // cascades downstream and an FDN never participates in a chain or ring.
+    if (jack == SerialIdentifier::INPUT_JACK && selfDeviceType == DeviceType::PDN &&
+        static_cast<DeviceType>(hello.deviceType) == DeviceType::PDN &&
+        getPeerDeviceType(SerialIdentifier::INPUT_JACK) != DeviceType::FDN) {
         applyUpstreamHead(hello);
     }
 }
@@ -491,6 +497,9 @@ void RemoteDeviceCoordinator::recordJackContext(SerialIdentifier jack, DeviceTyp
     link.peerProfileLen = std::min(len, link.peerProfile.size());
     memcpy(link.peerProfile.data(), profile, link.peerProfileLen);
     link.peerUserId = peerUserId;
+    if (peerType != DeviceType::PDN) {
+        onLinkLost(jack);
+    }
 }
 
 void RemoteDeviceCoordinator::completeJackContext(SerialIdentifier jack, DeviceType peerType,
@@ -567,8 +576,11 @@ void RemoteDeviceCoordinator::releaseHelloPeer(SerialIdentifier jack, const uint
 }
 
 void RemoteDeviceCoordinator::onContextExchangeComplete(SerialIdentifier jack) {
-    HelloLinkMachine* machine = helloByJack[jackIndex(jack)].machine;
-    if (machine) machine->onContextExchangeComplete();
+    JackHelloLink& link = helloByJack[jackIndex(jack)];
+    if (link.peerDeviceType == DeviceType::UNKNOWN) {
+        link.peerDeviceType = DeviceType::PDN;
+    }
+    if (link.machine) link.machine->onContextExchangeComplete();
 }
 
 RemoteDeviceCoordinator::HelloLinkState
@@ -595,7 +607,17 @@ void RemoteDeviceCoordinator::unpackMac(uint64_t value, uint8_t* out) {
     }
 }
 
+bool RemoteDeviceCoordinator::isChainLink(SerialIdentifier jack) const {
+    if (selfDeviceType != DeviceType::PDN) return false;
+    if (jack != SerialIdentifier::INPUT_JACK && jack != SerialIdentifier::OUTPUT_JACK) {
+        return false;
+    }
+    return getHelloLinkState(jack) == HelloLinkState::CONNECTED &&
+           getPeerDeviceType(jack) == DeviceType::PDN;
+}
+
 bool RemoteDeviceCoordinator::isInRing() const {
+    if (selfDeviceType != DeviceType::PDN) return false;
     if (ringLatched) return true;
     // Relayed membership. An upstream asserting closure only concerns this
     // device while the ring can still run through it, so both chain links must
@@ -606,16 +628,17 @@ bool RemoteDeviceCoordinator::isInRing() const {
     // device holds none, so its assertion is never fed back to it and clearing
     // its latch drains the flag round the ring.
     if ((chainHeadState.load() & HEAD_MAC_MASK) == 0) return false;
-    if (getHelloLinkState(SerialIdentifier::OUTPUT_JACK) != HelloLinkState::CONNECTED) return false;
+    if (!isChainLink(SerialIdentifier::OUTPUT_JACK)) return false;
     return upstreamRingClosed;
 }
 
 ChainRole RemoteDeviceCoordinator::getChainRole() const {
+    if (selfDeviceType != DeviceType::PDN) return ChainRole::STANDALONE;
     if (ringLatched) return ChainRole::RING;
-    if (getHelloLinkState(SerialIdentifier::INPUT_JACK) == HelloLinkState::CONNECTED) {
+    if (isChainLink(SerialIdentifier::INPUT_JACK)) {
         return ChainRole::CHILD;
     }
-    if (getHelloLinkState(SerialIdentifier::OUTPUT_JACK) == HelloLinkState::CONNECTED) {
+    if (isChainLink(SerialIdentifier::OUTPUT_JACK)) {
         return ChainRole::HEAD;
     }
     return ChainRole::STANDALONE;
@@ -664,12 +687,12 @@ void RemoteDeviceCoordinator::applyUpstreamHead(const HelloPayload& hello) {
     }
 
     // Ring: this device's own MAC returns on its INPUT jack, so the head it seeded
-    // traveled the whole ring back. Gate on OUTPUT being connected (a downstream
-    // exists), NOT on role==HEAD — two already-connected sub-chains merging into a
-    // ring deliver our head back on an INPUT that is already CONNECTED, where
-    // role==HEAD (which demands INPUT be un-connected) would miss the closure.
-    if (!ringLatched && peerHeadIsSelf &&
-        getHelloLinkState(SerialIdentifier::OUTPUT_JACK) == HelloLinkState::CONNECTED) {
+    // traveled the whole ring back. Gate on OUTPUT being a PDN chain link (a PDN
+    // downstream exists), NOT on role==HEAD — two already-connected sub-chains
+    // merging into a ring deliver our head back on an INPUT that is already
+    // CONNECTED, where role==HEAD (which demands INPUT be un-connected) would
+    // miss the closure.
+    if (!ringLatched && peerHeadIsSelf && isChainLink(SerialIdentifier::OUTPUT_JACK)) {
         ringLatched = true;
         // Seed the evidence stamp at closure so a break immediately after still
         // has a valid baseline to time out from.
@@ -705,11 +728,11 @@ void RemoteDeviceCoordinator::applyUpstreamHead(const HelloPayload& hello) {
 }
 
 void RemoteDeviceCoordinator::adoptUpstreamHead() {
-    // The INPUT link machine is the single authority on whether an upstream is
-    // real. A one-way cable delivers its HELLOs forever while this side never
+    // The INPUT link machine is the single authority on whether an upstream PDN
+    // is real. A one-way cable delivers its HELLOs forever while this side never
     // establishes; adopting off those would advertise a head no downstream can
     // reach and hand this device's roster to a peer that cannot answer.
-    if (getHelloLinkState(SerialIdentifier::INPUT_JACK) != HelloLinkState::CONNECTED) return;
+    if (!isChainLink(SerialIdentifier::INPUT_JACK)) return;
     const uint64_t newHead = MacToUInt64(upstreamAdvertisedHead.data());
     if (newHead == 0) return;
     const uint64_t previousHead = chainHeadState.load() & HEAD_MAC_MASK;

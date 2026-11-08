@@ -1835,6 +1835,10 @@ TEST_F(RDCHelloTests, chainRoleChangeReportsRingLatch) {
 TEST_F(RDCHelloTests, unprovenUpstreamIsNeverAdopted) {
     rdcUnprovenUpstreamIsNeverAdopted(this);
 }
+TEST_F(RDCHelloTests, fdnPeerOnJackDoesNotCountAsChainOrRingLink) {
+    rdcFdnPeerOnJackDoesNotCountAsChainOrRingLink(this);
+}
+TEST(RDCHelloStandalone, fdnSelfNeverEntersChainOrRing) { rdcFdnSelfNeverEntersChainOrRing(); }
 
 // ============================================
 // POSSE MANAGER TESTS

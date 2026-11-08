@@ -444,6 +444,11 @@ private:
 
     static uint64_t packHead(const uint8_t* mac, bool confirmed);
     static void unpackMac(uint64_t value, uint8_t* out);
+    // True when this device is a PDN and `jack` is a Connected primary chain
+    // link (INPUT or OUTPUT) facing a PDN peer. An FDN on either side of a
+    // cable is a valid jack peer (Symbol Match, provisioning, opponent) and
+    // never a chain/ring link.
+    bool isChainLink(SerialIdentifier jack) const;
     // Ring detection and the latched-head conflict, driven by any INPUT HELLO;
     // taking on a foreign head is left to adoptUpstreamHead.
     void applyUpstreamHead(const HelloPayload& hello);
