@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include "../../include/id-generator.hpp"
 
@@ -64,6 +65,12 @@ public:
     void setBountyId(const char* bountyId);
 
     /**
+     * Records whether the hunter won the match (as resolved from posse-boosted effective draw
+     * times).
+     */
+    void setWinnerIsHunter(bool hunterWon) { winnerIsHunter = hunterWon; }
+
+    /**
      * @return Match data as JSON string
      */
     std::string toJson() const;
@@ -106,4 +113,5 @@ private:
     char bounty[5] = {};
     unsigned long hunter_draw_time_ms = 0;
     unsigned long bounty_draw_time_ms = 0;
+    std::optional<bool> winnerIsHunter;
 };

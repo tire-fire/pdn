@@ -9,6 +9,7 @@ struct MatchPacket {
     char playerId[5];
     uint8_t isHunter;
     long playerDrawTime;
+    unsigned long rawDrawTime;
     int command;
     uint8_t seqId;
 } __attribute__((packed));
@@ -28,15 +29,24 @@ struct MatchCommand {
     char playerId[5];
     bool isHunter;
     long playerDrawTime;
+    unsigned long rawDrawTime;
 
     /** Decoded match frame received from macAddress. */
     MatchCommand(const uint8_t* macAddress, int command, const char* matchId, const char* playerId,
-                 long playerDrawTime, bool isHunter)
+                 long playerDrawTime, bool isHunter, unsigned long rawDrawTime)
         : wifiMacAddr(macAddress)
         , command(command)
         , isHunter(isHunter)
-        , playerDrawTime(playerDrawTime) {
+        , playerDrawTime(playerDrawTime)
+        , rawDrawTime(rawDrawTime) {
         IdGenerator::copyId(this->matchId, matchId);
         IdGenerator::copyId(this->playerId, playerId);
     }
+
+    /** Convenience overload for unboosted or non-draw commands where raw time equals effective
+     * time. */
+    MatchCommand(const uint8_t* macAddress, int command, const char* matchId, const char* playerId,
+                 long playerDrawTime, bool isHunter)
+        : MatchCommand(macAddress, command, matchId, playerId, playerDrawTime, isHunter,
+                       static_cast<unsigned long>(playerDrawTime > 0 ? playerDrawTime : 0)) {}
 };

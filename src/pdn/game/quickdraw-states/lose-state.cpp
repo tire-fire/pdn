@@ -28,22 +28,26 @@ void Lose::onStateMounted(PDN* pdn) {
         const LastMatchDisplay& d = matchManager->getLastMatchDisplay();
         if (d.hasData) {
             pdn->getDisplay()->drawImage(Image(image_stats_card, 60, 64, 0, 0));
-            char myLine[16];
-            // "Boost: " plus any 32-bit %lu, so the size does not depend on the divisor.
-            char boostLine[18];
-            char oppLine[16];
-            snprintf(myLine, sizeof(myLine), "You:%4lu", d.myTimeMs);
-            snprintf(oppLine, sizeof(oppLine), "Opp:%4lu", d.opponentTimeMs);
+            char myLine[28];
+            char oppLine[28];
+            snprintf(myLine, sizeof(myLine), "You:%4ld", d.myTimeMs);
+            snprintf(oppLine, sizeof(oppLine), "Opp:%4ld", d.opponentTimeMs);
             pdn->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)
                 ->drawText(myLine, 2, 12);
-            if (d.boostMs > 0) {
+            const bool hasBoost = d.boostMs > 0;
+            const bool hasPenalty = d.penaltyMs > 0;
+            if (hasBoost) {
+                char boostLine[28];
                 unsigned long boosts = d.boostMs / PosseManager::BOOST_PER_SUPPORTER_MS;
                 snprintf(boostLine, sizeof(boostLine), "Boost: %lu", boosts);
-                pdn->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)
-                    ->drawText(boostLine, 2, 28);
+                pdn->getDisplay()->drawText(boostLine, 2, hasPenalty ? 24 : 28);
             }
-            pdn->getDisplay()->setGlyphMode(FontMode::TEXT_INVERTED_SMALL)
-                ->drawText(oppLine, 2, 44);
+            if (hasPenalty) {
+                char penaltyLine[28];
+                snprintf(penaltyLine, sizeof(penaltyLine), "Pen:+%lu", d.penaltyMs);
+                pdn->getDisplay()->drawText(penaltyLine, 2, hasBoost ? 36 : 28);
+            }
+            pdn->getDisplay()->drawText(oppLine, 2, (hasBoost && hasPenalty) ? 48 : 44);
         }
     }
 

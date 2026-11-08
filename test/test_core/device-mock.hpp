@@ -307,13 +307,22 @@ public:
             receiveHandler = callback;
             receiveContext = ctx;
         }));
+        ON_CALL(*radio, setSendStatusHandler(PktType::kMatchCommand, testing::_, testing::_))
+        .WillByDefault(testing::Invoke(
+        [this](PktType, PeerCommsInterface::SendStatusCallback callback, void* ctx) {
+            sendStatusHandler = callback;
+            sendStatusContext = ctx;
+        }));
         ON_CALL(*radio, sendData(testing::_, PktType::kMatchCommand, testing::_, testing::_))
         .WillByDefault(testing::DoAll(
-        testing::Invoke([this](const uint8_t*, PktType, const uint8_t* data, const size_t len) {
+        testing::Invoke([this](const uint8_t* dst, PktType, const uint8_t* data, const size_t len) {
             if (len != sizeof(MatchPacket)) return;
             MatchPacket p{};
             memcpy(&p, data, sizeof(p));
             sentFrames.push_back(p);
+            if (p.command == MatchCmd::MATCH_ID_ACK && sendStatusHandler != nullptr) {
+                sendStatusHandler(dst, data, len, true, sendStatusContext);
+            }
         }),
         testing::Return(1)));
     }
@@ -342,6 +351,8 @@ public:
 private:
     PeerCommsInterface::PacketCallback receiveHandler = nullptr;
     void* receiveContext = nullptr;
+    PeerCommsInterface::SendStatusCallback sendStatusHandler = nullptr;
+    void* sendStatusContext = nullptr;
 };
 
 // Fake light strip for LightManager

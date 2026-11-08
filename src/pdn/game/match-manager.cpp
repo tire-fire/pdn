@@ -10,6 +10,9 @@
 static constexpr const char* PREF_COUNT_KEY = "count";
 static constexpr const char* PREF_MATCH_KEY  = "match_";
 static constexpr uint8_t     MAX_MATCHES      = 255;
+static constexpr long MIN_EFFECTIVE_DRAW_TIME_MS = -300;
+static constexpr unsigned long MAX_DRAW_TIME_MS = 60000;
+static constexpr int MAX_BUTTON_MASHER_COUNT = 255;
 
 static const char* const MATCH_MANAGER_TAG = "MATCH_MANAGER";
 
@@ -17,11 +20,25 @@ MatchManager::MatchManager(WirelessManager* wirelessManager)
     : player(nullptr)
     , storage(nullptr)
     , resender(wirelessManager)
-    , matchChannel(wirelessManager, &resender, PktType::kMatchCommand, nullptr) {
+    , matchChannel(wirelessManager, &resender, PktType::kMatchCommand, {}) {
+    resender.setAbandonCallback(
+    [this](PktType, uint8_t, const uint8_t* targetMac, const uint8_t*, size_t) {
+        if (!activeMatchState.match.has_value() || !activeMatchState.awaitingAckDelivery) return;
+        if (memcmp(targetMac, activeMatchState.opponentMac.data(), 6) == 0) {
+            clearCurrentMatch();
+        }
+    });
     matchChannel.onReceive([this](const uint8_t* fromMac, const MatchPacket& p) {
         MatchCommand command(fromMac, p.command, p.matchId, p.playerId, p.playerDrawTime,
-                             p.isHunter);
+                             p.isHunter, p.rawDrawTime);
         listenForMatchEvents(command);
+    });
+    matchChannel.setOnDelivered([this](uint8_t, const uint8_t* toMac) {
+        if (!activeMatchState.match.has_value() || !activeMatchState.awaitingAckDelivery) return;
+        if (memcmp(toMac, activeMatchState.opponentMac.data(), 6) == 0) {
+            activeMatchState.awaitingAckDelivery = false;
+            activeMatchState.matchIsReady = true;
+        }
     });
 }
 
@@ -29,11 +46,12 @@ void MatchManager::sync() {
     resender.sync();
 }
 
-void MatchManager::sendCommand(const uint8_t* mac, int command, const char* matchId,
-                               long drawTime, bool isHunter) {
+void MatchManager::sendCommand(const uint8_t* mac, int command, const char* matchId, long drawTime,
+                               bool isHunter, unsigned long rawDrawTime) {
     MatchPacket packet{};
     packet.command = command;
     packet.playerDrawTime = drawTime;
+    packet.rawDrawTime = rawDrawTime;
     packet.isHunter = isHunter;
     IdGenerator::copyId(packet.matchId, matchId);
     IdGenerator::copyId(packet.playerId, player->getUserID().c_str());
@@ -133,10 +151,10 @@ void MatchManager::receiveMatch(const char* matchId, const char* opponentId, boo
     }
 
     auto* clock = SimpleTimer::getPlatformClock();
-    LOG_D(MATCH_MANAGER_TAG, "TIMING receiveMatch-ready T=%lu", clock ? clock->milliseconds() : 0UL);
+    LOG_D(MATCH_MANAGER_TAG, "TIMING receiveMatch-ackSent T=%lu",
+          clock ? clock->milliseconds() : 0UL);
 
-    activeMatchState.matchIsReady = true;
-
+    activeMatchState.awaitingAckDelivery = true;
     sendCommand(activeMatchState.opponentMac.data(), MatchCmd::MATCH_ID_ACK,
                 activeMatchState.match->getMatchId(), 0, activeMatchState.localIsHunter);
 }
@@ -176,9 +194,13 @@ bool MatchManager::didWin() {
     if (activeMatchState.gracePeriodExpiredNoResult) {
         return false;
     }
+    if (!activeMatchState.hunterEffectiveTimeMs.has_value() ||
+        !activeMatchState.bountyEffectiveTimeMs.has_value()) {
+        return false;
+    }
 
-    const unsigned long hunterTime = activeMatchState.match->getHunterDrawTime();
-    const unsigned long bountyTime = activeMatchState.match->getBountyDrawTime();
+    const long hunterTime = *activeMatchState.hunterEffectiveTimeMs;
+    const long bountyTime = *activeMatchState.bountyEffectiveTimeMs;
     return activeMatchState.localIsHunter ? hunterTime < bountyTime : bountyTime < hunterTime;
 }
 
@@ -188,14 +210,16 @@ bool MatchManager::finalizeMatch() {
         return false;
     }
 
+    const long hunterTime = activeMatchState.hunterEffectiveTimeMs.value_or(0);
+    const long bountyTime = activeMatchState.bountyEffectiveTimeMs.value_or(0);
+
     // Snapshot times for the result screen (before clearCurrentMatch wipes the match).
-    lastMatchDisplay.myTimeMs = activeMatchState.localIsHunter
-                                ? activeMatchState.match->getHunterDrawTime()
-                                : activeMatchState.match->getBountyDrawTime();
-    lastMatchDisplay.opponentTimeMs = activeMatchState.localIsHunter
-                                      ? activeMatchState.match->getBountyDrawTime()
-                                      : activeMatchState.match->getHunterDrawTime();
+    lastMatchDisplay.myTimeMs = activeMatchState.localIsHunter ? hunterTime : bountyTime;
+    lastMatchDisplay.opponentTimeMs = activeMatchState.localIsHunter ? bountyTime : hunterTime;
     lastMatchDisplay.hasData = true;
+
+    const bool hunterWon = (didWin() == activeMatchState.localIsHunter);
+    activeMatchState.match->setWinnerIsHunter(hunterWon);
 
     std::string matchId = activeMatchState.match->getMatchId();
 
@@ -228,19 +252,21 @@ parameterizedCallbackFunction MatchManager::getMatchButtonPush() { return matchB
 
 void MatchManager::setReceivedButtonPush() { activeMatchState.hasPressedButton = true; }
 
-bool MatchManager::setHunterDrawTime(unsigned long hunter_time_ms) {
+bool MatchManager::setHunterDrawTime(long effectiveTimeMs, unsigned long rawTimeMs) {
     if (!activeMatchState.match) {
         return false;
     }
-    activeMatchState.match->setHunterDrawTime(hunter_time_ms);
+    activeMatchState.hunterEffectiveTimeMs = effectiveTimeMs;
+    activeMatchState.match->setHunterDrawTime(rawTimeMs);
     return true;
 }
 
-bool MatchManager::setBountyDrawTime(unsigned long bounty_time_ms) {
+bool MatchManager::setBountyDrawTime(long effectiveTimeMs, unsigned long rawTimeMs) {
     if (!activeMatchState.match) {
         return false;
     }
-    activeMatchState.match->setBountyDrawTime(bounty_time_ms);
+    activeMatchState.bountyEffectiveTimeMs = effectiveTimeMs;
+    activeMatchState.match->setBountyDrawTime(rawTimeMs);
     return true;
 }
 
@@ -385,24 +411,39 @@ void MatchManager::initialize(Player* player, StorageInterface* storage) {
             return;
         }
 
-        unsigned long reactionTimeMs = now - matchManager->getMatchLocalStartTime();
-
-        if (activeMatchState->buttonMasherCount > 0) {
-            reactionTimeMs = reactionTimeMs + activeMatchState->calculateButtonMasherPenalty();
+        const unsigned long startTime = matchManager->getMatchLocalStartTime();
+        unsigned long reactionTimeMs = now >= startTime ? (now - startTime) : 0;
+        if (reactionTimeMs > MAX_DRAW_TIME_MS) {
+            reactionTimeMs = MAX_DRAW_TIME_MS;
+        }
+        unsigned long penaltyMs = activeMatchState->calculateButtonMasherPenalty();
+        reactionTimeMs += penaltyMs;
+        if (reactionTimeMs > MAX_DRAW_TIME_MS) {
+            reactionTimeMs = MAX_DRAW_TIME_MS;
         }
 
         unsigned long boost = matchManager->boostProvider_ ? matchManager->boostProvider_() : 0;
-        unsigned long boostedTimeMs = (boost >= reactionTimeMs) ? 0 : (reactionTimeMs - boost);
+        const unsigned long maxBoost = static_cast<unsigned long>(-MIN_EFFECTIVE_DRAW_TIME_MS);
+        if (boost > maxBoost) {
+            boost = maxBoost;
+        }
+        long boostedTimeMs = static_cast<long>(reactionTimeMs) - static_cast<long>(boost);
+        if (boostedTimeMs < MIN_EFFECTIVE_DRAW_TIME_MS) {
+            boostedTimeMs = MIN_EFFECTIVE_DRAW_TIME_MS;
+        }
 
-        // Snapshot boost at press time so the result screen can display it
-        // even if supporters unplug before the match finalizes.
+        // Snapshot boost and early-press penalty at press time so the result
+        // screen can display them even if supporters unplug before the match finalizes.
         matchManager->lastMatchDisplay.boostMs = boost;
+        matchManager->lastMatchDisplay.penaltyMs = penaltyMs;
 
-        LOG_I(MATCH_MANAGER_TAG, "Button pressed! Reaction time: %lu ms (boost %lu) for %s",
-              boostedTimeMs, boost, activeMatchState->localIsHunter ? "Hunter" : "Bounty");
+        LOG_I(
+        MATCH_MANAGER_TAG, "Button pressed! Reaction time: %ld ms (boost %lu, penalty %lu) for %s",
+        boostedTimeMs, boost, penaltyMs, activeMatchState->localIsHunter ? "Hunter" : "Bounty");
 
-        activeMatchState->localIsHunter ? matchManager->setHunterDrawTime(boostedTimeMs)
-                                        : matchManager->setBountyDrawTime(boostedTimeMs);
+        activeMatchState->localIsHunter
+        ? matchManager->setHunterDrawTime(boostedTimeMs, reactionTimeMs)
+        : matchManager->setBountyDrawTime(boostedTimeMs, reactionTimeMs);
 
         // Player stats record the raw (unboosted) reaction time — boost is a
         // match-time advantage, not an achievement the player actually made.
@@ -413,10 +454,11 @@ void MatchManager::initialize(Player* player, StorageInterface* storage) {
         LOG_I(MATCH_MANAGER_TAG, "Broadcasting DRAW_RESULT to opponent MAC: %s",
               MacToString(activeMatchState->opponentMac.data()));
 
-        // Send the BOOSTED time in DRAW_RESULT so both sides agree on who won.
+        // Send both the signed effective draw time (for winner resolution) and the
+        // unsigned raw reaction time (for the persisted Match record).
         matchManager->sendCommand(activeMatchState->opponentMac.data(), MatchCmd::DRAW_RESULT,
                                   matchManager->getCurrentMatch()->getMatchId(), boostedTimeMs,
-                                  activeMatchState->localIsHunter);
+                                  activeMatchState->localIsHunter, reactionTimeMs);
 
         matchManager->setReceivedButtonPush();
         
@@ -425,7 +467,9 @@ void MatchManager::initialize(Player* player, StorageInterface* storage) {
 
     buttonMasher = [](void *ctx) {
         MatchManager* matchManager = static_cast<MatchManager*>(ctx);
-        matchManager->activeMatchState.buttonMasherCount++;
+        if (matchManager->activeMatchState.buttonMasherCount < MAX_BUTTON_MASHER_COUNT) {
+            matchManager->activeMatchState.buttonMasherCount++;
+        }
         LOG_I(MATCH_MANAGER_TAG, "Button masher count: %d",
               matchManager->activeMatchState.buttonMasherCount);
     };
@@ -461,6 +505,7 @@ void MatchManager::listenForMatchEvents(const MatchCommand& command) {
     } else if (command.command == MatchCmd::MATCH_ID_ACK) {
         LOG_I(MATCH_MANAGER_TAG, "Received MATCH_ID_ACK command from opponent");
         if (!isFromActiveMatchOpponent(command)) return;
+        if (activeMatchState.matchIsReady || activeMatchState.awaitingAckDelivery) return;
         matchChannel.cancel(activeMatchState.opponentMac.data());
         if (activeMatchState.localIsHunter) {
             activeMatchState.match->setBountyId(command.playerId);
@@ -473,20 +518,28 @@ void MatchManager::listenForMatchEvents(const MatchCommand& command) {
     } else if (command.command == MatchCmd::MATCH_ROLE_MISMATCH) {
         LOG_I(MATCH_MANAGER_TAG, "Received MATCH_ROLE_MISMATCH command from opponent");
         if (!isFromActiveMatchOpponent(command)) return;
+        if (activeMatchState.matchIsReady || activeMatchState.awaitingAckDelivery) return;
         clearCurrentMatch();
         return;
     } else if (command.command == MatchCmd::DRAW_RESULT ||
                command.command == MatchCmd::NEVER_PRESSED) {
         LOG_I(MATCH_MANAGER_TAG, "Received DRAW_RESULT command from opponent");
         if (!isFromActiveMatchOpponent(command)) return;
+        if (command.isHunter == activeMatchState.localIsHunter) return;
 
-        long opponentTime = command.playerDrawTime;
+        const long opponentTime = command.playerDrawTime;
+        const unsigned long opponentRawTime = command.rawDrawTime;
+        if (opponentTime < MIN_EFFECTIVE_DRAW_TIME_MS) return;
+        if (opponentRawTime > MAX_DRAW_TIME_MS) return;
+        const long rawAsSigned = static_cast<long>(opponentRawTime);
+        if (opponentTime > rawAsSigned) return;
+        if (rawAsSigned - opponentTime > -MIN_EFFECTIVE_DRAW_TIME_MS) return;
+        if (command.command == MatchCmd::NEVER_PRESSED && opponentTime != rawAsSigned) return;
 
         LOG_I(MATCH_MANAGER_TAG, "Opponent reaction time: %ld ms", opponentTime);
 
-        command.isHunter ?
-        setHunterDrawTime(opponentTime)
-        : setBountyDrawTime(opponentTime);
+        command.isHunter ? setHunterDrawTime(opponentTime, opponentRawTime)
+                         : setBountyDrawTime(opponentTime, opponentRawTime);
 
         if (command.command == MatchCmd::NEVER_PRESSED) {
             activeMatchState.opponentNeverPressed = true;
@@ -504,14 +557,23 @@ void MatchManager::sendNeverPressed(unsigned long pityTime) {
         return;
     }
 
-    activeMatchState.localIsHunter ? setHunterDrawTime(pityTime) : setBountyDrawTime(pityTime);
+    if (pityTime > MAX_DRAW_TIME_MS) {
+        pityTime = MAX_DRAW_TIME_MS;
+    }
+    const long signedPityTime = static_cast<long>(pityTime);
+
+    lastMatchDisplay.boostMs = 0;
+    lastMatchDisplay.penaltyMs = 0;
+    activeMatchState.localIsHunter ? setHunterDrawTime(signedPityTime, pityTime)
+                                   : setBountyDrawTime(signedPityTime, pityTime);
     setNeverPressed();
     // Mirror what gets uploaded: every match contributes a draw time to the server,
     // so on-device "average reaction" should include pity times too.
     player->addReactionTime(pityTime);
 
     sendCommand(activeMatchState.opponentMac.data(), MatchCmd::NEVER_PRESSED,
-                activeMatchState.match->getMatchId(), pityTime, activeMatchState.localIsHunter);
+                activeMatchState.match->getMatchId(), signedPityTime,
+                activeMatchState.localIsHunter, pityTime);
 }
 
 bool MatchManager::isMatchReady() const { return activeMatchState.matchIsReady; }

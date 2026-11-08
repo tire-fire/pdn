@@ -29,9 +29,10 @@ class ShootoutManager;
 inline constexpr const char MATCHES_PREFS_NAMESPACE[] = "matches";
 
 struct LastMatchDisplay {
-    unsigned long myTimeMs = 0;       // boosted draw time, as used for winner calc
-    unsigned long opponentTimeMs = 0;
-    unsigned long boostMs = 0;        // boost applied at own button press
+    long myTimeMs = 0;  // signed boosted draw time, as used for winner calc
+    long opponentTimeMs = 0;
+    unsigned long boostMs = 0;    // boost applied at own button press
+    unsigned long penaltyMs = 0;  // early-press countdown penalty applied at own button press
     bool hasData = false;
 };
 
@@ -44,6 +45,9 @@ struct ActiveMatchState {
     bool hasPressedButton = false;
     bool gracePeriodExpiredNoResult = false;
     bool opponentNeverPressed = false;
+    bool awaitingAckDelivery = false;
+    std::optional<long> hunterEffectiveTimeMs;
+    std::optional<long> bountyEffectiveTimeMs;
     unsigned long matchLocalStartTime = 0;
     unsigned long BUTTON_MASHER_PENALTY_MS = 75;
     int buttonMasherCount = 0;
@@ -83,8 +87,20 @@ public:
      * match state. */
     bool finalizeMatch();
 
-    bool setHunterDrawTime(unsigned long hunter_time_ms);
-    bool setBountyDrawTime(unsigned long bounty_time_ms);
+    /** Sets the hunter's signed effective draw time and unsigned raw reaction time on the active
+     * match. */
+    bool setHunterDrawTime(long effectiveTimeMs, unsigned long rawTimeMs);
+    /** Sets the hunter's unboosted draw time (both effective and raw) on the active match. */
+    bool setHunterDrawTime(unsigned long unboostedTimeMs) {
+        return setHunterDrawTime(static_cast<long>(unboostedTimeMs), unboostedTimeMs);
+    }
+    /** Sets the bounty's signed effective draw time and unsigned raw reaction time on the active
+     * match. */
+    bool setBountyDrawTime(long effectiveTimeMs, unsigned long rawTimeMs);
+    /** Sets the bounty's unboosted draw time (both effective and raw) on the active match. */
+    bool setBountyDrawTime(unsigned long unboostedTimeMs) {
+        return setBountyDrawTime(static_cast<long>(unboostedTimeMs), unboostedTimeMs);
+    }
 
     /** Records the local timestamp when the match draw window starts. */
     void setMatchLocalStartTime(unsigned long localStartTimeMs);
@@ -133,8 +149,8 @@ public:
     void setBoostProvider(std::function<unsigned long()> provider);
 
     /**
-     * Result-screen snapshot that outlives the match: draw times from
-     * finalizeMatch, boost from the button press that earned it.
+     * Result-screen snapshot that outlives the match: effective draw times from
+     * finalizeMatch, boost and early-press penalty from the button press.
      */
     const LastMatchDisplay& getLastMatchDisplay() const { return lastMatchDisplay; }
 
@@ -191,8 +207,8 @@ private:
     StorageInterface* storage;
     Resender resender;
     ReliableChannel<MatchPacket> matchChannel;
-    void sendCommand(const uint8_t* mac, int command, const char* matchId,
-                     long drawTime, bool isHunter);
+    void sendCommand(const uint8_t* mac, int command, const char* matchId, long drawTime,
+                     bool isHunter, unsigned long rawDrawTime = 0);
     /**
      * Appends a match to storage
      * @param match Match to save

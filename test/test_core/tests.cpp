@@ -870,6 +870,14 @@ TEST_F(MatchManagerTestSuite, boostSubtractedFromHunterReactionTime) {
     matchManagerBoostSubtractedFromHunterReactionTime(this);
 }
 
+TEST_F(MatchManagerTestSuite, boostExceedingReactionTimeProducesNegativeDrawTime) {
+    matchManagerBoostExceedingReactionTimeProducesNegativeDrawTime(this);
+}
+
+TEST_F(MatchManagerTestSuite, buttonMasherPenaltyRecordedInLastMatchDisplay) {
+    matchManagerButtonMasherPenaltyRecordedInLastMatchDisplay(this);
+}
+
 TEST_F(MatchManagerTestSuite, clearCurrentMatchResetsBoost) {
     matchManagerClearCurrentMatchResetsBoost(matchManager, player);
 }
@@ -968,11 +976,15 @@ TEST_F(MatchManagerTestSuite, hunterMatchIsReadyAfterAck) {
 }
 
 TEST_F(MatchManagerTestSuite, bountyMatchIsReadyAfterReceivingMatch) {
-    matchManagerBountyMatchIsReadyAfterReceivingMatch(matchManager, player);
+    matchManagerBountyMatchIsReadyAfterReceivingMatch(this);
+}
+
+TEST_F(MatchManagerTestSuite, bountyAbandoningMatchIdAckClearsMatch) {
+    matchManagerBountyAbandoningMatchIdAckClearsMatch(this);
 }
 
 TEST_F(MatchManagerTestSuite, clearMatchResetsMatchIsReadyFlag) {
-    matchManagerClearMatchResetsMatchIsReadyFlag(matchManager, player);
+    matchManagerClearMatchResetsMatchIsReadyFlag(this);
 }
 
 TEST_F(MatchManagerTestSuite, roleMismatchClearsInitiatorMatch) {

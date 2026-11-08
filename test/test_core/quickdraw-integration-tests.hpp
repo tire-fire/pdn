@@ -33,6 +33,7 @@ inline MatchPacket createTestPacket(const std::string& matchId, const std::strin
     packet.playerId[4] = '\0';
     packet.isHunter = isHunter;
     packet.playerDrawTime = playerDrawTime;
+    packet.rawDrawTime = static_cast<unsigned long>(playerDrawTime > 0 ? playerDrawTime : 0);
     packet.command = command;
     return packet;
 }
@@ -344,6 +345,9 @@ inline void listenForMatchResultsSetsOpponentTimeHunter(PacketParsingTests* suit
 inline void listenForMatchResultsSetsOpponentTimeBounty(PacketParsingTests* suite) {
     // Switch to bounty perspective
     suite->player->setIsHunter(false);
+    suite->matchManager->clearCurrentMatch();
+    uint8_t opponentMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    suite->matchManager->initializeMatch(opponentMac);
 
     MatchPacket packet = suite->createPacket(MatchCmd::DRAW_RESULT, 200, 0);
     suite->processPacket(packet);

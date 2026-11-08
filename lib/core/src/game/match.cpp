@@ -42,7 +42,8 @@ std::string Match::toJson() const
     matchObj[JSON_KEY_MATCH_ID] = match_id;
     matchObj[JSON_KEY_HUNTER_ID] = hunter;
     matchObj[JSON_KEY_BOUNTY_ID] = bounty;
-    matchObj[JSON_KEY_WINNER_IS_HUNTER] = hunter_draw_time_ms < bounty_draw_time_ms;
+    matchObj[JSON_KEY_WINNER_IS_HUNTER] =
+    winnerIsHunter.value_or(hunter_draw_time_ms < bounty_draw_time_ms);
     matchObj[JSON_KEY_HUNTER_TIME] = hunter_draw_time_ms;
     matchObj[JSON_KEY_BOUNTY_TIME] = bounty_draw_time_ms;
 
@@ -76,6 +77,9 @@ void Match::fromJson(const std::string &json) {
         }
         if (doc[JSON_KEY_BOUNTY_TIME].is<unsigned long>()) {
             bounty_draw_time_ms = doc[JSON_KEY_BOUNTY_TIME].as<unsigned long>();
+        }
+        if (doc[JSON_KEY_WINNER_IS_HUNTER].is<bool>()) {
+            winnerIsHunter = doc[JSON_KEY_WINNER_IS_HUNTER].as<bool>();
         }
     } else {
         // LOG_E("Match", "Failed to parse JSON: %s", error.c_str());
